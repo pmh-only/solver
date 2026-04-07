@@ -13,16 +13,18 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 2. Write or update tests in src/test/<name>.test.ts
 3. Run: pnpm test      ← must pass, fix failures before continuing
 4. Run: pnpm lint      ← must pass, fix all errors before continuing
-5. Done
+5. Commit your changes
+6. Push your branch
 ```
 
-**Never finish a task without passing both `pnpm test` and `pnpm lint`.**
+**Never finish a task without passing both `pnpm test` and `pnpm lint`, then committing and pushing the result.**
 
 ---
 
 ## ABSOLUTE RULES
 
 **NEVER** do these:
+
 - Use `interaction.reply({ content: '...' })` — always use Components V2 (`container()`)
 - Use `ephemeral: true` — always use `flags: MessageFlags.Ephemeral`
 - Pass `container()`'s return value to `editReply()` — it breaks (see below)
@@ -30,11 +32,13 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 - Forget to strip the subcommand name from `args` before using it as user input
 
 **ALWAYS** do these:
+
 - Use `container(args, flags, 'your output')` for all replies
 - Use `MessageFlags.IsComponentsV2` on every `editReply` / non-deferred `reply`
 - Cast `Buffer.concat([...])` to `Buffer` — TypeScript 6 requires it
 - Write tests for every subcommand in `src/test/<name>.test.ts`
 - Run `pnpm test` and `pnpm lint` before finishing
+- Commit and push after the work is complete
 
 ---
 
@@ -46,7 +50,14 @@ Tests use `src/test/e2e.ts`. The pattern is: raw Discord JSON in → captured RE
 import { describe, it, expect } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { subcommand as myCmd } from '../commands/mycommand.js'
-import { commandJSON, autocompleteJSON, dispatch, getCallback, getEdit, makeSubcommands } from './e2e.js'
+import {
+  commandJSON,
+  autocompleteJSON,
+  dispatch,
+  getCallback,
+  getEdit,
+  makeSubcommands
+} from './e2e.js'
 
 const subs = makeSubcommands(myCmd)
 
@@ -83,6 +94,7 @@ describe('mycommand — autocomplete', () => {
 ```
 
 **Minimum test coverage per subcommand:**
+
 - Immediate reply (no defer)
 - Deferred reply (if the command defers)
 - `--pub` flag makes response non-ephemeral
@@ -105,7 +117,7 @@ export const subcommand: Subcommand = {
 
   flags: {
     myflag: { description: 'flag description', value: 'string' }, // value flag
-    verbose: { description: 'verbose output' },                   // boolean flag
+    verbose: { description: 'verbose output' } // boolean flag
   },
 
   async autocomplete(restArgs, flags) {
@@ -121,12 +133,15 @@ export const subcommand: Subcommand = {
       await interaction.deferReply({ flags: flags.has('pub') ? undefined : MessageFlags.Ephemeral })
       const result = await doSlowWork(restArgs)
       const reply = container(args, flags, result)
-      await interaction.editReply({ components: reply.components, flags: MessageFlags.IsComponentsV2 })
+      await interaction.editReply({
+        components: reply.components,
+        flags: MessageFlags.IsComponentsV2
+      })
     } else {
       // Fast path: reply immediately
       await interaction.reply(container(args, flags, 'result here'))
     }
-  },
+  }
 }
 ```
 
@@ -154,11 +169,13 @@ pnpm lint   ← no errors allowed
 ## KEY PATTERNS
 
 ### Reply immediately (no async work)
+
 ```ts
 await interaction.reply(container(args, flags, 'output'))
 ```
 
 ### Reply after async work (defer first)
+
 ```ts
 await interaction.deferReply({ flags: flags.has('pub') ? undefined : MessageFlags.Ephemeral })
 const result = await someAsyncWork()
@@ -169,6 +186,7 @@ await interaction.editReply({ components: reply.components, flags: MessageFlags.
 ```
 
 ### Strip subcommand name from args
+
 ```ts
 // args = "example foo bar"  ← includes subcommand name
 const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -176,20 +194,21 @@ const restArgs = args.replace(/^\S+\s*/, '').trim()
 ```
 
 ### Buffer.concat cast
+
 ```ts
-const buf = Buffer.concat([a, b, c]) as Buffer  // ← cast required in TypeScript 6
+const buf = Buffer.concat([a, b, c]) as Buffer // ← cast required in TypeScript 6
 ```
 
 ---
 
 ## FLAGS API CHEAT SHEET
 
-| Method | Allowed flags |
-|---|---|
-| `deferReply({ flags })` | `MessageFlags.Ephemeral` only |
-| `editReply({ flags })` | `MessageFlags.IsComponentsV2` only |
-| `reply({ flags })` | `MessageFlags.IsComponentsV2 \| MessageFlags.Ephemeral` |
-| `container()` | handles flags automatically — use for `reply()` only |
+| Method                  | Allowed flags                                           |
+| ----------------------- | ------------------------------------------------------- |
+| `deferReply({ flags })` | `MessageFlags.Ephemeral` only                           |
+| `editReply({ flags })`  | `MessageFlags.IsComponentsV2` only                      |
+| `reply({ flags })`      | `MessageFlags.IsComponentsV2 \| MessageFlags.Ephemeral` |
+| `container()`           | handles flags automatically — use for `reply()` only    |
 
 ---
 
