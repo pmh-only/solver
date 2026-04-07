@@ -18,8 +18,10 @@ import {
   TextInputStyle,
   TextDisplayBuilder
 } from 'discord.js'
+import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, CommandRunResult, Subcommand } from './types.js'
 import type { Flags } from './flags.js'
+import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const PUB_BUTTON_ID = 'pub'
 export const RETRY_BUTTON_ID = 'retry'
@@ -54,7 +56,8 @@ const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {
   danger: 0xef4444
 }
 
-const rerunnableInputs = new Map<string, string>()
+const COMMAND_INPUT_KEY = 'command-input'
+const MESSAGE_INPUT_KEY = 'message-input'
 
 export type TopLevelComponent =
   | string
@@ -81,10 +84,53 @@ function commandName(args: string): string {
 }
 
 function footerText(args: string, flags: Flags): string {
+  return `-# \`${serializeCommandInput(args, flags)}\``
+}
+
+function serializeCommandInput(args: string, flags: Flags): string {
   const flagsStr = [...flags.entries()]
     .map(([k, v]) => (v === true ? `--${k}` : `--${k} ${v}`))
     .join(' ')
-  return `-# \`${[args, flagsStr].filter(Boolean).join(' ')}\``
+  return [args, flagsStr].filter(Boolean).join(' ')
+}
+
+function commandInputKey(prefix: string, value: string): string {
+  return `${prefix}:${value}`
+}
+
+function storeCommandInput(key: string, value: string) {
+  setStoredValue(key, value)
+}
+
+function loadCommandInput(key: string): string | null {
+  return getStoredValue(key) ?? null
+}
+
+function buildCommandComponentId(baseId: string, commandInput?: string): string {
+  if (!commandInput) return baseId
+
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  storeCommandInput(commandInputKey(COMMAND_INPUT_KEY, token), commandInput)
+  return `${baseId}:${token}`
+}
+
+export function matchesInteractiveId(customId: string, baseId: string): boolean {
+  return customId === baseId || customId.startsWith(`${baseId}:`)
+}
+
+function extractStoredCommandInput(customId: string): string | null {
+  for (const baseId of [RETRY_BUTTON_ID, EDIT_PARAMETERS_BUTTON_ID, COMMAND_ACTION_SELECT_ID]) {
+    const prefix = `${baseId}:`
+    if (!customId.startsWith(prefix)) continue
+
+    return loadCommandInput(commandInputKey(COMMAND_INPUT_KEY, customId.slice(prefix.length)))
+  }
+
+  return null
+}
+
+function rememberCommandInputForMessage(messageId: string, commandInput: string) {
+  storeCommandInput(commandInputKey(MESSAGE_INPUT_KEY, messageId), commandInput)
 }
 
 function accentColor(args: string, tone: ReplyTone): number {
@@ -115,17 +161,17 @@ function addComponent(container: ContainerBuilder, component: TopLevelComponent)
   }
 }
 
-function buildButtonRow(pub: boolean, includeCommandActions: boolean) {
+function buildButtonRow(pub: boolean, includeCommandActions: boolean, commandInput?: string) {
   const row = new ActionRowBuilder<ButtonBuilder>()
 
   if (includeCommandActions) {
     row.addComponents(
       new ButtonBuilder()
-        .setCustomId(RETRY_BUTTON_ID)
+        .setCustomId(buildCommandComponentId(RETRY_BUTTON_ID, commandInput))
         .setLabel('Retry')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId(EDIT_PARAMETERS_BUTTON_ID)
+        .setCustomId(buildCommandComponentId(EDIT_PARAMETERS_BUTTON_ID, commandInput))
         .setLabel('Edit parameters')
         .setStyle(ButtonStyle.Secondary)
     )
@@ -144,12 +190,13 @@ function buildButtonRow(pub: boolean, includeCommandActions: boolean) {
 }
 
 function buildReferenceRow(
-  subcommand?: Pick<Subcommand, 'description' | 'examples' | 'flags' | 'name' | 'usage'>
+  subcommand?: Pick<Subcommand, 'description' | 'examples' | 'flags' | 'name' | 'usage'>,
+  commandInput?: string
 ) {
   if (!subcommand) return null
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId(COMMAND_ACTION_SELECT_ID)
+    .setCustomId(buildCommandComponentId(COMMAND_ACTION_SELECT_ID, commandInput))
     .setPlaceholder('Open command reference')
     .addOptions(
       new StringSelectMenuOptionBuilder()
@@ -194,11 +241,12 @@ function buildPresetRow(subcommand?: Pick<Subcommand, 'examples' | 'name'>) {
 
 function controlRows(
   pub: boolean,
-  subcommand?: Pick<Subcommand, 'description' | 'examples' | 'flags' | 'name' | 'usage'>
+  subcommand?: Pick<Subcommand, 'description' | 'examples' | 'flags' | 'name' | 'usage'>,
+  commandInput?: string
 ) {
   const rows = [
-    buildButtonRow(pub, Boolean(subcommand)),
-    buildReferenceRow(subcommand),
+    buildButtonRow(pub, Boolean(subcommand), commandInput),
+    buildReferenceRow(subcommand, commandInput),
     buildPresetRow(subcommand)
   ].filter(
     (row): row is ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder> =>
@@ -216,6 +264,7 @@ function buildContainer(
 ) {
   const pub = flags.has('pub')
   const resolved = components.map(resolve)
+  const commandInput = options.subcommand ? serializeCommandInput(args, flags) : undefined
   const footer = footerText(args, flags)
   const last = resolved.at(-1)
 
@@ -231,7 +280,8 @@ function buildContainer(
   }
 
   return {
-    components: [body, ...controlRows(pub, options.subcommand)],
+    components: [body, ...controlRows(pub, options.subcommand, commandInput)],
+    commandInput,
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)
       : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
@@ -425,10 +475,13 @@ export async function sendCommandReply(
   payload: ReturnType<typeof container>
 ) {
   if (interaction.deferred) {
-    await interaction.editReply({
+    const message = (await interaction.editReply({
       components: payload.components,
       flags: MessageFlags.IsComponentsV2
-    })
+    })) as { id?: string }
+    if (payload.commandInput && typeof message.id === 'string') {
+      rememberCommandInputForMessage(message.id, payload.commandInput)
+    }
     return
   }
 
@@ -437,19 +490,32 @@ export async function sendCommandReply(
       components: payload.components,
       flags: MessageFlags.IsComponentsV2
     })
+    if (payload.commandInput) {
+      rememberCommandInputForMessage(interaction.message.id, payload.commandInput)
+    }
     return
   }
 
   if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
     await interaction.deferUpdate()
-    await interaction.editReply({
+    const message = (await interaction.editReply({
       components: payload.components,
       flags: MessageFlags.IsComponentsV2
-    })
+    })) as { id?: string }
+    const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
+    if (payload.commandInput) {
+      rememberCommandInputForMessage(messageId, payload.commandInput)
+    }
     return
   }
 
   await interaction.reply(payload)
+  if (payload.commandInput) {
+    const message = (await interaction.fetchReply()) as { id?: string }
+    if (typeof message.id === 'string') {
+      rememberCommandInputForMessage(message.id, payload.commandInput)
+    }
+  }
 }
 
 function toComponents(result: CommandRunResult): TopLevelComponent[] {
@@ -472,12 +538,7 @@ export async function runRerunnableCommand(
   })) as { id?: string }
 
   if (typeof message.id === 'string') {
-    rerunnableInputs.set(
-      message.id,
-      `${args}${[...flags.entries()]
-        .map(([k, v]) => (v === true ? ` --${k}` : ` --${k} ${v}`))
-        .join('')}`
-    )
+    rememberCommandInputForMessage(message.id, serializeCommandInput(args, flags))
   }
 }
 
@@ -541,7 +602,10 @@ export function extractCommandInputFromComponents(components: unknown): string |
 export function extractCommandInputFromMessage(
   interaction: ButtonInteraction | StringSelectMenuInteraction
 ): string | null {
-  const remembered = rerunnableInputs.get(interaction.message.id)
+  const encoded = extractStoredCommandInput(interaction.customId)
+  if (encoded) return encoded
+
+  const remembered = loadCommandInput(commandInputKey(MESSAGE_INPUT_KEY, interaction.message.id))
   if (remembered) return remembered
 
   const direct = extractCommandInputFromComponents(interaction.message.components)

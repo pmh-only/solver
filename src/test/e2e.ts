@@ -31,7 +31,7 @@ import { createHandler } from '../handler.js'
 import type { Subcommand } from '../types.js'
 
 export interface RestCall {
-  method: 'POST' | 'PATCH'
+  method: 'POST' | 'PATCH' | 'GET'
   route: string
   body: unknown
 }
@@ -60,8 +60,34 @@ function makeClient(): { client: Client; calls: RestCall[] } {
     // discord.js editReply() expects a Message-like object back
     return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
   }
+  ;(client.rest as unknown as Record<string, unknown>).get = async (route: unknown) => {
+    calls.push({ method: 'GET', route: String(route), body: null })
+    return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
+  }
 
   return { client, calls }
+}
+
+function resolveCustomId(components: unknown[], baseId: string): string {
+  const queue = [...components]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || typeof current !== 'object') continue
+
+    const record = current as { components?: unknown[]; custom_id?: unknown }
+    if (typeof record.custom_id === 'string') {
+      if (record.custom_id === baseId || record.custom_id.startsWith(`${baseId}:`)) {
+        return record.custom_id
+      }
+    }
+
+    if (Array.isArray(record.components)) {
+      queue.push(...record.components)
+    }
+  }
+
+  return baseId
 }
 
 function buildInteraction(client: Client, raw: RawInteraction): Interaction {
@@ -171,7 +197,7 @@ export function buttonJSON(
     type: 3,
     data: {
       component_type: 2,
-      custom_id: customId
+      custom_id: resolveCustomId(components, customId)
     },
     channel_id: '777777777777777777',
     message: messageJSON(components),

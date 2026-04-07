@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { EDIT_PARAMETERS_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { subcommand as ping } from '../commands/ping.js'
+import { clearStoredValues } from '../helpers/kv-store.js'
 import * as pingRuntime from '../ping-runtime.js'
 import {
   buttonJSON,
@@ -17,8 +18,30 @@ import {
 const subs = makeSubcommands(ping)
 
 afterEach(() => {
+  clearStoredValues()
   vi.restoreAllMocks()
 })
+
+function stripCommandFooter(components: unknown): unknown {
+  if (Array.isArray(components)) {
+    return components.map((component) => stripCommandFooter(component))
+  }
+
+  if (!components || typeof components !== 'object') return components
+
+  const record = components as { content?: unknown; components?: unknown[] }
+  const next: Record<string, unknown> = { ...record }
+
+  if (typeof record.content === 'string') {
+    next.content = record.content.replace(/\n\n-# `[^`]+`/g, '')
+  }
+
+  if (Array.isArray(record.components)) {
+    next.components = record.components.map((component) => stripCommandFooter(component))
+  }
+
+  return next
+}
 
 describe('ping — command', () => {
   it('replies with pong when no host given', async () => {
@@ -134,6 +157,33 @@ describe('ping — command', () => {
     expect(retryEdit).not.toBeNull()
     expect(pingRuntime.probePingTarget).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(retryEdit)).toContain('ping 127.0.0.1 --type http')
+  })
+
+  it('re-runs from the Retry button even when the footer text is missing', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget')
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        count: 2,
+        types: ['http'],
+        summaries: [{ type: 'http', count: 2, ms: [10, 11] }]
+      })
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        count: 2,
+        types: ['http'],
+        summaries: [{ type: 'http', count: 2, ms: [12, 13] }]
+      })
+
+    const firstCalls = await dispatch(commandJSON('ping 127.0.0.1 --type http'), subs)
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+    const retryCalls = await dispatch(
+      buttonJSON(stripCommandFooter(firstEdit.components) as unknown[]),
+      subs
+    )
+    const retryEdit = getEdit(retryCalls)
+
+    expect(retryEdit).not.toBeNull()
+    expect(pingRuntime.probePingTarget).toHaveBeenCalledTimes(2)
   })
 
   it('opens a modal with the current command input', async () => {

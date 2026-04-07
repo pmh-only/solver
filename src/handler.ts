@@ -11,6 +11,7 @@ import {
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
   extractCommandInputFromMessage,
+  matchesInteractiveId,
   PUB_BUTTON_ID,
   RETRY_BUTTON_ID
 } from './components.js'
@@ -101,7 +102,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
-      if (interaction.customId === RETRY_BUTTON_ID) {
+      if (matchesInteractiveId(interaction.customId, RETRY_BUTTON_ID)) {
         const commandInput = extractCommandInputFromMessage(interaction)
         if (!commandInput) {
           await interaction.reply(container('retry', new Map(), 'no cmd'))
@@ -112,7 +113,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
-      if (interaction.customId === EDIT_PARAMETERS_BUTTON_ID) {
+      if (matchesInteractiveId(interaction.customId, EDIT_PARAMETERS_BUTTON_ID)) {
         const commandInput = extractCommandInputFromMessage(interaction)
         if (!commandInput) {
           await interaction.reply(container('edit', new Map(), 'no cmd'))
@@ -144,7 +145,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
-      if (interaction.customId === COMMAND_ACTION_SELECT_ID) {
+      if (matchesInteractiveId(interaction.customId, COMMAND_ACTION_SELECT_ID)) {
         const commandInput = extractCommandInputFromMessage(interaction)
         if (!commandInput) {
           await interaction.update({
