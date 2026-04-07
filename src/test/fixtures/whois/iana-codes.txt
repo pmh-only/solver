@@ -1,0 +1,23 @@
+% IANA WHOIS server
+% for more information on IANA, visit http://www.iana.org
+% This query returned 1 object
+
+domain:       CODES
+
+organisation: Binky Moon, LLC
+address:      c/o Identity Digital Inc.
+address:      10500 NE 8th Street, Suite 750
+address:      Bellevue WA 98004
+address:      United States of America (the)
+
+nserver:      V0N0.NIC.CODES 2a01:8840:22:0:0:0:0:43 65.22.32.43
+nserver:      V0N1.NIC.CODES 2a01:8840:23:0:0:0:0:43 65.22.33.43
+
+whois:
+
+status:       ACTIVE
+remarks:      Registration information: https://www.identity.digital/
+
+created:      2013-12-19
+changed:      2025-10-07
+source:       IANA

@@ -1,9 +1,24 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
+import { EDIT_PARAMETERS_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { subcommand as ping } from '../commands/ping.js'
-import { commandJSON, autocompleteJSON, dispatch, getCallback, getEdit, makeSubcommands } from './e2e.js'
+import * as pingRuntime from '../ping-runtime.js'
+import {
+  buttonJSON,
+  commandJSON,
+  autocompleteJSON,
+  dispatch,
+  getCallback,
+  getEdit,
+  makeSubcommands,
+  modalJSON
+} from './e2e.js'
 
 const subs = makeSubcommands(ping)
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('ping — command', () => {
   it('replies with pong when no host given', async () => {
@@ -15,6 +30,16 @@ describe('ping — command', () => {
   })
 
   it('defers ephemerally then edits when host given as bare arg', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 2,
+      types: ['icmp', 'http'],
+      summaries: [
+        { type: 'icmp', count: 2, ms: [], note: 'unavailable in this runtime' },
+        { type: 'http', count: 2, ms: [10, 12] }
+      ]
+    })
+
     const calls = await dispatch(commandJSON('ping 127.0.0.1'), subs)
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
     const edit = getEdit(calls) as { components: unknown[] }
@@ -22,9 +47,18 @@ describe('ping — command', () => {
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeTruthy()
     expect(edit.components).toBeDefined()
+    expect(JSON.stringify(edit)).toContain('Retry')
+    expect(JSON.stringify(edit)).toContain('Edit parameters')
   })
 
   it('defers ephemerally then edits when host given via --ip flag', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 3,
+      types: ['https'],
+      summaries: [{ type: 'https', count: 3, ms: [20, 21, 22] }]
+    })
+
     const calls = await dispatch(commandJSON('ping --ip 127.0.0.1'), subs)
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
     const edit = getEdit(calls)
@@ -33,19 +67,156 @@ describe('ping — command', () => {
     expect(edit).not.toBeNull()
   })
 
+  it('accepts short count syntax before the host', async () => {
+    const probeSpy = vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '1.1.1.1',
+      count: 5,
+      types: ['http'],
+      summaries: [{ type: 'http', count: 5, ms: [9, 10, 11, 12, 13] }]
+    })
+
+    const calls = await dispatch(commandJSON('ping -c 5 1.1.1.1 --type http'), subs)
+    const defer = getCallback(calls) as { type: number }
+
+    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(probeSpy).toHaveBeenCalledWith({
+      host: '1.1.1.1',
+      count: 5,
+      types: ['http']
+    })
+  })
+
   it('defers publicly when --pub flag set', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 1,
+      types: ['http3'],
+      summaries: [
+        {
+          type: 'http3',
+          count: 1,
+          ms: [35],
+          note: 'measured via a QUIC Initial probe rather than a full HTTP/3 request'
+        }
+      ]
+    })
+
     const calls = await dispatch(commandJSON('ping 127.0.0.1 --pub'), subs)
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
   })
+
+  it('re-runs a deferred command from the Retry button footer args', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget')
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        count: 2,
+        types: ['http'],
+        summaries: [{ type: 'http', count: 2, ms: [10, 11] }]
+      })
+      .mockResolvedValueOnce({
+        host: '127.0.0.1',
+        count: 2,
+        types: ['http'],
+        summaries: [{ type: 'http', count: 2, ms: [12, 13] }]
+      })
+
+    const firstCalls = await dispatch(commandJSON('ping 127.0.0.1 --type http'), subs)
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+
+    const retryCalls = await dispatch(buttonJSON(firstEdit.components), subs)
+    const defer = getCallback(retryCalls) as { type: number; data: { flags: number } }
+    const retryEdit = getEdit(retryCalls)
+
+    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(defer.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(retryEdit).not.toBeNull()
+    expect(pingRuntime.probePingTarget).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(retryEdit)).toContain('ping 127.0.0.1 --type http')
+  })
+
+  it('opens a modal with the current command input', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 1,
+      types: ['http'],
+      summaries: [{ type: 'http', count: 1, ms: [10] }]
+    })
+
+    const firstCalls = await dispatch(commandJSON('ping 127.0.0.1 --type http'), subs)
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+    const modalCalls = await dispatch(
+      buttonJSON(firstEdit.components, EDIT_PARAMETERS_BUTTON_ID),
+      subs
+    )
+    const body = getCallback(modalCalls) as { type: number; data: { components: unknown[] } }
+
+    expect(body.type).toBe(InteractionResponseType.Modal)
+    expect(JSON.stringify(body.data.components)).toContain('ping 127.0.0.1 --type http')
+  })
+
+  it('publishes output without any buttons', async () => {
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 1,
+      types: ['http'],
+      summaries: [{ type: 'http', count: 1, ms: [10] }]
+    })
+
+    const firstCalls = await dispatch(commandJSON('ping 127.0.0.1'), subs)
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+    const publishCalls = await dispatch(buttonJSON(firstEdit.components, PUB_BUTTON_ID), subs)
+    const body = getCallback(publishCalls) as { type: number; data: { components: unknown[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(JSON.stringify(body.data.components)).not.toContain('Retry')
+    expect(JSON.stringify(body.data.components)).not.toContain('Edit parameters')
+    expect(JSON.stringify(body.data.components)).not.toContain(PUB_BUTTON_ID)
+  })
+
+  it('re-runs edited parameters from the modal and keeps --pub public', async () => {
+    const probeSpy = vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '1.1.1.1',
+      count: 3,
+      types: ['https'],
+      summaries: [{ type: 'https', count: 3, ms: [20, 21, 22] }]
+    })
+
+    const calls = await dispatch(modalJSON('ping 1.1.1.1 --type https --pub'), subs)
+    const defer = getCallback(calls) as { type: number; data: { flags: number } }
+    const edit = getEdit(calls)
+
+    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+    expect(edit).not.toBeNull()
+    expect(probeSpy).toHaveBeenCalledWith({
+      host: '1.1.1.1',
+      count: 3,
+      types: ['https']
+    })
+  })
+
+  it('rejects unsupported probe types immediately', async () => {
+    const calls = await dispatch(commandJSON('ping example.com --type tcp'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: Array<{ components?: Array<{ text?: string; content?: string }> }> }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(JSON.stringify(body)).toContain('bad type')
+  })
 })
 
 describe('ping — autocomplete (selection mode)', () => {
   it('returns ping as a choice when input is empty', async () => {
     const calls = await dispatch(autocompleteJSON(''), subs)
-    const body = getCallback(calls) as { type: number; data: { choices: { name: string; value: string }[] } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { choices: { name: string; value: string }[] }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
     expect(body.data.choices.some((c) => c.value === 'ping')).toBe(true)
@@ -53,7 +224,10 @@ describe('ping — autocomplete (selection mode)', () => {
 
   it('returns ping when partially typed', async () => {
     const calls = await dispatch(autocompleteJSON('pi'), subs)
-    const body = getCallback(calls) as { type: number; data: { choices: { name: string; value: string }[] } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { choices: { name: string; value: string }[] }
+    }
 
     expect(body.data.choices.some((c) => c.value === 'ping')).toBe(true)
   })
@@ -66,6 +240,8 @@ describe('ping — autocomplete (args mode)', () => {
     const values = body.data.choices.map((c) => c.value)
 
     expect(values.some((v) => v.includes('--ip'))).toBe(true)
+    expect(values.some((v) => v.includes('--count'))).toBe(true)
+    expect(values.some((v) => v.includes('--type'))).toBe(true)
     expect(values.some((v) => v.includes('--pub'))).toBe(true)
   })
 })

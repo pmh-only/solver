@@ -1,0 +1,14 @@
+Domain Name: PMH.CODES
+Registry Domain ID: D175886020-CNIC
+Registrar WHOIS Server: whois.namecheap.com
+Registrar URL: https://www.namecheap.com/
+Updated Date: 2026-02-10T07:34:42.00Z
+Creation Date: 2020-02-27T22:31:11.00Z
+Registry Expiry Date: 2028-02-27T23:59:59.00Z
+Registrar: NameCheap, Inc.
+Registrar IANA ID: 1068
+Domain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited
+Name Server: NS1.PMH.CODES
+Name Server: NS2.PMH.CODES
+Name Server: NS3.PMH.CODES
+DNSSEC: unsigned

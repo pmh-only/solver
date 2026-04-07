@@ -1,0 +1,75 @@
+{
+  "rdapConformance": [
+    "rdap_level_0",
+    "icann_rdap_response_profile_1",
+    "icann_rdap_technical_implementation_guide_1",
+    "redacted"
+  ],
+  "ldhName": "pmh.codes",
+  "unicodeName": "pmh.codes",
+  "nameservers": [
+    {
+      "ldhName": "ns1.pmh.codes",
+      "unicodeName": "ns1.pmh.codes"
+    },
+    {
+      "ldhName": "ns2.pmh.codes",
+      "unicodeName": "ns2.pmh.codes"
+    },
+    {
+      "ldhName": "ns3.pmh.codes",
+      "unicodeName": "ns3.pmh.codes"
+    }
+  ],
+  "secureDNS": {
+    "delegationSigned": true
+  },
+  "objectClassName": "domain",
+  "status": ["client transfer prohibited"],
+  "events": [
+    {
+      "eventAction": "transfer",
+      "eventDate": "2026-02-05T15:38:15.799Z"
+    },
+    {
+      "eventAction": "expiration",
+      "eventDate": "2028-02-27T01:55:03.097Z"
+    },
+    {
+      "eventAction": "registration",
+      "eventDate": "2020-02-27T01:55:03.097Z"
+    },
+    {
+      "eventAction": "last changed",
+      "eventDate": "2026-02-10T15:39:07.734Z"
+    }
+  ],
+  "entities": [
+    {
+      "vcardArray": [
+        "vcard",
+        [
+          ["version", {}, "text", "4.0"],
+          ["fn", {}, "text", "NameCheap, Inc."]
+        ]
+      ],
+      "roles": ["registrar"],
+      "publicIds": [
+        {
+          "type": "IANA Registrar ID",
+          "identifier": "1068"
+        }
+      ],
+      "objectClassName": "entity",
+      "handle": "1068"
+    }
+  ],
+  "links": [
+    {
+      "value": "https://rdap.identitydigital.services/rdap/domain/pmh.codes",
+      "rel": "self",
+      "href": "https://rdap.identitydigital.services/rdap/domain/pmh.codes",
+      "type": "application/rdap+json"
+    }
+  ]
+}
