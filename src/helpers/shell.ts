@@ -5,6 +5,10 @@ const SHELL_TIMEOUT_MS = 3000
 
 export interface ShellResult {
   ok: boolean
+  stdout?: string
+  stderr?: string
+  exitCode: number | null
+  timedOut?: boolean
   output: string
 }
 
@@ -25,7 +29,7 @@ function block(label: string, body: string): string {
 export async function executeShell(input: string): Promise<ShellResult> {
   const source = input.trim()
   if (!source) {
-    return { ok: false, output: 'no cmd' }
+    return { ok: false, exitCode: null, output: 'no cmd' }
   }
 
   return await new Promise((resolve) => {
@@ -52,14 +56,14 @@ export async function executeShell(input: string): Promise<ShellResult> {
 
     child.on('error', () => {
       clearTimeout(timer)
-      resolve({ ok: false, output: 'shell err' })
+      resolve({ ok: false, exitCode: null, output: 'shell err' })
     })
 
     child.on('close', (code) => {
       clearTimeout(timer)
 
       if (timedOut) {
-        resolve({ ok: false, output: 'timeout' })
+        resolve({ ok: false, exitCode: null, timedOut: true, output: 'timeout' })
         return
       }
 
@@ -70,6 +74,9 @@ export async function executeShell(input: string): Promise<ShellResult> {
 
       resolve({
         ok: code === 0,
+        stdout: out || undefined,
+        stderr: err || undefined,
+        exitCode: code ?? 0,
         output: sections.join('\n\n') || '-# code 0'
       })
     })

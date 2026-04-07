@@ -1,11 +1,14 @@
 import type { Subcommand } from '../types.js'
-import { container, runRerunnableCommand } from '../components.js'
 import {
-  DEFAULT_PING_COUNT,
-  formatPingReport,
-  parsePingTypes,
-  probePingTarget
-} from '../ping-runtime.js'
+  commandContainer,
+  commandReferenceReply,
+  runRerunnableCommand,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
+import { DEFAULT_PING_COUNT, parsePingTypes, probePingTarget } from '../ping-runtime.js'
 
 function shiftLeadingToken(input: string): { token?: string; rest: string } {
   const trimmed = input.trim()
@@ -22,9 +25,69 @@ function parseCount(value: string | true | undefined): number {
   return Math.min(parsed, 10)
 }
 
+function formatMs(value: number): string {
+  return `${value.toFixed(1)}ms`
+}
+
+function hostUrl(host: string): string | null {
+  try {
+    return new URL(host.includes('://') ? host : `https://${host}`).toString()
+  } catch {
+    return null
+  }
+}
+
+function buildPingComponents(report: Awaited<ReturnType<typeof probePingTarget>>) {
+  const components = [
+    summarySection(
+      `Ping ${report.host}`,
+      [`${report.count} probe${report.count === 1 ? '' : 's'} across ${report.types.join(', ')}`],
+      hostUrl(report.host) ? { label: 'Open host', url: hostUrl(report.host)! } : undefined
+    ),
+    separator()
+  ]
+
+  for (const summary of report.summaries) {
+    if (summary.note && summary.ms.length === 0) {
+      components.push(text(`**${summary.type.toUpperCase()}**\n-# ${summary.note}`))
+      continue
+    }
+
+    if (summary.ms.length === 0) {
+      components.push(text(`**${summary.type.toUpperCase()}**\n-# ${summary.error ?? 'err'}`))
+      continue
+    }
+
+    const min = Math.min(...summary.ms)
+    const avg = summary.ms.reduce((total, value) => total + value, 0) / summary.ms.length
+    const max = Math.max(...summary.ms)
+    const loss =
+      summary.ms.length < summary.count
+        ? `${summary.count - summary.ms.length}/${summary.count}`
+        : '0'
+    const note = summary.note ? `\n-# note: ${summary.note}` : ''
+
+    components.push(
+      text(
+        [
+          `**${summary.type.toUpperCase()}**`,
+          `-# min ${formatMs(min)}`,
+          `-# avg ${formatMs(avg)}`,
+          `-# max ${formatMs(max)}`,
+          `-# loss ${loss}`
+        ].join('\n') + note
+      )
+    )
+  }
+
+  return components
+}
+
 export const subcommand: Subcommand = {
   name: 'ping',
   description: 'probe host',
+  usage: 'ping <host> [--count <1-10>] [--type <icmp,http,https,http3>] [--pub]',
+  examples: ['ping 1.1.1.1', 'ping example.com --count 5', 'ping example.com --type https,http3'],
 
   flags: {
     ip: { description: 'host', value: 'string' },
@@ -65,7 +128,7 @@ export const subcommand: Subcommand = {
       types
     })
 
-    return formatPingReport(report)
+    return buildPingComponents(report)
   },
 
   async execute(interaction, args, flags) {
@@ -88,17 +151,31 @@ export const subcommand: Subcommand = {
 
     if (!host) {
       const latency = Date.now() - interaction.createdTimestamp
-      await interaction.reply(container(args, flags, `pong: ${latency}ms`))
+      await sendCommandReply(
+        interaction,
+        commandContainer(
+          subcommand,
+          args,
+          flags,
+          summarySection('Ping', [
+            `pong: ${latency}ms`,
+            'Add a host to probe HTTP, HTTPS, and HTTP/3 reachability.'
+          ])
+        )
+      )
       return
     }
 
     const types = parsePingTypes(typeof typeFlag === 'string' ? typeFlag : undefined)
     if ('error' in types) {
-      await interaction.reply(container(args, flags, types.error))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'flags', types.error)
+      )
       return
     }
 
-    await runRerunnableCommand(interaction, args, flags, async () => {
+    await runRerunnableCommand(interaction, subcommand, args, flags, async () => {
       return subcommand.run!(args, flags)
     })
   }

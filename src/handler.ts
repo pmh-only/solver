@@ -2,7 +2,11 @@ import { Collection, ComponentType, MessageFlags, type Interaction } from 'disco
 import type { CommandInteraction, Subcommand } from './types.js'
 import {
   buildEditParametersModal,
+  COMMAND_ACTION_SELECT_ID,
+  COMMAND_PRESET_SELECT_ID,
   container,
+  commandReferenceReply,
+  sendCommandReply,
   EDIT_PARAMETERS_BUTTON_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
@@ -18,32 +22,14 @@ function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
 }
 
-function stripButtons(components: readonly { toJSON(): unknown }[]): unknown[] {
+function stripInteractiveRows(components: readonly { toJSON(): unknown }[]): unknown[] {
   return components.flatMap((component) => {
-    const json = component.toJSON() as {
-      type?: number
-      components?: Array<{ type?: number }>
-    }
-
-    if (json.type !== ComponentType.ActionRow || !Array.isArray(json.components)) {
-      return [json]
-    }
-
-    const remainingComponents = json.components.filter(
-      (child) => child.type !== ComponentType.Button
-    )
-    if (remainingComponents.length === json.components.length) return [json]
-    if (remainingComponents.length === 0) return []
-
-    return [{ ...json, components: remainingComponents }]
+    const json = component.toJSON() as { type?: number }
+    return json.type === ComponentType.ActionRow ? [] : [json]
   })
 }
 
-async function runCommandInput(
-  interaction: CommandInteraction,
-  subcommands: Collection<string, Subcommand>,
-  rawInput: string
-) {
+function resolveCommandInput(rawInput: string, subcommands: Collection<string, Subcommand>) {
   const raw = rawInput.trim()
   const { bare, flags: rawFlags } = parseFlags(raw)
   const subName = bare.split(/\s+/)[0].toLowerCase()
@@ -54,24 +40,34 @@ async function runCommandInput(
   const aliasMap = new Map([...globalAliases, ...cmdAliases])
   const flags = resolveAliases(rawFlags, aliasMap)
 
+  return { raw, bare, flags, subName, sub }
+}
+
+async function runCommandInput(
+  interaction: CommandInteraction,
+  subcommands: Collection<string, Subcommand>,
+  rawInput: string
+) {
+  const { bare, flags, sub } = resolveCommandInput(rawInput, subcommands)
+
   if (!sub) {
     if (looksLikeMath(bare)) {
       try {
-        await interaction.reply(container(bare, flags, evaluateMathString(bare)))
+        await sendCommandReply(interaction, container(bare, flags, evaluateMathString(bare)))
       } catch (error) {
         const message = error instanceof Error ? error.message : 'math err'
-        await interaction.reply(container(bare, flags, message))
+        await sendCommandReply(interaction, container(bare, flags, message))
       }
       return
     }
 
     if (!bare.includes(' ')) {
       const value = hasStoredValue(bare) ? `${bare}=${getStoredValue(bare)}` : `no ${bare}`
-      await interaction.reply(container(bare, flags, value))
+      await sendCommandReply(interaction, container(bare, flags, value))
       return
     }
 
-    await interaction.reply(container(bare, flags, 'no cmd'))
+    await sendCommandReply(interaction, container(bare, flags, 'no cmd'))
     return
   }
 
@@ -79,10 +75,15 @@ async function runCommandInput(
     await sub.execute(interaction, bare, flags)
   } catch (error) {
     console.error(error)
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred) {
+      await interaction.editReply({
+        components: container(bare, flags, 'err').components,
+        flags: MessageFlags.IsComponentsV2
+      })
+    } else if (interaction.replied) {
       await interaction.followUp(container(bare, flags, 'err'))
     } else {
-      await interaction.reply(container(bare, flags, 'err'))
+      await sendCommandReply(interaction, container(bare, flags, 'err'))
     }
   }
 }
@@ -91,7 +92,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     if (interaction.isButton()) {
       if (interaction.customId === PUB_BUTTON_ID) {
-        const components = stripButtons(interaction.message.components)
+        const components = stripInteractiveRows(interaction.message.components)
         await interaction.reply({
           components: components as never,
           flags: [MessageFlags.IsComponentsV2]
@@ -119,6 +120,51 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
         await interaction.showModal(buildEditParametersModal(commandInput))
         return
+      }
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === COMMAND_PRESET_SELECT_ID) {
+        const preset = interaction.values[0]
+        if (!preset) {
+          await interaction.update({
+            components: container('preset', new Map(), 'no cmd').components,
+            flags: MessageFlags.IsComponentsV2
+          })
+          return
+        }
+
+        await interaction.showModal(buildEditParametersModal(preset))
+        return
+      }
+
+      if (interaction.customId === COMMAND_ACTION_SELECT_ID) {
+        const commandInput = extractCommandInputFromMessage(interaction)
+        if (!commandInput) {
+          await interaction.update({
+            components: container('help', new Map(), 'no cmd').components,
+            flags: MessageFlags.IsComponentsV2
+          })
+          return
+        }
+
+        const { bare, flags, sub } = resolveCommandInput(commandInput, subcommands)
+        if (!sub) {
+          await interaction.update({
+            components: container(bare || 'help', flags, 'no cmd').components,
+            flags: MessageFlags.IsComponentsV2
+          })
+          return
+        }
+
+        const view = interaction.values[0]
+        if (view === 'usage' || view === 'examples' || view === 'flags') {
+          await interaction.update({
+            components: commandReferenceReply(sub, bare, flags, view).components,
+            flags: MessageFlags.IsComponentsV2
+          })
+          return
+        }
       }
     }
 

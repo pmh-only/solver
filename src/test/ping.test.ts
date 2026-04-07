@@ -130,8 +130,7 @@ describe('ping — command', () => {
     const defer = getCallback(retryCalls) as { type: number; data: { flags: number } }
     const retryEdit = getEdit(retryCalls)
 
-    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect(defer.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(defer.type).toBe(InteractionResponseType.DeferredMessageUpdate)
     expect(retryEdit).not.toBeNull()
     expect(pingRuntime.probePingTarget).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(retryEdit)).toContain('ping 127.0.0.1 --type http')

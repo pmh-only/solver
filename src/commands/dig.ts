@@ -1,5 +1,12 @@
 import type { Subcommand } from '../types.js'
-import { container, runRerunnableCommand } from '../components.js'
+import {
+  commandReferenceReply,
+  runRerunnableCommand,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
 import { dnsClient } from './_dns.js'
 
 function parseQuery(input: string): { name: string; type?: string } {
@@ -11,21 +18,25 @@ function parseQuery(input: string): { name: string; type?: string } {
 function formatSection(
   title: string,
   records: Awaited<ReturnType<typeof dnsClient.lookup>>['answers']
-): string[] {
-  if (records.length === 0) return []
+): string {
   return [
     `**${title}**`,
-    ...records.map((record) => `-# ${record.name} ${record.ttl} IN ${record.type} ${record.data}`)
-  ]
+    ...(records.length > 0
+      ? records.map((record) => `-# ${record.name} ${record.ttl} IN ${record.type} ${record.data}`)
+      : ['-# none'])
+  ].join('\n')
 }
 
-function formatDig(result: Awaited<ReturnType<typeof dnsClient.lookup>>): string {
+function formatDig(result: Awaited<ReturnType<typeof dnsClient.lookup>>) {
   const sections = [
-    `**DIG ${result.name} ${result.type}**`,
-    `-# srv: ${result.server}`,
-    ...formatSection('ANS', result.answers),
-    ...formatSection('AUTH', result.authority),
-    ...formatSection('ADD', result.additional)
+    summarySection(`Dig ${result.name}`, [
+      `-# type: ${result.type}`,
+      `-# server: ${result.server}`
+    ]),
+    separator(),
+    text(formatSection('Answers', result.answers)),
+    text(formatSection('Authority', result.authority)),
+    text(formatSection('Additional', result.additional))
   ]
 
   if (
@@ -33,15 +44,17 @@ function formatDig(result: Awaited<ReturnType<typeof dnsClient.lookup>>): string
     result.authority.length === 0 &&
     result.additional.length === 0
   ) {
-    sections.push('-# none')
+    sections[2] = text('**Answers**\n-# none')
   }
 
-  return sections.join('\n')
+  return sections
 }
 
 export const subcommand: Subcommand = {
   name: 'dig',
   description: 'dns',
+  usage: 'dig <name> [type] [--pub]',
+  examples: ['dig example.com', 'dig example.com AAAA', 'dig _discord._tcp.example.com SRV'],
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -54,12 +67,17 @@ export const subcommand: Subcommand = {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
 
     if (!restArgs) {
-      await interaction.reply(container(args, flags, 'no host'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'no host')
+      )
       return
     }
 
     parseQuery(restArgs)
 
-    await runRerunnableCommand(interaction, args, flags, async () => subcommand.run!(args, flags))
+    await runRerunnableCommand(interaction, subcommand, args, flags, async () =>
+      subcommand.run!(args, flags)
+    )
   }
 }

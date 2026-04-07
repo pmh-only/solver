@@ -1,7 +1,8 @@
 import type {
   ButtonInteraction,
   ChatInputCommandInteraction,
-  ModalSubmitInteraction
+  ModalSubmitInteraction,
+  StringSelectMenuInteraction
 } from 'discord.js'
 import type { TopLevelComponent } from './components.js'
 import type { Flags } from './flags.js'
@@ -15,6 +16,7 @@ export interface FlagDef {
 export type CommandInteraction =
   | ChatInputCommandInteraction
   | ButtonInteraction
+  | StringSelectMenuInteraction
   | ModalSubmitInteraction
 
 export type CommandRunResult = TopLevelComponent | TopLevelComponent[]
@@ -22,6 +24,8 @@ export type CommandRunResult = TopLevelComponent | TopLevelComponent[]
 export interface Subcommand {
   name: string
   description: string
+  usage?: string
+  examples?: string[]
   flags?: Record<string, FlagDef>
   autocomplete?: (restArgs: string, flags: Flags) => Promise<{ name: string; value: string }[]>
   execute: (interaction: CommandInteraction, args: string, flags: Flags) => Promise<void>

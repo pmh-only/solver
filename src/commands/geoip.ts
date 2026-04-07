@@ -1,8 +1,20 @@
 import type { Subcommand } from '../types.js'
-import { container, runRerunnableCommand } from '../components.js'
+import {
+  commandReferenceReply,
+  runRerunnableCommand,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
 import { geoIpClient } from './_geoip.js'
 
-function formatGeoIp(result: Awaited<ReturnType<typeof geoIpClient.lookup>>): string {
+function mapUrl(latitude?: number, longitude?: number): string | null {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') return null
+  return `https://www.google.com/maps?q=${latitude},${longitude}`
+}
+
+function formatGeoIp(result: Awaited<ReturnType<typeof geoIpClient.lookup>>) {
   const location = [result.city, result.region, result.country, result.countryCode]
     .filter(Boolean)
     .join(', ')
@@ -12,23 +24,42 @@ function formatGeoIp(result: Awaited<ReturnType<typeof geoIpClient.lookup>>): st
       : null
 
   return [
-    `**GEOIP ${result.ip}**`,
-    location ? `-# loc: ${location}` : null,
-    result.continent ? `-# cont: ${result.continent}` : null,
-    coords ? `-# gps: ${coords}` : null,
-    result.timezone ? `-# tz: ${result.timezone}` : null,
-    result.asn || result.org || result.isp
-      ? `-# net: ${[result.asn, result.org, result.isp].filter(Boolean).join(' | ')}`
-      : null,
-    '-# src: ipwho.is'
+    summarySection(
+      `GeoIP ${result.ip}`,
+      [
+        ...(location ? [`-# location: ${location}`] : []),
+        ...(result.continent ? [`-# continent: ${result.continent}`] : []),
+        '-# source: ipwho.is'
+      ],
+      mapUrl(result.latitude, result.longitude)
+        ? { label: 'Open map', url: mapUrl(result.latitude, result.longitude)! }
+        : undefined
+    ),
+    separator(),
+    text(
+      [
+        '**Coordinates**',
+        ...(coords ? [`-# gps: ${coords}`] : ['-# gps: unavailable']),
+        ...(result.timezone ? [`-# timezone: ${result.timezone}`] : [])
+      ].join('\n')
+    ),
+    text(
+      [
+        '**Network**',
+        ...(result.asn ? [`-# asn: ${result.asn}`] : []),
+        ...(result.org ? [`-# org: ${result.org}`] : []),
+        ...(result.isp ? [`-# isp: ${result.isp}`] : []),
+        ...(!result.asn && !result.org && !result.isp ? ['-# none'] : [])
+      ].join('\n')
+    )
   ]
-    .filter((line): line is string => Boolean(line))
-    .join('\n')
 }
 
 export const subcommand: Subcommand = {
   name: 'geoip',
   description: 'geo ip',
+  usage: 'geoip <ip> [--pub]',
+  examples: ['geoip 1.1.1.1', 'geoip 8.8.8.8'],
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -40,10 +71,15 @@ export const subcommand: Subcommand = {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
 
     if (!restArgs) {
-      await interaction.reply(container(args, flags, 'no ip'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'no ip')
+      )
       return
     }
 
-    await runRerunnableCommand(interaction, args, flags, async () => subcommand.run!(args, flags))
+    await runRerunnableCommand(interaction, subcommand, args, flags, async () =>
+      subcommand.run!(args, flags)
+    )
   }
 }

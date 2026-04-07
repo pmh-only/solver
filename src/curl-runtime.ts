@@ -11,6 +11,18 @@ export interface CurlRequestPlan {
   body?: string
 }
 
+export interface CurlExecutionResult {
+  ok: boolean
+  request: CurlRequestPlan
+  status?: number
+  statusText?: string
+  finalUrl?: string
+  contentType?: string
+  bodyPreview?: string
+  error?: string
+  output: string
+}
+
 function shellSplit(input: string): string[] {
   const tokens: string[] = []
   let current = ''
@@ -162,7 +174,7 @@ function formatBodyPreview(buffer: Buffer, contentType: string): string {
   return text.length > BODY_PREVIEW_LIMIT ? `${text.slice(0, BODY_PREVIEW_LIMIT)}\n...` : text
 }
 
-export async function executeCurl(plan: CurlRequestPlan): Promise<string> {
+export async function executeCurl(plan: CurlRequestPlan): Promise<CurlExecutionResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
 
@@ -177,20 +189,35 @@ export async function executeCurl(plan: CurlRequestPlan): Promise<string> {
 
     const body = Buffer.from(await response.arrayBuffer())
     const contentType = response.headers.get('content-type') ?? 'application/octet-stream'
+    const bodyPreview = formatBodyPreview(body, contentType)
     const lines = [
       `**${plan.method} ${plan.originalTarget}**`,
       `-# ${response.status} ${response.statusText || 'response'}`,
       `-# url: ${response.url}`,
       `-# type: ${contentType}`,
       '```text',
-      formatBodyPreview(body, contentType),
+      bodyPreview,
       '```'
     ]
 
-    return lines.join('\n')
+    return {
+      ok: response.ok,
+      request: plan,
+      status: response.status,
+      statusText: response.statusText || 'response',
+      finalUrl: response.url,
+      contentType,
+      bodyPreview,
+      output: lines.join('\n')
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'req err'
-    return `**${plan.method} ${plan.originalTarget}**\n-# err: ${detail}`
+    return {
+      ok: false,
+      request: plan,
+      error: detail,
+      output: `**${plan.method} ${plan.originalTarget}**\n-# err: ${detail}`
+    }
   } finally {
     clearTimeout(timer)
   }

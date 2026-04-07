@@ -1,5 +1,12 @@
 import type { Subcommand } from '../types.js'
-import { container } from '../components.js'
+import {
+  commandContainer,
+  commandReferenceReply,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
 import { setStoredValue } from '../helpers/kv-store.js'
 
 function parseSetArgs(args: string): { key: string; value: string } | null {
@@ -19,16 +26,31 @@ function parseSetArgs(args: string): { key: string; value: string } | null {
 export const subcommand: Subcommand = {
   name: 'set',
   description: 'set var',
+  usage: 'set <key> <value> [--pub]',
+  examples: ['set token abc123', 'set answer 42'],
 
   async execute(interaction, args, flags) {
     const parsed = parseSetArgs(args)
 
     if (!parsed) {
-      await interaction.reply(container(args, flags, 'no args'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'no args')
+      )
       return
     }
 
     setStoredValue(parsed.key, parsed.value)
-    await interaction.reply(container(args, flags, `ok ${parsed.key}=${parsed.value}`))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        subcommand,
+        args,
+        flags,
+        summarySection('Stored value updated', [`Key \`${parsed.key}\` saved successfully`]),
+        separator(),
+        text(`**Result**\n\`ok ${parsed.key}=${parsed.value}\``)
+      )
+    )
   }
 }

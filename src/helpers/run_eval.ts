@@ -6,6 +6,9 @@ const MAX_BLOCK_CHARS = 1500
 
 export interface RunEvaluation {
   ok: boolean
+  stdout?: string
+  result?: string
+  error?: string
   output: string
 }
 
@@ -73,23 +76,37 @@ export function evaluateJavaScript(source: string): RunEvaluation {
   try {
     const result = new Script(source).runInContext(context, { timeout: VM_TIMEOUT_MS })
     const sections: string[] = []
+    const stdout = lines.join('\n')
+    const formattedResult = formatValue(result)
 
     if (lines.length > 0) {
-      sections.push(block('out', lines.join('\n')))
+      sections.push(block('out', stdout))
     }
 
-    sections.push(block('res', formatValue(result)))
+    sections.push(block('res', formattedResult))
 
-    return { ok: true, output: sections.join('\n\n') }
+    return {
+      ok: true,
+      stdout: stdout || undefined,
+      result: formattedResult,
+      output: sections.join('\n\n')
+    }
   } catch (error) {
     const sections: string[] = []
+    const stdout = lines.join('\n')
+    const message = asErrorMessage(error)
 
     if (lines.length > 0) {
-      sections.push(block('out', lines.join('\n')))
+      sections.push(block('out', stdout))
     }
 
-    sections.push(block('err', asErrorMessage(error)))
+    sections.push(block('err', message))
 
-    return { ok: false, output: sections.join('\n\n') }
+    return {
+      ok: false,
+      stdout: stdout || undefined,
+      error: message,
+      output: sections.join('\n\n')
+    }
   }
 }

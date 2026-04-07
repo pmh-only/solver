@@ -1,16 +1,40 @@
 import type { Subcommand } from '../types.js'
-import { container, runRerunnableCommand } from '../components.js'
+import {
+  commandReferenceReply,
+  runRerunnableCommand,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
 import { whoisClient } from './_whois.js'
 
-function formatWhois(result: Awaited<ReturnType<typeof whoisClient.lookup>>): string {
+function formatWhois(result: Awaited<ReturnType<typeof whoisClient.lookup>>) {
   const lines =
     result.fields.length > 0 ? result.fields : result.raw.split('\n').filter(Boolean).slice(0, 12)
-  return [`**WHOIS ${result.query}**`, `-# srv: ${result.server}`, ...lines].join('\n')
+  const rdapUrl = `https://rdap.org/domain/${encodeURIComponent(result.query)}`
+
+  return [
+    summarySection(
+      `Whois ${result.query}`,
+      [
+        `-# server: ${result.server}`,
+        ...(result.referral && result.referral !== result.server
+          ? [`-# referral: ${result.referral}`]
+          : [])
+      ],
+      { label: 'RDAP', url: rdapUrl }
+    ),
+    separator(),
+    text(['**Key records**', ...lines.map((line) => `- ${line}`)].join('\n'))
+  ]
 }
 
 export const subcommand: Subcommand = {
   name: 'whois',
   description: 'whois',
+  usage: 'whois <domain> [--pub]',
+  examples: ['whois example.com', 'whois discord.com'],
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -22,10 +46,15 @@ export const subcommand: Subcommand = {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
 
     if (!restArgs) {
-      await interaction.reply(container(args, flags, 'no dom'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'no dom')
+      )
       return
     }
 
-    await runRerunnableCommand(interaction, args, flags, async () => subcommand.run!(args, flags))
+    await runRerunnableCommand(interaction, subcommand, args, flags, async () =>
+      subcommand.run!(args, flags)
+    )
   }
 }

@@ -1,32 +1,51 @@
 import type { Subcommand } from '../types.js'
-import { container, runRerunnableCommand } from '../components.js'
+import {
+  commandReferenceReply,
+  keyValueBlock,
+  runRerunnableCommand,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../components.js'
 import { certClient } from './_cert.js'
 
-function formatMap(label: string, value: Record<string, string>): string | null {
-  const pairs = Object.entries(value)
-  if (pairs.length === 0) return null
-  return `-# ${label}: ${pairs.map(([key, entry]) => `${key}=${entry}`).join(', ')}`
+function certUrl(host: string, port: number): string {
+  return port === 443 ? `https://${host}` : `https://${host}:${port}`
 }
 
-function formatCert(result: Awaited<ReturnType<typeof certClient.lookup>>): string {
-  const lines = [
-    `**CERT ${result.host}:${result.port}**`,
-    formatMap('sub', result.subject),
-    formatMap('iss', result.issuer),
-    result.subjectAltName ? `-# san: ${result.subjectAltName}` : null,
-    `-# exp: ${result.validFrom} -> ${result.validTo}`,
-    `-# sn: ${result.serialNumber}`,
-    result.fingerprint256 ? `-# sha: ${result.fingerprint256}` : null,
-    `-# tls: ${result.protocol ?? 'none'}${result.cipher ? `, ${result.cipher}` : ''}`,
-    `-# auth: ${result.authorized ? 'ok' : 'no'}`
+function formatCert(result: Awaited<ReturnType<typeof certClient.lookup>>) {
+  return [
+    summarySection(
+      `Certificate ${result.host}:${result.port}`,
+      [
+        `-# auth: ${result.authorized ? 'ok' : 'no'}`,
+        `-# tls: ${result.protocol ?? 'none'}${result.cipher ? `, ${result.cipher}` : ''}`,
+        ...(result.authorizationError ? [`-# verify: ${result.authorizationError}`] : [])
+      ],
+      { label: 'Open host', url: certUrl(result.host, result.port) }
+    ),
+    separator(),
+    keyValueBlock('Subject', Object.entries(result.subject)),
+    keyValueBlock('Issuer', Object.entries(result.issuer)),
+    text(
+      [
+        '**Validity**',
+        `-# from: ${result.validFrom}`,
+        `-# to: ${result.validTo}`,
+        `-# serial: ${result.serialNumber}`,
+        ...(result.subjectAltName ? [`-# san: ${result.subjectAltName}`] : []),
+        ...(result.fingerprint256 ? [`-# sha256: ${result.fingerprint256}`] : [])
+      ].join('\n')
+    )
   ]
-
-  return lines.filter((line): line is string => Boolean(line)).join('\n')
 }
 
 export const subcommand: Subcommand = {
   name: 'cert',
   description: 'tls cert',
+  usage: 'cert <host[:port]> [--pub]',
+  examples: ['cert example.com', 'cert discord.com', 'cert example.com:8443'],
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -38,10 +57,15 @@ export const subcommand: Subcommand = {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
 
     if (!restArgs) {
-      await interaction.reply(container(args, flags, 'no host'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'no host')
+      )
       return
     }
 
-    await runRerunnableCommand(interaction, args, flags, async () => subcommand.run!(args, flags))
+    await runRerunnableCommand(interaction, subcommand, args, flags, async () =>
+      subcommand.run!(args, flags)
+    )
   }
 }
