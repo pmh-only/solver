@@ -2,6 +2,50 @@
 
 Discord.js user-installable interaction bot. Single slash command `/c` with a required string option `_` that routes to subcommands via autocomplete.
 
+## Rules
+
+- **Always run `pnpm lint` after making code changes** and fix any errors before finishing.
+- **Always use Components V2** (`MessageFlags.IsComponentsV2`) for all replies. Never use plain content strings or embeds — use `container()` or build with `TextDisplayBuilder`, `ContainerBuilder`, etc.
+
+## Common mistakes
+
+### discord.js flags API
+
+`deferReply` only accepts `Ephemeral` (not `IsComponentsV2`). `editReply`/`reply` only accept `SuppressEmbeds | IsComponentsV2` (not `Ephemeral`). Ephemeral is locked in at defer time and cannot be changed on edit.
+
+```ts
+// deferred flow
+await interaction.deferReply({ flags: flags.has('pub') ? undefined : MessageFlags.Ephemeral })
+await interaction.editReply({ components: reply.components, flags: MessageFlags.IsComponentsV2 })
+
+// immediate flow — container() handles flags correctly, pass it directly
+await interaction.reply(container(args, flags, 'output'))
+```
+
+Do **not** pass `container()`'s return value to `editReply` — its `flags` tuple includes `Ephemeral` which `editReply` rejects. Extract `.components` and set `flags: MessageFlags.IsComponentsV2` manually.
+
+Do **not** use `ephemeral: true` — it is deprecated. Use `flags: MessageFlags.Ephemeral`.
+
+### `args` includes the subcommand name
+
+`args` passed to `execute` is the full bare string including the subcommand name as the first word (`"ping 8.8.8.8"`, not `"8.8.8.8"`). Strip it before use:
+
+```ts
+const restArgs = args.replace(/^\S+\s*/, '').trim()
+```
+
+### `inArgs` detection in autocomplete
+
+Use `focused.includes(' ')` to detect args mode — **not** `bare.includes(' ')`. Flags get stripped from `bare` by `parseFlags`, so `"ping --flag"` becomes `bare = "ping"` (no space), incorrectly falling through to selection mode.
+
+### `Buffer.concat` type cast (TypeScript 6)
+
+`Buffer.concat(...)` returns `Buffer<ArrayBufferLike>`, not `Buffer<ArrayBuffer>`. Cast it when passing to typed parameters:
+
+```ts
+Buffer.concat([...]) as Buffer
+```
+
 ## Stack
 
 - Node.js ESM, TypeScript, tsx for dev
@@ -57,6 +101,8 @@ export const subcommand: Subcommand = {
   },
 
   // args = bare input (flags stripped), flags = parsed Map
+  // NOTE: args INCLUDES the subcommand name as the first word (e.g. "example foo" not "foo")
+  // To get only the user's additional input, strip it: args.replace(/^\S+\s*/, '').trim()
   async execute(interaction, args, flags) {
     await interaction.reply(container(args, flags, 'output here'))
   },
