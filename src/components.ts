@@ -44,7 +44,8 @@ const COMMAND_COLORS: Record<string, number> = {
   cert: 0x0ea5e9,
   geoip: 0xec4899,
   run: 0xf97316,
-  sh: 0xef4444
+  sh: 0xef4444,
+  mail: 0x2563eb
 }
 
 const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {

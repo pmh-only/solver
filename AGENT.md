@@ -19,6 +19,8 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 
 **Never finish a task without passing both `pnpm test` and `pnpm lint`, then committing and pushing the result.**
 
+**Commit and push are mandatory for every completed task, every code change, and every documentation change. Treat a task as incomplete until both happened successfully.**
+
 ---
 
 ## ABSOLUTE RULES
@@ -39,6 +41,18 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 - Write tests for every subcommand in `src/test/<name>.test.ts`
 - Run `pnpm test` and `pnpm lint` before finishing
 - Commit and push after the work is complete
+- Always create a git commit for completed work
+- Always push the current branch after committing
+
+## GIT ENFORCEMENT
+
+- Every completed change must end with a new git commit
+- Every new git commit must be pushed to the tracked remote branch immediately
+- Do not stop after local validation only
+- Do not leave finished work uncommitted
+- Do not leave finished work unpushed
+- If tests or lint fail, fix them first, then commit, then push
+- If push fails, the task is not done yet
 
 ---
 

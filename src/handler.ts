@@ -17,6 +17,7 @@ import {
 import { buildAliasMap, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
 import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
+import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -124,6 +125,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === MAIL_MESSAGE_SELECT_ID) {
+        await handleMailSelect(interaction)
+        return
+      }
+
       if (interaction.customId === COMMAND_PRESET_SELECT_ID) {
         const preset = interaction.values[0]
         if (!preset) {
