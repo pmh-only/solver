@@ -31,10 +31,11 @@ import { subcommand as geoip } from './commands/geoip.js'
 import { subcommand as run } from './commands/run.js'
 import { subcommand as sh } from './commands/sh.js'
 import { subcommand as mail } from './commands/mail.js'
+import { subcommand as list } from './commands/list.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
-for (const sub of [ping, whois, dig, conv, math, set, get, curl, cert, geoip, run, sh, mail]) {
+for (const sub of [ping, whois, dig, conv, math, set, get, list, curl, cert, geoip, run, sh, mail]) {
   subcommands.set(sub.name, sub)
 }
 

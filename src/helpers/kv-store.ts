@@ -39,6 +39,13 @@ export function hasStoredValue(key: string): boolean {
   return row?.present === 1
 }
 
+export function listStoredKeys(): string[] {
+  const rows = getDatabase().prepare('SELECT key FROM kv_store ORDER BY key').all() as Array<{
+    key: string
+  }>
+  return rows.map((row) => row.key)
+}
+
 export function clearStoredValues(): void {
   getDatabase().exec('DELETE FROM kv_store')
 }
