@@ -332,7 +332,7 @@ function buildContainer(
   }
 
   return {
-    components: [body, ...controlRows(pub, options.subcommand, commandInput)],
+    components: pub ? [body] : [body, ...controlRows(pub, options.subcommand, commandInput)],
     commandInput,
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)
