@@ -12,6 +12,11 @@ import {
 import type { Subcommand } from './types.js'
 import { createHandler } from './handler.js'
 import { USER_IMAGES_COMMAND_NAME } from './user-command.js'
+import {
+  MESSAGE_RENDER_COMMAND_NAME,
+  MESSAGE_THREAD_APPEND_COMMAND_NAME,
+  MESSAGE_THREAD_START_COMMAND_NAME
+} from './message-command.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
 import { subcommand as dig } from './commands/dig.js'
@@ -48,6 +53,24 @@ export const applicationCommands = [
   {
     name: USER_IMAGES_COMMAND_NAME,
     type: ApplicationCommandType.User,
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  },
+  {
+    name: MESSAGE_RENDER_COMMAND_NAME,
+    type: ApplicationCommandType.Message,
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  },
+  {
+    name: MESSAGE_THREAD_START_COMMAND_NAME,
+    type: ApplicationCommandType.Message,
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  },
+  {
+    name: MESSAGE_THREAD_APPEND_COMMAND_NAME,
+    type: ApplicationCommandType.Message,
     integration_types: [0, 1],
     contexts: [0, 1, 2]
   }
