@@ -24,6 +24,7 @@ import type { Flags } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const PUB_BUTTON_ID = 'pub'
+export const PIN_BUTTON_ID = 'pin'
 export const RETRY_BUTTON_ID = 'retry'
 export const EDIT_PARAMETERS_BUTTON_ID = 'edit-parameters'
 export const EDIT_PARAMETERS_MODAL_ID = 'edit-parameters'
@@ -58,6 +59,7 @@ const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {
 
 const COMMAND_INPUT_KEY = 'command-input'
 const MESSAGE_INPUT_KEY = 'message-input'
+const EPHEMERAL_REPLY_TTL_MS = 60_000
 
 export type TopLevelComponent =
   | string
@@ -70,6 +72,16 @@ interface CommandReplyOptions {
   subcommand?: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>
   tone?: ReplyTone
 }
+
+type DeleteReplyCapable = {
+  deleteReply(): Promise<unknown>
+}
+
+type DeleteMessageCapable = {
+  deleteMessage(message: string): Promise<unknown>
+}
+
+const ephemeralDeleteTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function resolve(c: TopLevelComponent) {
   return typeof c === 'string' ? text(c) : c
@@ -161,6 +173,13 @@ function addComponent(container: ContainerBuilder, component: TopLevelComponent)
   }
 }
 
+function pinButton() {
+  return new ButtonBuilder()
+    .setCustomId(PIN_BUTTON_ID)
+    .setLabel('Pin')
+    .setStyle(ButtonStyle.Secondary)
+}
+
 function buildButtonRow(pub: boolean, includeCommandActions: boolean, commandInput?: string) {
   const row = new ActionRowBuilder<ButtonBuilder>()
 
@@ -179,6 +198,7 @@ function buildButtonRow(pub: boolean, includeCommandActions: boolean, commandInp
 
   if (!pub) {
     row.addComponents(
+      pinButton(),
       new ButtonBuilder()
         .setCustomId(PUB_BUTTON_ID)
         .setLabel('Publish')
@@ -456,6 +476,85 @@ export function commandReferenceReply(
   })
 }
 
+export function pinnedMessageComponents(components: readonly { toJSON(): unknown }[]) {
+  return components.map((component) => {
+    const json = component.toJSON() as { components?: unknown[] }
+    if (!Array.isArray(json.components)) return json
+
+    return {
+      ...json,
+      components: json.components.map((entry) => {
+        if (!entry || typeof entry !== 'object') return entry
+
+        const button = entry as {
+          custom_id?: unknown
+          disabled?: unknown
+          label?: unknown
+          style?: unknown
+        }
+
+        if (button.custom_id !== PIN_BUTTON_ID) return entry
+
+        return {
+          ...button,
+          disabled: true,
+          label: 'Pinned',
+          style: ButtonStyle.Secondary
+        }
+      })
+    }
+  })
+}
+
+export function hasEphemeralFlag(flags: number | readonly number[]) {
+  if (Array.isArray(flags)) {
+    return flags.includes(MessageFlags.Ephemeral)
+  }
+
+  return typeof flags === 'number' && Boolean(flags & MessageFlags.Ephemeral)
+}
+
+export function cancelEphemeralDelete(messageId: string) {
+  const timer = ephemeralDeleteTimers.get(messageId)
+  if (!timer) return false
+
+  clearTimeout(timer)
+  ephemeralDeleteTimers.delete(messageId)
+  return true
+}
+
+function scheduleDelete(messageId: string, action: () => Promise<unknown>) {
+  cancelEphemeralDelete(messageId)
+
+  const timer = setTimeout(() => {
+    ephemeralDeleteTimers.delete(messageId)
+    void action().catch(() => {})
+  }, EPHEMERAL_REPLY_TTL_MS)
+
+  ephemeralDeleteTimers.set(messageId, timer)
+  timer.unref?.()
+}
+
+export function scheduleEphemeralReplyDelete(
+  interaction: DeleteReplyCapable,
+  messageId: string,
+  flags: number | readonly number[]
+) {
+  if (!hasEphemeralFlag(flags)) return
+
+  scheduleDelete(messageId, () => interaction.deleteReply())
+}
+
+export function scheduleEphemeralMessageDelete(
+  webhook: DeleteMessageCapable,
+  messageId: string,
+  flags: number | readonly number[]
+) {
+  if (!hasEphemeralFlag(flags)) return
+
+  scheduleDelete(messageId, () => webhook.deleteMessage(messageId))
+}
+
 export async function deferCommandResponse(interaction: CommandInteraction, flags: Flags) {
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     await interaction.deferUpdate()
@@ -479,6 +578,9 @@ export async function sendCommandReply(
       components: payload.components,
       flags: MessageFlags.IsComponentsV2
     })) as { id?: string }
+    if (typeof message.id === 'string') {
+      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags)
+    }
     if (payload.commandInput && typeof message.id === 'string') {
       rememberCommandInputForMessage(message.id, payload.commandInput)
     }
@@ -490,6 +592,7 @@ export async function sendCommandReply(
       components: payload.components,
       flags: MessageFlags.IsComponentsV2
     })
+    scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags)
     if (payload.commandInput) {
       rememberCommandInputForMessage(interaction.message.id, payload.commandInput)
     }
@@ -503,6 +606,7 @@ export async function sendCommandReply(
       flags: MessageFlags.IsComponentsV2
     })) as { id?: string }
     const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
+    scheduleEphemeralReplyDelete(interaction, messageId, payload.flags)
     if (payload.commandInput) {
       rememberCommandInputForMessage(messageId, payload.commandInput)
     }
@@ -510,9 +614,12 @@ export async function sendCommandReply(
   }
 
   await interaction.reply(payload)
-  if (payload.commandInput) {
+  if (payload.commandInput || hasEphemeralFlag(payload.flags)) {
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {
+      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags)
+    }
+    if (payload.commandInput && typeof message.id === 'string') {
       rememberCommandInputForMessage(message.id, payload.commandInput)
     }
   }
@@ -538,6 +645,7 @@ export async function runRerunnableCommand(
   })) as { id?: string }
 
   if (typeof message.id === 'string') {
+    scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
     rememberCommandInputForMessage(message.id, serializeCommandInput(args, flags))
   }
 }

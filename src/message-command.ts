@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  type BaseMessageOptions,
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -18,7 +19,13 @@ import {
 } from 'discord.js'
 import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D } from '@napi-rs/canvas'
 import { fileURLToPath } from 'node:url'
-import { PUB_BUTTON_ID, text } from './components.js'
+import {
+  PIN_BUTTON_ID,
+  PUB_BUTTON_ID,
+  scheduleEphemeralMessageDelete,
+  scheduleEphemeralReplyDelete,
+  text
+} from './components.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const MESSAGE_RENDER_COMMAND_NAME = 'Render Message'
@@ -34,7 +41,7 @@ const PADDING_Y = 2
 const AVATAR_SIZE = 40
 const CONTENT_X = PADDING_X + AVATAR_SIZE + 16
 const BODY_FONT_SIZE = 16
-const BODY_LINE_HEIGHT = 22
+const BODY_LINE_HEIGHT = 20
 const HEADER_FONT_SIZE = 16
 const HEADER_LINE_HEIGHT = 20
 const TIMESTAMP_FONT_SIZE = 12
@@ -102,7 +109,14 @@ GlobalFonts.registerFromPath(NOTO_SANS_CJK_TC, ZH_TW_FAMILY)
 
 function publishButtonRow() {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
+  )
+}
+
+function pinButtonRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary)
   )
 }
 
@@ -147,8 +161,22 @@ function saveCollection(guildId: string, userId: string, collection: StoredColle
 
 function basicReply(textValue: string) {
   return {
-    components: [text(textValue)],
+    components: [text(textValue), pinButtonRow()],
     flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
+  }
+}
+
+async function replyAndScheduleDelete(
+  interaction:
+    | MessageContextMenuCommandInteraction
+    | ModalSubmitInteraction
+    | StringSelectMenuInteraction,
+  payload: BaseMessageOptions & { flags: readonly number[] }
+) {
+  await interaction.reply(payload)
+  const message = (await interaction.fetchReply()) as { id?: string }
+  if (typeof message.id === 'string') {
+    scheduleEphemeralReplyDelete(interaction, message.id, payload.flags)
   }
 }
 
@@ -459,11 +487,12 @@ async function replyWithRenderedMessages(
   if (editable && messages.length > 0) {
     components.splice(2, 0, collectionEditRow(messages))
   }
-  await interaction.reply({
+  const payload = {
     files: [new AttachmentBuilder(png, { name: fileName })],
     components: components as never,
     flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
-  })
+  } as const
+  await replyAndScheduleDelete(interaction, payload)
 }
 
 async function updateStoredReply(
@@ -515,7 +544,7 @@ export async function handleMessageThreadStartCommand(
   interaction: MessageContextMenuCommandInteraction
 ) {
   if (!interaction.guildId) {
-    await interaction.reply(basicReply('collection requires guild msg'))
+    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
     return
   }
   const collection: StoredCollection = {
@@ -535,13 +564,13 @@ export async function handleMessageThreadAppendCommand(
   interaction: MessageContextMenuCommandInteraction
 ) {
   if (!interaction.guildId) {
-    await interaction.reply(basicReply('collection requires guild msg'))
+    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
     return
   }
 
   const collection = loadCollection(interaction.guildId, interaction.user.id)
   if (collection.messages.length === 0) {
-    await interaction.reply(basicReply('no active render collection'))
+    await replyAndScheduleDelete(interaction, basicReply('no active render collection'))
     return
   }
 
@@ -576,7 +605,7 @@ export async function handleMessageThreadAppendCommand(
     components: [text('could not update original reply; sent fallback below')],
     flags: MessageFlags.IsComponentsV2
   })
-  await interaction.followUp({
+  const followUp = (await interaction.followUp({
     ...(await (async () => {
       const png = await renderMessagesPng(nextMessages, interaction.locale)
       const fileName = `message-render-${Date.now()}.png`
@@ -592,25 +621,31 @@ export async function handleMessageThreadAppendCommand(
         flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
       }
     })())
-  })
+  })) as { id?: string }
+  if (typeof followUp.id === 'string') {
+    scheduleEphemeralMessageDelete(interaction.webhook, followUp.id, [
+      MessageFlags.IsComponentsV2,
+      MessageFlags.Ephemeral
+    ])
+  }
 }
 
 export async function handleMessageCollectionEditSelect(interaction: StringSelectMenuInteraction) {
   if (!interaction.guildId) {
-    await interaction.reply(basicReply('collection requires guild msg'))
+    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
     return
   }
 
   const messageId = interaction.values[0]
   if (!messageId) {
-    await interaction.reply(basicReply('no msg'))
+    await replyAndScheduleDelete(interaction, basicReply('no msg'))
     return
   }
 
   const collection = loadCollection(interaction.guildId, interaction.user.id)
   const message = collection.messages.find((entry) => entry.messageId === messageId)
   if (!message) {
-    await interaction.reply(basicReply('no msg'))
+    await replyAndScheduleDelete(interaction, basicReply('no msg'))
     return
   }
 
@@ -619,7 +654,7 @@ export async function handleMessageCollectionEditSelect(interaction: StringSelec
 
 export async function handleMessageCollectionEditModal(interaction: ModalSubmitInteraction) {
   if (!interaction.guildId) {
-    await interaction.reply(basicReply('collection requires guild msg'))
+    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
     return
   }
 
@@ -628,7 +663,7 @@ export async function handleMessageCollectionEditModal(interaction: ModalSubmitI
     ? interaction.customId.slice(prefix.length)
     : null
   if (!messageId) {
-    await interaction.reply(basicReply('err'))
+    await replyAndScheduleDelete(interaction, basicReply('err'))
     return
   }
 
@@ -652,7 +687,8 @@ export async function handleMessageCollectionEditModal(interaction: ModalSubmitI
   )
 
   if (updated) {
-    await interaction.reply(basicReply('updated'))
+    const reply = basicReply('updated')
+    await interaction.reply(reply)
     await interaction.deleteReply()
     return
   }

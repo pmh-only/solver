@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
-import { EDIT_PARAMETERS_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
+import { EDIT_PARAMETERS_BUTTON_ID, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { subcommand as ping } from '../commands/ping.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
 import * as pingRuntime from '../ping-runtime.js'
@@ -20,6 +20,7 @@ const subs = makeSubcommands(ping)
 afterEach(() => {
   clearStoredValues()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 function stripCommandFooter(components: unknown): unknown {
@@ -45,14 +46,22 @@ function stripCommandFooter(components: unknown): unknown {
 
 describe('ping — command', () => {
   it('replies with pong when no host given', async () => {
+    vi.useFakeTimers()
+
     const calls = await dispatch(commandJSON('ping'), subs)
     const body = getCallback(calls) as { type: number; data: { flags: number } }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy() // ephemeral by default
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(calls.some((call) => call.method === 'DELETE')).toBe(true)
   })
 
   it('defers ephemerally then edits when host given as bare arg', async () => {
+    vi.useFakeTimers()
+
     vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
       host: '127.0.0.1',
       count: 2,
@@ -72,6 +81,10 @@ describe('ping — command', () => {
     expect(edit.components).toBeDefined()
     expect(JSON.stringify(edit)).toContain('Retry')
     expect(JSON.stringify(edit)).toContain('Edit parameters')
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(calls.some((call) => call.method === 'DELETE')).toBe(true)
   })
 
   it('defers ephemerally then edits when host given via --ip flag', async () => {
@@ -110,6 +123,8 @@ describe('ping — command', () => {
   })
 
   it('defers publicly when --pub flag set', async () => {
+    vi.useFakeTimers()
+
     vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
       host: '127.0.0.1',
       count: 1,
@@ -129,6 +144,10 @@ describe('ping — command', () => {
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(calls.some((call) => call.method === 'DELETE')).toBe(false)
   })
 
   it('re-runs a deferred command from the Retry button footer args', async () => {
@@ -223,6 +242,29 @@ describe('ping — command', () => {
     expect(JSON.stringify(body.data.components)).not.toContain('Retry')
     expect(JSON.stringify(body.data.components)).not.toContain('Edit parameters')
     expect(JSON.stringify(body.data.components)).not.toContain(PUB_BUTTON_ID)
+  })
+
+  it('pins an ephemeral reply so it is not auto-deleted', async () => {
+    vi.useFakeTimers()
+
+    vi.spyOn(pingRuntime, 'probePingTarget').mockResolvedValue({
+      host: '127.0.0.1',
+      count: 1,
+      types: ['http'],
+      summaries: [{ type: 'http', count: 1, ms: [10] }]
+    })
+
+    const firstCalls = await dispatch(commandJSON('ping 127.0.0.1'), subs)
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+    const pinCalls = await dispatch(buttonJSON(firstEdit.components, PIN_BUTTON_ID), subs)
+    const body = getCallback(pinCalls) as { type: number; data: { components: unknown[] } }
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(JSON.stringify(body.data.components)).toContain('Pinned')
+
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(firstCalls.some((call) => call.method === 'DELETE')).toBe(false)
   })
 
   it('re-runs edited parameters from the modal and keeps --pub public', async () => {

@@ -31,7 +31,7 @@ import { createHandler } from '../handler.js'
 import type { Subcommand } from '../types.js'
 
 export interface RestCall {
-  method: 'POST' | 'PATCH' | 'GET'
+  method: 'POST' | 'PATCH' | 'GET' | 'DELETE'
   route: string
   body: unknown
 }
@@ -63,6 +63,10 @@ function makeClient(): { client: Client; calls: RestCall[] } {
   ;(client.rest as unknown as Record<string, unknown>).get = async (route: unknown) => {
     calls.push({ method: 'GET', route: String(route), body: null })
     return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
+  }
+  ;(client.rest as unknown as Record<string, unknown>).delete = async (route: unknown) => {
+    calls.push({ method: 'DELETE', route: String(route), body: null })
+    return {}
   }
 
   return { client, calls }

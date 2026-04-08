@@ -8,18 +8,24 @@ import {
 import type { CommandInteraction, Subcommand } from './types.js'
 import {
   buildEditParametersModal,
+  cancelEphemeralDelete,
   COMMAND_ACTION_SELECT_ID,
   COMMAND_PRESET_SELECT_ID,
   container,
   commandReferenceReply,
+  pinnedMessageComponents,
   sendCommandReply,
   EDIT_PARAMETERS_BUTTON_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
   extractCommandInputFromMessage,
+  hasEphemeralFlag,
   matchesInteractiveId,
+  PIN_BUTTON_ID,
   PUB_BUTTON_ID,
-  RETRY_BUTTON_ID
+  RETRY_BUTTON_ID,
+  scheduleEphemeralMessageDelete,
+  scheduleEphemeralReplyDelete
 } from './components.js'
 import { buildAliasMap, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
@@ -124,15 +130,22 @@ async function runCommandInput(
     await sub.execute(interaction, bare, flags)
   } catch (error) {
     console.error(error)
+    const reply = container(bare, flags, 'err')
     if (interaction.deferred) {
-      await interaction.editReply({
-        components: container(bare, flags, 'err').components,
+      const message = (await interaction.editReply({
+        components: reply.components,
         flags: MessageFlags.IsComponentsV2
-      })
+      })) as { id?: string }
+      if (typeof message.id === 'string') {
+        scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
+      }
     } else if (interaction.replied) {
-      await interaction.followUp(container(bare, flags, 'err'))
+      const message = (await interaction.followUp(reply)) as { id?: string }
+      if (typeof message.id === 'string') {
+        scheduleEphemeralMessageDelete(interaction.webhook, message.id, reply.flags)
+      }
     } else {
-      await sendCommandReply(interaction, container(bare, flags, 'err'))
+      await sendCommandReply(interaction, reply)
     }
   }
 }
@@ -141,6 +154,15 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     try {
       if (interaction.isButton()) {
+        if (interaction.customId === PIN_BUTTON_ID) {
+          cancelEphemeralDelete(interaction.message.id)
+          await interaction.update({
+            components: pinnedMessageComponents(interaction.message.components) as never,
+            flags: MessageFlags.IsComponentsV2
+          })
+          return
+        }
+
         if (interaction.customId === PUB_BUTTON_ID) {
           const components = publishedComponents(interaction)
           await interaction.reply({
@@ -362,22 +384,38 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       const reply = container('err', new Map(), 'err')
 
       if ('deferred' in interaction && interaction.deferred) {
-        await interaction.editReply({
+        const message = (await interaction.editReply({
           components: reply.components,
           flags: MessageFlags.IsComponentsV2
-        })
+        })) as { id?: string }
+        if (typeof message.id === 'string') {
+          scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
+        }
         return
       }
 
       if ('replied' in interaction && interaction.replied) {
         if ('followUp' in interaction) {
-          await interaction.followUp(reply)
+          const message = (await interaction.followUp(reply)) as { id?: string }
+          if (
+            hasEphemeralFlag(reply.flags) &&
+            typeof message.id === 'string' &&
+            'webhook' in interaction
+          ) {
+            scheduleEphemeralMessageDelete(interaction.webhook, message.id, reply.flags)
+          }
         }
         return
       }
 
       if ('reply' in interaction) {
         await interaction.reply(reply)
+        if ('fetchReply' in interaction && hasEphemeralFlag(reply.flags)) {
+          const message = (await interaction.fetchReply()) as { id?: string }
+          if (typeof message.id === 'string') {
+            scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
+          }
+        }
       }
     }
   }

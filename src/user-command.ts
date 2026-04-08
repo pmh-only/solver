@@ -7,7 +7,13 @@ import {
   type MediaGalleryComponentData,
   type UserContextMenuCommandInteraction
 } from 'discord.js'
-import { PUB_BUTTON_ID, separator, text } from './components.js'
+import {
+  PIN_BUTTON_ID,
+  PUB_BUTTON_ID,
+  scheduleEphemeralReplyDelete,
+  separator,
+  text
+} from './components.js'
 
 export const USER_IMAGES_COMMAND_NAME = 'User Images'
 
@@ -58,6 +64,7 @@ function linksBlock(variants: ImageVariant[]) {
 
 function publishButtonRow() {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
   )
 }
@@ -77,4 +84,11 @@ export async function handleUserImagesCommand(interaction: UserContextMenuComman
     ],
     flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
   })
+  const message = (await interaction.fetchReply()) as { id?: string }
+  if (typeof message.id === 'string') {
+    scheduleEphemeralReplyDelete(interaction, message.id, [
+      MessageFlags.IsComponentsV2,
+      MessageFlags.Ephemeral
+    ])
+  }
 }
