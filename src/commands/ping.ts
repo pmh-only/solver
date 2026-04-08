@@ -150,7 +150,7 @@ export const subcommand: Subcommand = {
     const host = (flags.get('ip') as string | undefined) ?? restArgs
 
     if (!host) {
-      const latency = Math.max(0, Date.now() - interaction.createdTimestamp)
+      const latency = Date.now() - interaction.createdTimestamp
       await sendCommandReply(
         interaction,
         commandContainer(
@@ -158,7 +158,7 @@ export const subcommand: Subcommand = {
           args,
           flags,
           summarySection('Ping', [
-            `pong: ${latency}ms`,
+            `pong: ${latency < 1 ? '< 1' : latency}ms`,
             'Add a host to probe HTTP, HTTPS, and HTTP/3 reachability.'
           ])
         )
