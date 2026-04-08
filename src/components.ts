@@ -24,6 +24,7 @@ import type { Flags } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const PUB_BUTTON_ID = 'pub'
+export const PUB_CONTENT_BUTTON_ID = 'pub-content'
 export const PIN_BUTTON_ID = 'pin'
 export const RETRY_BUTTON_ID = 'retry'
 export const EDIT_PARAMETERS_BUTTON_ID = 'edit-parameters'
@@ -189,6 +190,26 @@ export function publishButtonRow() {
 
 export function pinButtonRow() {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(pinButton())
+}
+
+const CONTENT_PUBLISH_KEY = 'pub-content'
+
+export function contentPublishButtonRow(content: string) {
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  storeCommandInput(commandInputKey(CONTENT_PUBLISH_KEY, token), content)
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    pinButton(),
+    new ButtonBuilder()
+      .setCustomId(`${PUB_CONTENT_BUTTON_ID}:${token}`)
+      .setLabel('Publish')
+      .setStyle(ButtonStyle.Success)
+  )
+}
+
+export function loadContentPublishValue(customId: string): string | null {
+  const prefix = `${PUB_CONTENT_BUTTON_ID}:`
+  if (!customId.startsWith(prefix)) return null
+  return loadCommandInput(commandInputKey(CONTENT_PUBLISH_KEY, customId.slice(prefix.length)))
 }
 
 function buildButtonRow(pub: boolean, includeCommandActions: boolean, commandInput?: string) {

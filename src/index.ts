@@ -17,6 +17,7 @@ import {
   MESSAGE_THREAD_APPEND_COMMAND_NAME,
   MESSAGE_THREAD_START_COMMAND_NAME
 } from './commands/message-render.js'
+import { MESSAGE_STORE_COMMAND_NAME } from './commands/message-store.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
 import { subcommand as dig } from './commands/dig.js'
@@ -70,6 +71,12 @@ export const applicationCommands = [
   },
   {
     name: MESSAGE_THREAD_APPEND_COMMAND_NAME,
+    type: ApplicationCommandType.Message,
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  },
+  {
+    name: MESSAGE_STORE_COMMAND_NAME,
     type: ApplicationCommandType.Message,
     integration_types: [0, 1],
     contexts: [0, 1, 2]

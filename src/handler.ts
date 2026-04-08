@@ -13,6 +13,8 @@ import {
   COMMAND_PRESET_SELECT_ID,
   container,
   commandReferenceReply,
+  contentPublishButtonRow,
+  loadContentPublishValue,
   pinnedMessageComponents,
   sendCommandReply,
   EDIT_PARAMETERS_BUTTON_ID,
@@ -23,6 +25,7 @@ import {
   matchesInteractiveId,
   PIN_BUTTON_ID,
   PUB_BUTTON_ID,
+  PUB_CONTENT_BUTTON_ID,
   RETRY_BUTTON_ID,
   scheduleEphemeralMessageDelete,
   scheduleEphemeralReplyDelete
@@ -44,6 +47,12 @@ import {
   MESSAGE_THREAD_APPEND_COMMAND_NAME,
   MESSAGE_THREAD_START_COMMAND_NAME
 } from './commands/message-render.js'
+import {
+  handleMessageStoreCommand,
+  handleMessageStoreModal,
+  MESSAGE_STORE_COMMAND_NAME,
+  MESSAGE_STORE_MODAL_ID
+} from './commands/message-store.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -117,8 +126,13 @@ async function runCommandInput(
     }
 
     if (!bare.includes(' ')) {
-      const value = hasStoredValue(bare) ? `${bare}=${getStoredValue(bare)}` : `no ${bare}`
-      await sendCommandReply(interaction, container(bare, flags, value))
+      const storedValue = hasStoredValue(bare) ? getStoredValue(bare) : undefined
+      const display = storedValue !== undefined ? `${bare}=${storedValue}` : `no ${bare}`
+      const reply = container(bare, flags, display)
+      if (storedValue !== undefined) {
+        reply.components = [reply.components[0], contentPublishButtonRow(storedValue)]
+      }
+      await sendCommandReply(interaction, reply)
       return
     }
 
@@ -169,6 +183,16 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
             components: components as never,
             flags: [MessageFlags.IsComponentsV2]
           })
+          return
+        }
+
+        if (interaction.customId.startsWith(`${PUB_CONTENT_BUTTON_ID}:`)) {
+          const content = loadContentPublishValue(interaction.customId)
+          if (content) {
+            await interaction.reply({ content })
+          } else {
+            await interaction.reply(container('pub', new Map(), 'no content'))
+          }
           return
         }
 
@@ -253,6 +277,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if (interaction.isModalSubmit() && interaction.customId === EDIT_PARAMETERS_MODAL_ID) {
         const commandInput = interaction.fields.getTextInputValue(EDIT_PARAMETERS_INPUT_ID)
         await runCommandInput(interaction, subcommands, commandInput)
+        return
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === MESSAGE_STORE_MODAL_ID) {
+        await handleMessageStoreModal(interaction)
         return
       }
 
@@ -361,6 +390,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
         if (interaction.commandName === MESSAGE_THREAD_APPEND_COMMAND_NAME) {
           await handleMessageThreadAppendCommand(interaction)
+          return
+        }
+
+        if (interaction.commandName === MESSAGE_STORE_COMMAND_NAME) {
+          await handleMessageStoreCommand(interaction)
           return
         }
 
