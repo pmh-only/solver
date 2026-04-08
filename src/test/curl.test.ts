@@ -13,6 +13,24 @@ import {
 
 const subs = makeSubcommands(curl)
 
+function mockCurlResult(): curlRuntime.CurlExecutionResult {
+  return {
+    ok: true,
+    request: {
+      originalTarget: 'google.com',
+      url: 'https://google.com/',
+      method: 'GET',
+      headers: {}
+    },
+    status: 200,
+    statusText: 'OK',
+    finalUrl: 'https://google.com/',
+    contentType: 'text/html',
+    bodyPreview: 'ok',
+    output: '**GET google.com**\n-# 200 OK'
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -27,7 +45,7 @@ describe('curl — command', () => {
   })
 
   it('defers ephemerally then edits for a simple request', async () => {
-    vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue('**GET google.com**\n-# 200 OK')
+    vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue(mockCurlResult())
 
     const calls = await dispatch(commandJSON('curl google.com'), subs)
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
@@ -39,7 +57,7 @@ describe('curl — command', () => {
   })
 
   it('parses short curl flags in spirit of curl syntax', async () => {
-    const executeSpy = vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue('ok')
+    const executeSpy = vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue(mockCurlResult())
 
     await dispatch(
       commandJSON(`curl google.com -X POST -H "Content-Type: application/json" -d '{"hi"}'`),
@@ -56,7 +74,7 @@ describe('curl — command', () => {
   })
 
   it('defers publicly when --pub flag set', async () => {
-    vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue('**GET google.com**\n-# 200 OK')
+    vi.spyOn(curlRuntime, 'executeCurl').mockResolvedValue(mockCurlResult())
 
     const calls = await dispatch(commandJSON('curl google.com --pub'), subs)
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
