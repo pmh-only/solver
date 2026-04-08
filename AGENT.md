@@ -10,14 +10,14 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 
 ```
 1. Write or update code
-2. Write or update tests in src/test/<name>.test.ts
+2. Always create or update automated tests in src/test/<name>.test.ts for the change you made
 3. Run: pnpm test      ← must pass, fix failures before continuing
 4. Run: pnpm lint      ← must pass, fix all errors before continuing
 5. Commit your changes
 6. Push your branch
 ```
 
-**Never finish a task without passing both `pnpm test` and `pnpm lint`, then committing and pushing the result.**
+**Never finish a task without creating or updating tests for the change, then passing both `pnpm test` and `pnpm lint`, then committing and pushing the result.**
 
 **Commit and push are mandatory for every completed task, every code change, and every documentation change. Treat a task as incomplete until both happened successfully.**
 
@@ -38,6 +38,7 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 - Use `container(args, flags, 'your output')` for all replies
 - Use `MessageFlags.IsComponentsV2` on every `editReply` / non-deferred `reply`
 - Cast `Buffer.concat([...])` to `Buffer` — TypeScript 6 requires it
+- Always create or update automated tests for every code change in `src/test/<name>.test.ts`
 - Write tests for every subcommand in `src/test/<name>.test.ts`
 - Run `pnpm test` and `pnpm lint` before finishing
 - Commit and push after the work is complete
@@ -57,6 +58,8 @@ Every time you change code, do these steps **in order**. Do not skip any step.
 ---
 
 ## WRITING TESTS
+
+Every code change must include a new or updated automated test. If you cannot add a meaningful automated test, stop and explain the blocker instead of skipping test coverage.
 
 Tests use `src/test/e2e.ts`. The pattern is: raw Discord JSON in → captured REST JSON out.
 
