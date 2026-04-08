@@ -2,7 +2,6 @@ import type { Subcommand } from '../types.js'
 import {
   commandContainer,
   commandReferenceReply,
-  contentPublishButtonRow,
   sendCommandReply,
   separator,
   summarySection,
@@ -47,20 +46,16 @@ export const subcommand: Subcommand = {
     }
 
     const value = getStoredValue(key) as string
-    const reply = commandContainer(
-      subcommand,
-      args,
-      flags,
-      summarySection('Stored value', [`Key \`${key}\` resolved successfully`]),
-      separator(),
-      text(`**Value**\n\`${key}=${value}\``)
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        subcommand,
+        args,
+        flags,
+        summarySection('Stored value', [`Key \`${key}\` resolved successfully`]),
+        separator(),
+        text(`**Value**\n\`${key}=${value}\``)
+      )
     )
-    if (!flags.has('pub')) {
-      reply.components = [
-        reply.components[0],
-        contentPublishButtonRow(value)
-      ]
-    }
-    await sendCommandReply(interaction, reply)
   }
 }

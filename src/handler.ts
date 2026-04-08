@@ -13,7 +13,6 @@ import {
   COMMAND_PRESET_SELECT_ID,
   container,
   commandReferenceReply,
-  contentPublishButtonRow,
   loadContentPublishValue,
   pinnedMessageComponents,
   sendCommandReply,
@@ -53,6 +52,24 @@ import {
   MESSAGE_STORE_COMMAND_NAME,
   MESSAGE_STORE_MODAL_ID
 } from './commands/message-store.js'
+
+function extractPublishContent(interaction: ButtonInteraction): string {
+  const values: string[] = []
+  for (const row of interaction.message.components) {
+    const json = row.toJSON() as { type?: number; components?: Array<{ type?: number; content?: string }> }
+    if (json.type === ComponentType.ActionRow) continue
+    if (!Array.isArray(json.components)) continue
+    for (const child of json.components) {
+      if (typeof child.content === 'string') {
+        values.push(child.content)
+      }
+    }
+  }
+  return values
+    .filter((line) => !line.startsWith('-#'))
+    .join('\n')
+    .trim()
+}
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -126,13 +143,8 @@ async function runCommandInput(
     }
 
     if (!bare.includes(' ')) {
-      const storedValue = hasStoredValue(bare) ? getStoredValue(bare) : undefined
-      const display = storedValue !== undefined ? `${bare}=${storedValue}` : `no ${bare}`
-      const reply = container(bare, flags, display)
-      if (storedValue !== undefined && !flags.has('pub')) {
-        reply.components = [reply.components[0], contentPublishButtonRow(storedValue)]
-      }
-      await sendCommandReply(interaction, reply)
+      const value = hasStoredValue(bare) ? `${bare}=${getStoredValue(bare)}` : `no ${bare}`
+      await sendCommandReply(interaction, container(bare, flags, value))
       return
     }
 
@@ -178,11 +190,16 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         }
 
         if (interaction.customId === PUB_BUTTON_ID) {
-          const components = publishedComponents(interaction)
-          await interaction.reply({
-            components: components as never,
-            flags: [MessageFlags.IsComponentsV2]
-          })
+          if (interaction.message.attachments.size > 0) {
+            const components = publishedComponents(interaction)
+            await interaction.reply({
+              components: components as never,
+              flags: [MessageFlags.IsComponentsV2]
+            })
+          } else {
+            const content = extractPublishContent(interaction)
+            await interaction.reply({ content: content || '(empty)' })
+          }
           return
         }
 
