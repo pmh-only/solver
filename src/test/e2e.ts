@@ -18,7 +18,9 @@ import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   Client,
-  Collection
+  Collection,
+  MessageContextMenuCommandInteraction,
+  UserContextMenuCommandInteraction
 } from 'discord.js'
 import type { Interaction } from 'discord.js'
 import { ButtonInteraction, ModalSubmitInteraction } from 'discord.js'
@@ -116,6 +118,20 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
     ) => Interaction
     return new Ctor(client, raw)
   }
+  if (type === 2 && (raw.data as { type?: number } | undefined)?.type === 2) {
+    const Ctor = UserContextMenuCommandInteraction as unknown as new (
+      client: Client,
+      data: unknown
+    ) => Interaction
+    return new Ctor(client, raw)
+  }
+  if (type === 2 && (raw.data as { type?: number } | undefined)?.type === 3) {
+    const Ctor = MessageContextMenuCommandInteraction as unknown as new (
+      client: Client,
+      data: unknown
+    ) => Interaction
+    return new Ctor(client, raw)
+  }
   const Ctor = ChatInputCommandInteraction as unknown as new (
     client: Client,
     data: unknown
@@ -190,6 +206,169 @@ export function autocompleteJSON(
     },
     ...overrides
   })
+}
+
+export function userContextJSON(
+  name: string,
+  overrides: Partial<RawInteraction> = {}
+): RawInteraction {
+  return {
+    id: '1000000000000000003',
+    application_id: '999999999999999999',
+    type: 2,
+    data: {
+      id: '888888888888888889',
+      name,
+      type: 2,
+      target_id: '555555555555555555',
+      resolved: {
+        users: {
+          '555555555555555555': {
+            id: '555555555555555555',
+            username: 'targetuser',
+            discriminator: '0',
+            avatar: null,
+            global_name: 'Target User'
+          }
+        },
+        members: {
+          '555555555555555555': {
+            roles: [],
+            joined_at: '2026-04-07T00:00:00.000Z',
+            deaf: false,
+            mute: false,
+            flags: 0,
+            pending: false,
+            permissions: '0'
+          }
+        }
+      }
+    },
+    channel_id: '777777777777777777',
+    guild_id: '333333333333333333',
+    member: {
+      roles: [],
+      joined_at: '2026-04-07T00:00:00.000Z',
+      deaf: false,
+      mute: false,
+      flags: 0,
+      pending: false,
+      permissions: '0',
+      user: {
+        id: '666666666666666666',
+        username: 'testuser',
+        discriminator: '0',
+        avatar: null,
+        global_name: 'Test User'
+      }
+    },
+    user: {
+      id: '666666666666666666',
+      username: 'testuser',
+      discriminator: '0',
+      avatar: null,
+      global_name: 'Test User'
+    },
+    token: 'test_user_context_token',
+    version: 1,
+    locale: 'en-US',
+    entitlements: [],
+    authorizing_integration_owners: {},
+    ...overrides
+  }
+}
+
+export function messageContextJSON(
+  name: string,
+  overrides: Partial<RawInteraction> = {}
+): RawInteraction {
+  return {
+    id: '1000000000000000004',
+    application_id: '999999999999999999',
+    type: 2,
+    data: {
+      id: '888888888888888890',
+      name,
+      type: 3,
+      target_id: '444444444444444444',
+      resolved: {
+        messages: {
+          '444444444444444444': {
+            id: '444444444444444444',
+            type: 0,
+            content: 'hello from target message',
+            channel_id: '777777777777777777',
+            author: {
+              id: '555555555555555555',
+              username: 'targetuser',
+              discriminator: '0',
+              avatar: null
+            },
+            attachments: [],
+            embeds: [],
+            mentions: [],
+            mention_roles: [],
+            pinned: false,
+            tts: false,
+            timestamp: '2026-04-07T00:00:00.000Z',
+            edited_timestamp: null,
+            flags: 0
+          }
+        },
+        users: {
+          '555555555555555555': {
+            id: '555555555555555555',
+            username: 'targetuser',
+            discriminator: '0',
+            avatar: null,
+            global_name: 'Target User'
+          }
+        },
+        members: {
+          '555555555555555555': {
+            roles: [],
+            joined_at: '2026-04-07T00:00:00.000Z',
+            deaf: false,
+            mute: false,
+            flags: 0,
+            pending: false,
+            permissions: '0'
+          }
+        }
+      }
+    },
+    channel_id: '777777777777777777',
+    guild_id: '333333333333333333',
+    member: {
+      roles: [],
+      joined_at: '2026-04-07T00:00:00.000Z',
+      deaf: false,
+      mute: false,
+      flags: 0,
+      pending: false,
+      permissions: '0',
+      user: {
+        id: '666666666666666666',
+        username: 'testuser',
+        discriminator: '0',
+        avatar: null,
+        global_name: 'Test User'
+      }
+    },
+    user: {
+      id: '666666666666666666',
+      username: 'testuser',
+      discriminator: '0',
+      avatar: null,
+      global_name: 'Test User'
+    },
+    token: 'test_message_context_token',
+    version: 1,
+    locale: 'en-US',
+    entitlements: [],
+    authorizing_integration_owners: {},
+    ...overrides
+  }
 }
 
 export function buttonJSON(

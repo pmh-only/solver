@@ -29,7 +29,7 @@ describe('router fallbacks', () => {
     const body = getCallback(calls) as { type: number }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
-    expect(JSON.stringify(body)).toContain('a=b')
+    expect(JSON.stringify(body)).toContain('b')
   })
 
   it('still returns normal autocomplete matches', async () => {

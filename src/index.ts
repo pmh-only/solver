@@ -1,23 +1,8 @@
 import 'dotenv/config'
-import {
-  ApplicationCommandType,
-  Client,
-  Collection,
-  Events,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder
-} from 'discord.js'
+import { Client, Collection, Events, GatewayIntentBits, REST, Routes } from 'discord.js'
 import type { Subcommand } from './types.js'
+import { applicationCommands } from './application-commands.js'
 import { createHandler } from './handler.js'
-import { USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
-import {
-  MESSAGE_RENDER_COMMAND_NAME,
-  MESSAGE_THREAD_APPEND_COMMAND_NAME,
-  MESSAGE_THREAD_START_COMMAND_NAME
-} from './commands/message-render.js'
-import { MESSAGE_STORE_COMMAND_NAME } from './commands/message-store.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
 import { subcommand as dig } from './commands/dig.js'
@@ -55,51 +40,6 @@ for (const sub of [
 ]) {
   subcommands.set(sub.name, sub)
 }
-
-export const solverCommand = new SlashCommandBuilder()
-  .setName('c')
-  .setDescription(':)')
-  .addStringOption((option) =>
-    option.setName('_').setDescription('sub').setRequired(true).setAutocomplete(true)
-  )
-
-export const applicationCommands = [
-  {
-    ...solverCommand.toJSON(),
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
-  {
-    name: USER_IMAGES_COMMAND_NAME,
-    type: ApplicationCommandType.User,
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
-  {
-    name: MESSAGE_RENDER_COMMAND_NAME,
-    type: ApplicationCommandType.Message,
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
-  {
-    name: MESSAGE_THREAD_START_COMMAND_NAME,
-    type: ApplicationCommandType.Message,
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
-  {
-    name: MESSAGE_THREAD_APPEND_COMMAND_NAME,
-    type: ApplicationCommandType.Message,
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
-  {
-    name: MESSAGE_STORE_COMMAND_NAME,
-    type: ApplicationCommandType.Message,
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  }
-]
 
 async function ensureDeployed(clientId: string, token: string) {
   const rest = new REST().setToken(token)

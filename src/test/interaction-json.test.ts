@@ -1,0 +1,78 @@
+import { describe, expect, it } from 'vitest'
+import { ApplicationCommandType, InteractionResponseType, MessageFlags } from 'discord.js'
+import {
+  MESSAGE_INTERACTION_JSON_COMMAND_NAME,
+  USER_INTERACTION_JSON_COMMAND_NAME
+} from '../commands/interaction-json.js'
+import { applicationCommands } from '../application-commands.js'
+import {
+  dispatch,
+  getCallback,
+  makeSubcommands,
+  messageContextJSON,
+  userContextJSON
+} from './e2e.js'
+
+describe('interaction json commands', () => {
+  it('registers user and message context commands', () => {
+    expect(
+      applicationCommands.some(
+        (command) =>
+          command.name === USER_INTERACTION_JSON_COMMAND_NAME &&
+          command.type === ApplicationCommandType.User
+      )
+    ).toBe(true)
+
+    expect(
+      applicationCommands.some(
+        (command) =>
+          command.name === MESSAGE_INTERACTION_JSON_COMMAND_NAME &&
+          command.type === ApplicationCommandType.Message
+      )
+    ).toBe(true)
+  })
+
+  it('renders full user interaction json', async () => {
+    const calls = await dispatch(
+      userContextJSON(USER_INTERACTION_JSON_COMMAND_NAME),
+      makeSubcommands()
+    )
+    const body = getCallback(calls) as {
+      type: number
+      data: { flags: number; components: unknown[] }
+    }
+    const text = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(text).toContain('Interaction JSON for Target User')
+    expect(text).toContain('targetId')
+    expect(text).toContain('555555555555555555')
+    expect(text).toContain('commandName')
+    expect(text).toContain('User Interaction JSON')
+    expect(text).toContain('globalName')
+    expect(text).toContain('Target User')
+  })
+
+  it('renders full message interaction json', async () => {
+    const calls = await dispatch(
+      messageContextJSON(MESSAGE_INTERACTION_JSON_COMMAND_NAME),
+      makeSubcommands()
+    )
+    const body = getCallback(calls) as {
+      type: number
+      data: { flags: number; components: unknown[] }
+    }
+    const text = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(text).toContain('Interaction JSON for message 444444444444444444')
+    expect(text).toContain('targetId')
+    expect(text).toContain('444444444444444444')
+    expect(text).toContain('commandName')
+    expect(text).toContain('Message Interaction JSON')
+    expect(text).toContain('content')
+    expect(text).toContain('hello from target message')
+  })
+})

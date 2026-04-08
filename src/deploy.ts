@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { REST, Routes } from 'discord.js'
-import { applicationCommands } from './index.js'
+import { applicationCommands } from './application-commands.js'
 
 const token = process.env.DISCORD_TOKEN
 const clientId = process.env.DISCORD_CLIENT_ID

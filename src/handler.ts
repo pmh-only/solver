@@ -43,6 +43,12 @@ import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
 import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
 import { handleUserImagesCommand, USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
+  handleMessageInteractionJsonCommand,
+  handleUserInteractionJsonCommand,
+  MESSAGE_INTERACTION_JSON_COMMAND_NAME,
+  USER_INTERACTION_JSON_COMMAND_NAME
+} from './commands/interaction-json.js'
+import {
   handleMessageCollectionEditModal,
   handleMessageCollectionEditSelect,
   handleMessageRenderCommand,
@@ -430,8 +436,16 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (interaction.isUserContextMenuCommand()) {
-        if (interaction.commandName !== USER_IMAGES_COMMAND_NAME) return
-        await handleUserImagesCommand(interaction)
+        if (interaction.commandName === USER_IMAGES_COMMAND_NAME) {
+          await handleUserImagesCommand(interaction)
+          return
+        }
+
+        if (interaction.commandName === USER_INTERACTION_JSON_COMMAND_NAME) {
+          await handleUserInteractionJsonCommand(interaction)
+          return
+        }
+
         return
       }
 
@@ -453,6 +467,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
         if (interaction.commandName === MESSAGE_STORE_COMMAND_NAME) {
           await handleMessageStoreCommand(interaction)
+          return
+        }
+
+        if (interaction.commandName === MESSAGE_INTERACTION_JSON_COMMAND_NAME) {
+          await handleMessageInteractionJsonCommand(interaction)
           return
         }
 
