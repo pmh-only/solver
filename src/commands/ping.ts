@@ -150,7 +150,7 @@ export const subcommand: Subcommand = {
     const host = (flags.get('ip') as string | undefined) ?? restArgs
 
     if (!host) {
-      const latency = Date.now() - interaction.createdTimestamp
+      const latency = Math.max(0, Date.now() - interaction.createdTimestamp)
       await sendCommandReply(
         interaction,
         commandContainer(
