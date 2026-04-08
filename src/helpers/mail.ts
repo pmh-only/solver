@@ -42,6 +42,14 @@ const turndown = new TurndownService({
 })
 
 turndown.remove(['style', 'script', 'head', 'title', 'meta', 'link'])
+turndown.addRule('removeImages', {
+  filter: 'img',
+  replacement: () => ''
+})
+turndown.addRule('removeEmptyLinks', {
+  filter: (node) => node.nodeName === 'A' && !node.textContent?.trim(),
+  replacement: () => ''
+})
 
 const mailSessions = new Map<string, { expiresAt: number; session: MailSession }>()
 
