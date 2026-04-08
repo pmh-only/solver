@@ -8,6 +8,8 @@ import {
 import type { CommandInteraction, Subcommand } from './types.js'
 import {
   buildEditParametersModal,
+  buildConstrainedCommandInput,
+  buildConstrainedCommandModal,
   cancelEphemeralDelete,
   COMMAND_ACTION_SELECT_ID,
   COMMAND_PRESET_SELECT_ID,
@@ -21,8 +23,12 @@ import {
   EDIT_PARAMETERS_BUTTON_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
+  COMMAND_RUN_BUTTON_ID,
+  COMMAND_RUN_INPUT_ID,
+  COMMAND_RUN_MODAL_ID,
   extractCommandInputFromMessage,
   hasEphemeralFlag,
+  loadConstrainedCommandTemplate,
   matchesInteractiveId,
   PIN_BUTTON_ID,
   PUB_BUTTON_ID,
@@ -228,6 +234,17 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           return
         }
 
+        if (matchesInteractiveId(interaction.customId, COMMAND_RUN_BUTTON_ID)) {
+          const template = loadConstrainedCommandTemplate(interaction.customId)
+          if (!template) {
+            await interaction.reply(container('pubtab', new Map(), 'no cmd'))
+            return
+          }
+
+          await interaction.showModal(buildConstrainedCommandModal(interaction.customId, template))
+          return
+        }
+
         if (matchesInteractiveId(interaction.customId, EDIT_PARAMETERS_BUTTON_ID)) {
           const commandInput = extractCommandInputFromMessage(interaction)
           if (!commandInput) {
@@ -297,6 +314,26 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
       if (interaction.isModalSubmit() && interaction.customId === EDIT_PARAMETERS_MODAL_ID) {
         const commandInput = interaction.fields.getTextInputValue(EDIT_PARAMETERS_INPUT_ID)
+        await runCommandInput(interaction, subcommands, commandInput)
+        return
+      }
+
+      if (
+        interaction.isModalSubmit() &&
+        interaction.customId.startsWith(`${COMMAND_RUN_MODAL_ID}:`)
+      ) {
+        const template = loadConstrainedCommandTemplate(interaction.customId)
+        if (!template) {
+          await interaction.reply(container('pubtab', new Map(), 'no cmd'))
+          return
+        }
+
+        const commandInput = buildConstrainedCommandInput(
+          template,
+          interaction.fields.getTextInputValue(COMMAND_RUN_INPUT_ID)
+        )
+
+        await interaction.deferReply()
         await runCommandInput(interaction, subcommands, commandInput)
         return
       }

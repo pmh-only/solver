@@ -32,10 +32,27 @@ import { subcommand as run } from './commands/run.js'
 import { subcommand as sh } from './commands/sh.js'
 import { subcommand as mail } from './commands/mail.js'
 import { subcommand as list } from './commands/list.js'
+import { subcommand as pubtab } from './commands/pubtab.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
-for (const sub of [ping, whois, dig, conv, math, set, get, list, curl, cert, geoip, run, sh, mail]) {
+for (const sub of [
+  ping,
+  whois,
+  dig,
+  conv,
+  math,
+  set,
+  get,
+  list,
+  curl,
+  cert,
+  geoip,
+  run,
+  sh,
+  mail,
+  pubtab
+]) {
   subcommands.set(sub.name, sub)
 }
 

@@ -32,6 +32,9 @@ export const EDIT_PARAMETERS_MODAL_ID = 'edit-parameters'
 export const EDIT_PARAMETERS_INPUT_ID = 'command'
 export const COMMAND_ACTION_SELECT_ID = 'command-actions'
 export const COMMAND_PRESET_SELECT_ID = 'command-presets'
+export const COMMAND_RUN_BUTTON_ID = 'run-command'
+export const COMMAND_RUN_MODAL_ID = 'run-command-modal'
+export const COMMAND_RUN_INPUT_ID = 'run-command-args'
 
 type ReferenceView = 'usage' | 'examples' | 'flags'
 type ReplyTone = 'default' | 'success' | 'warning' | 'danger'
@@ -60,7 +63,13 @@ const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {
 
 const COMMAND_INPUT_KEY = 'command-input'
 const MESSAGE_INPUT_KEY = 'message-input'
+const CONSTRAINED_COMMAND_KEY = 'constrained-command'
 const EPHEMERAL_REPLY_TTL_MS = 60_000
+
+interface ConstrainedCommandTemplate {
+  command: string
+  args: string
+}
 
 export type TopLevelComponent =
   | string
@@ -133,12 +142,38 @@ function buildCommandComponentId(baseId: string, commandInput?: string): string 
   return `${baseId}:${token}`
 }
 
+export function commandRunButton(label: string, commandInput: string, style = ButtonStyle.Primary) {
+  return new ButtonBuilder()
+    .setCustomId(buildCommandComponentId(COMMAND_RUN_BUTTON_ID, commandInput))
+    .setLabel(label)
+    .setStyle(style)
+}
+
+export function constrainedCommandButton(
+  label: string,
+  template: ConstrainedCommandTemplate,
+  style = ButtonStyle.Primary
+) {
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  storeCommandInput(commandInputKey(CONSTRAINED_COMMAND_KEY, token), JSON.stringify(template))
+
+  return new ButtonBuilder()
+    .setCustomId(`${COMMAND_RUN_BUTTON_ID}:${token}`)
+    .setLabel(label)
+    .setStyle(style)
+}
+
 export function matchesInteractiveId(customId: string, baseId: string): boolean {
   return customId === baseId || customId.startsWith(`${baseId}:`)
 }
 
 function extractStoredCommandInput(customId: string): string | null {
-  for (const baseId of [RETRY_BUTTON_ID, EDIT_PARAMETERS_BUTTON_ID, COMMAND_ACTION_SELECT_ID]) {
+  for (const baseId of [
+    RETRY_BUTTON_ID,
+    EDIT_PARAMETERS_BUTTON_ID,
+    COMMAND_ACTION_SELECT_ID,
+    COMMAND_RUN_BUTTON_ID
+  ]) {
     const prefix = `${baseId}:`
     if (!customId.startsWith(prefix)) continue
 
@@ -594,6 +629,10 @@ export function scheduleEphemeralMessageDelete(
 }
 
 export async function deferCommandResponse(interaction: CommandInteraction, flags: Flags) {
+  if (interaction.deferred || interaction.replied) {
+    return
+  }
+
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     await interaction.deferUpdate()
     return
@@ -750,6 +789,64 @@ export function buildEditParametersModal(value: string) {
             .setPlaceholder('ping 1.1.1.1 --count 5')
         )
     )
+}
+
+export function loadConstrainedCommandTemplate(
+  customId: string
+): ConstrainedCommandTemplate | null {
+  const prefix = `${COMMAND_RUN_BUTTON_ID}:`
+  const modalPrefix = `${COMMAND_RUN_MODAL_ID}:`
+  const token = customId.startsWith(prefix)
+    ? customId.slice(prefix.length)
+    : customId.startsWith(modalPrefix)
+      ? customId.slice(modalPrefix.length)
+      : null
+
+  if (!token) return null
+
+  const stored = loadCommandInput(commandInputKey(CONSTRAINED_COMMAND_KEY, token))
+  if (!stored) return null
+
+  try {
+    const parsed = JSON.parse(stored) as Partial<ConstrainedCommandTemplate>
+    if (typeof parsed.command !== 'string' || typeof parsed.args !== 'string') return null
+    return parsed as ConstrainedCommandTemplate
+  } catch {
+    return null
+  }
+}
+
+export function buildConstrainedCommandModal(
+  customId: string,
+  template: ConstrainedCommandTemplate
+) {
+  return new ModalBuilder()
+    .setCustomId(customId.replace(`${COMMAND_RUN_BUTTON_ID}:`, `${COMMAND_RUN_MODAL_ID}:`))
+    .setTitle(`Run ${template.command}`)
+    .addComponents(
+      new LabelBuilder()
+        .setLabel('Arguments')
+        .setDescription(
+          `Only ${template.command} arguments can be edited. This always runs publicly.`
+        )
+        .setTextInputComponent(
+          new TextInputBuilder()
+            .setCustomId(COMMAND_RUN_INPUT_ID)
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(4000)
+            .setRequired(true)
+            .setValue(template.args.slice(0, 4000))
+            .setPlaceholder(template.args.slice(0, 100) || 'arguments')
+        )
+    )
+}
+
+export function buildConstrainedCommandInput(
+  template: ConstrainedCommandTemplate,
+  input: string
+): string {
+  const args = input.trim()
+  return [template.command, args, '--pub'].filter(Boolean).join(' ')
 }
 
 function collectContentValues(node: unknown, values: string[]) {

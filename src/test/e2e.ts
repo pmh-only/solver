@@ -23,6 +23,8 @@ import {
 import type { Interaction } from 'discord.js'
 import { ButtonInteraction, ModalSubmitInteraction } from 'discord.js'
 import {
+  COMMAND_RUN_INPUT_ID,
+  COMMAND_RUN_MODAL_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
   RETRY_BUTTON_ID
@@ -221,20 +223,27 @@ export function buttonJSON(
   }
 }
 
-export function modalJSON(value: string, overrides: Partial<RawInteraction> = {}): RawInteraction {
+export function modalJSON(
+  value: string,
+  overrides: Partial<RawInteraction> = {},
+  options: { customId?: string; inputId?: string } = {}
+): RawInteraction {
+  const customId = options.customId ?? EDIT_PARAMETERS_MODAL_ID
+  const inputId = options.inputId ?? EDIT_PARAMETERS_INPUT_ID
+
   return {
     id: '1000000000000000002',
     application_id: '999999999999999999',
     type: 5,
     data: {
-      custom_id: EDIT_PARAMETERS_MODAL_ID,
+      custom_id: customId,
       components: [
         {
           type: 1,
           components: [
             {
               type: 4,
-              custom_id: EDIT_PARAMETERS_INPUT_ID,
+              custom_id: inputId,
               value
             }
           ]
