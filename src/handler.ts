@@ -19,6 +19,7 @@ import { buildAliasMap, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
 import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
 import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
+import { handleUserImagesCommand, USER_IMAGES_COMMAND_NAME } from './user-command.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -256,6 +257,12 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         .map(({ sub }) => ({ name: withFlags(sub.name), value: withFlags(sub.name) }))
 
       await interaction.respond(matches)
+      return
+    }
+
+    if (interaction.isUserContextMenuCommand()) {
+      if (interaction.commandName !== USER_IMAGES_COMMAND_NAME) return
+      await handleUserImagesCommand(interaction)
       return
     }
 
