@@ -20,13 +20,13 @@ import {
 import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D } from '@napi-rs/canvas'
 import { fileURLToPath } from 'node:url'
 import {
-  PIN_BUTTON_ID,
-  PUB_BUTTON_ID,
+  pinButtonRow,
+  publishButtonRow,
   scheduleEphemeralMessageDelete,
   scheduleEphemeralReplyDelete,
   text
-} from './components.js'
-import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
+} from '../components.js'
+import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
 export const MESSAGE_RENDER_COMMAND_NAME = 'Render Message'
 export const MESSAGE_THREAD_START_COMMAND_NAME = 'Start Render Thread'
@@ -48,20 +48,20 @@ const TIMESTAMP_FONT_SIZE = 12
 const MESSAGE_GAP = 12
 const CONTENT_WIDTH = MAX_WIDTH - CONTENT_X - PADDING_X
 
-const GG_SANS_REGULAR = fileURLToPath(new URL('../assets/fonts/gg-sans-400.woff2', import.meta.url))
-const GG_SANS_MEDIUM = fileURLToPath(new URL('../assets/fonts/gg-sans-500.woff2', import.meta.url))
-const GG_SANS_BOLD = fileURLToPath(new URL('../assets/fonts/gg-sans-700.woff2', import.meta.url))
+const GG_SANS_REGULAR = fileURLToPath(new URL('../../assets/fonts/gg-sans-400.woff2', import.meta.url))
+const GG_SANS_MEDIUM = fileURLToPath(new URL('../../assets/fonts/gg-sans-500.woff2', import.meta.url))
+const GG_SANS_BOLD = fileURLToPath(new URL('../../assets/fonts/gg-sans-700.woff2', import.meta.url))
 const NOTO_SANS_CJK_JP = fileURLToPath(
-  new URL('../assets/fonts/NotoSansCJKjp-Regular.otf', import.meta.url)
+  new URL('../../assets/fonts/NotoSansCJKjp-Regular.otf', import.meta.url)
 )
 const NOTO_SANS_CJK_KR = fileURLToPath(
-  new URL('../assets/fonts/NotoSansCJKkr-Regular.otf', import.meta.url)
+  new URL('../../assets/fonts/NotoSansCJKkr-Regular.otf', import.meta.url)
 )
 const NOTO_SANS_CJK_SC = fileURLToPath(
-  new URL('../assets/fonts/NotoSansCJKsc-Regular.otf', import.meta.url)
+  new URL('../../assets/fonts/NotoSansCJKsc-Regular.otf', import.meta.url)
 )
 const NOTO_SANS_CJK_TC = fileURLToPath(
-  new URL('../assets/fonts/NotoSansCJKtc-Regular.otf', import.meta.url)
+  new URL('../../assets/fonts/NotoSansCJKtc-Regular.otf', import.meta.url)
 )
 
 const GG_SANS_FAMILY = 'gg sans'
@@ -106,19 +106,6 @@ GlobalFonts.registerFromPath(NOTO_SANS_CJK_KR, KO_FAMILY)
 GlobalFonts.registerFromPath(NOTO_SANS_CJK_JP, JA_FAMILY)
 GlobalFonts.registerFromPath(NOTO_SANS_CJK_SC, ZH_CN_FAMILY)
 GlobalFonts.registerFromPath(NOTO_SANS_CJK_TC, ZH_TW_FAMILY)
-
-function publishButtonRow() {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
-  )
-}
-
-function pinButtonRow() {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary)
-  )
-}
 
 function collectionKey(contextId: string, userId: string) {
   return `message-render-collection:${contextId}:${userId}`

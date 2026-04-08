@@ -31,7 +31,7 @@ import { buildAliasMap, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
 import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
 import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
-import { handleUserImagesCommand, USER_IMAGES_COMMAND_NAME } from './user-command.js'
+import { handleUserImagesCommand, USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
   handleMessageCollectionEditModal,
   handleMessageCollectionEditSelect,
@@ -43,7 +43,7 @@ import {
   MESSAGE_RENDER_COMMAND_NAME,
   MESSAGE_THREAD_APPEND_COMMAND_NAME,
   MESSAGE_THREAD_START_COMMAND_NAME
-} from './message-command.js'
+} from './commands/message-render.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)

@@ -1,19 +1,15 @@
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ComponentType,
   MessageFlags,
   type MediaGalleryComponentData,
   type UserContextMenuCommandInteraction
 } from 'discord.js'
 import {
-  PIN_BUTTON_ID,
-  PUB_BUTTON_ID,
+  publishButtonRow,
   scheduleEphemeralReplyDelete,
   separator,
   text
-} from './components.js'
+} from '../components.js'
 
 export const USER_IMAGES_COMMAND_NAME = 'User Images'
 
@@ -59,13 +55,6 @@ function linksBlock(variants: ImageVariant[]) {
           : `- **${variant.label}:** Unavailable.`
       )
     ].join('\n')
-  )
-}
-
-function publishButtonRow() {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(PIN_BUTTON_ID).setLabel('Pin').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
   )
 }
 

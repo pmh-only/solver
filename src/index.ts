@@ -11,12 +11,12 @@ import {
 } from 'discord.js'
 import type { Subcommand } from './types.js'
 import { createHandler } from './handler.js'
-import { USER_IMAGES_COMMAND_NAME } from './user-command.js'
+import { USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
   MESSAGE_RENDER_COMMAND_NAME,
   MESSAGE_THREAD_APPEND_COMMAND_NAME,
   MESSAGE_THREAD_START_COMMAND_NAME
-} from './message-command.js'
+} from './commands/message-render.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
 import { subcommand as dig } from './commands/dig.js'

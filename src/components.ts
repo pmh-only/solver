@@ -180,6 +180,17 @@ function pinButton() {
     .setStyle(ButtonStyle.Secondary)
 }
 
+export function publishButtonRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    pinButton(),
+    new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
+  )
+}
+
+export function pinButtonRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(pinButton())
+}
+
 function buildButtonRow(pub: boolean, includeCommandActions: boolean, commandInput?: string) {
   const row = new ActionRowBuilder<ButtonBuilder>()
 
