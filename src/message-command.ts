@@ -120,8 +120,8 @@ function pinButtonRow() {
   )
 }
 
-function collectionKey(guildId: string, userId: string) {
-  return `message-render-collection:${guildId}:${userId}`
+function collectionKey(contextId: string, userId: string) {
+  return `message-render-collection:${contextId}:${userId}`
 }
 
 function isStoredSnapshot(value: unknown): value is StoredMessageSnapshot {
@@ -140,8 +140,8 @@ function isStoredSnapshot(value: unknown): value is StoredMessageSnapshot {
   )
 }
 
-function loadCollection(guildId: string, userId: string): StoredCollection {
-  const raw = getStoredValue(collectionKey(guildId, userId))
+function loadCollection(contextId: string, userId: string): StoredCollection {
+  const raw = getStoredValue(collectionKey(contextId, userId))
   if (!raw) return { messages: [], replyToken: null }
 
   try {
@@ -155,8 +155,8 @@ function loadCollection(guildId: string, userId: string): StoredCollection {
   }
 }
 
-function saveCollection(guildId: string, userId: string, collection: StoredCollection) {
-  setStoredValue(collectionKey(guildId, userId), JSON.stringify(collection))
+function saveCollection(contextId: string, userId: string, collection: StoredCollection) {
+  setStoredValue(collectionKey(contextId, userId), JSON.stringify(collection))
 }
 
 function basicReply(textValue: string) {
@@ -543,15 +543,12 @@ export async function handleMessageRenderCommand(
 export async function handleMessageThreadStartCommand(
   interaction: MessageContextMenuCommandInteraction
 ) {
-  if (!interaction.guildId) {
-    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
-    return
-  }
+  const contextId = interaction.guildId ?? interaction.channelId ?? interaction.user.id
   const collection: StoredCollection = {
     messages: [snapshotFromMessage(interaction.targetMessage)],
     replyToken: interaction.token
   }
-  saveCollection(interaction.guildId, interaction.user.id, collection)
+  saveCollection(contextId, interaction.user.id, collection)
   await replyWithRenderedMessages(
     interaction,
     collection.messages,
@@ -563,12 +560,8 @@ export async function handleMessageThreadStartCommand(
 export async function handleMessageThreadAppendCommand(
   interaction: MessageContextMenuCommandInteraction
 ) {
-  if (!interaction.guildId) {
-    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
-    return
-  }
-
-  const collection = loadCollection(interaction.guildId, interaction.user.id)
+  const contextId = interaction.guildId ?? interaction.channelId ?? interaction.user.id
+  const collection = loadCollection(contextId, interaction.user.id)
   if (collection.messages.length === 0) {
     await replyAndScheduleDelete(interaction, basicReply('no active render collection'))
     return
@@ -582,7 +575,7 @@ export async function handleMessageThreadAppendCommand(
   const nextMessages = alreadyIncluded
     ? collection.messages
     : [...collection.messages, nextSnapshot]
-  saveCollection(interaction.guildId, interaction.user.id, {
+  saveCollection(contextId, interaction.user.id, {
     messages: nextMessages,
     replyToken: collection.replyToken
   })
@@ -631,18 +624,13 @@ export async function handleMessageThreadAppendCommand(
 }
 
 export async function handleMessageCollectionEditSelect(interaction: StringSelectMenuInteraction) {
-  if (!interaction.guildId) {
-    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
-    return
-  }
-
   const messageId = interaction.values[0]
   if (!messageId) {
     await replyAndScheduleDelete(interaction, basicReply('no msg'))
     return
   }
 
-  const collection = loadCollection(interaction.guildId, interaction.user.id)
+  const collection = loadCollection(interaction.guildId ?? interaction.channelId ?? interaction.user.id, interaction.user.id)
   const message = collection.messages.find((entry) => entry.messageId === messageId)
   if (!message) {
     await replyAndScheduleDelete(interaction, basicReply('no msg'))
@@ -653,10 +641,7 @@ export async function handleMessageCollectionEditSelect(interaction: StringSelec
 }
 
 export async function handleMessageCollectionEditModal(interaction: ModalSubmitInteraction) {
-  if (!interaction.guildId) {
-    await replyAndScheduleDelete(interaction, basicReply('collection requires guild msg'))
-    return
-  }
+  const contextId = interaction.guildId ?? interaction.channelId ?? interaction.user.id
 
   const prefix = `${MESSAGE_COLLECTION_EDIT_MODAL_ID}:`
   const messageId = interaction.customId.startsWith(prefix)
@@ -667,12 +652,12 @@ export async function handleMessageCollectionEditModal(interaction: ModalSubmitI
     return
   }
 
-  const collection = loadCollection(interaction.guildId, interaction.user.id)
+  const collection = loadCollection(contextId, interaction.user.id)
   const nextContent = interaction.fields.getTextInputValue(MESSAGE_COLLECTION_EDIT_INPUT_ID)
   const nextMessages = collection.messages.map((entry) =>
     entry.messageId === messageId ? { ...entry, content: nextContent } : entry
   )
-  saveCollection(interaction.guildId, interaction.user.id, {
+  saveCollection(contextId, interaction.user.id, {
     messages: nextMessages,
     replyToken: collection.replyToken
   })
