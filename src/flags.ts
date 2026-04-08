@@ -1,7 +1,7 @@
 export type Flags = Map<string, string | true>
 
 export interface ParseResult {
-  bare: string  // args with all flags stripped
+  bare: string // args with all flags stripped
   flags: Flags
 }
 

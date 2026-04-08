@@ -4,12 +4,7 @@ import {
   type MediaGalleryComponentData,
   type UserContextMenuCommandInteraction
 } from 'discord.js'
-import {
-  publishButtonRow,
-  scheduleEphemeralReplyDelete,
-  separator,
-  text
-} from '../components.js'
+import { publishButtonRow, scheduleEphemeralReplyDelete, separator, text } from '../components.js'
 
 export const USER_IMAGES_COMMAND_NAME = 'User Images'
 

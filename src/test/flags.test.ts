@@ -64,19 +64,19 @@ describe('parseFlags', () => {
 
 describe('buildAliasMap', () => {
   it('maps alias char to full flag name', () => {
-    const map = buildAliasMap({ count: { alias: 'c', description: 'count' } })
+    const map = buildAliasMap({ count: { alias: 'c' } })
     expect(map.get('c')).toBe('count')
   })
 
   it('ignores entries without alias', () => {
-    const map = buildAliasMap({ pub: { description: 'publish' } })
+    const map = buildAliasMap({ pub: {} })
     expect(map.size).toBe(0)
   })
 
   it('handles multiple aliases', () => {
     const map = buildAliasMap({
-      count: { alias: 'c', description: 'count' },
-      interval: { alias: 'i', description: 'interval' }
+      count: { alias: 'c' },
+      interval: { alias: 'i' }
     })
     expect(map.get('c')).toBe('count')
     expect(map.get('i')).toBe('interval')

@@ -2,8 +2,6 @@ import {
   ActionRowBuilder,
   type BaseMessageOptions,
   AttachmentBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ComponentType,
   InteractionWebhook,
   MessageFlags,
@@ -48,8 +46,12 @@ const TIMESTAMP_FONT_SIZE = 12
 const MESSAGE_GAP = 12
 const CONTENT_WIDTH = MAX_WIDTH - CONTENT_X - PADDING_X
 
-const GG_SANS_REGULAR = fileURLToPath(new URL('../../assets/fonts/gg-sans-400.woff2', import.meta.url))
-const GG_SANS_MEDIUM = fileURLToPath(new URL('../../assets/fonts/gg-sans-500.woff2', import.meta.url))
+const GG_SANS_REGULAR = fileURLToPath(
+  new URL('../../assets/fonts/gg-sans-400.woff2', import.meta.url)
+)
+const GG_SANS_MEDIUM = fileURLToPath(
+  new URL('../../assets/fonts/gg-sans-500.woff2', import.meta.url)
+)
 const GG_SANS_BOLD = fileURLToPath(new URL('../../assets/fonts/gg-sans-700.woff2', import.meta.url))
 const NOTO_SANS_CJK_JP = fileURLToPath(
   new URL('../../assets/fonts/NotoSansCJKjp-Regular.otf', import.meta.url)
@@ -617,7 +619,10 @@ export async function handleMessageCollectionEditSelect(interaction: StringSelec
     return
   }
 
-  const collection = loadCollection(interaction.guildId ?? interaction.channelId ?? interaction.user.id, interaction.user.id)
+  const collection = loadCollection(
+    interaction.guildId ?? interaction.channelId ?? interaction.user.id,
+    interaction.user.id
+  )
   const message = collection.messages.find((entry) => entry.messageId === messageId)
   if (!message) {
     await replyAndScheduleDelete(interaction, basicReply('no msg'))
