@@ -55,10 +55,12 @@ export const subcommand: Subcommand = {
       separator(),
       text(`**Value**\n\`${key}=${value}\``)
     )
-    reply.components = [
-      reply.components[0],
-      contentPublishButtonRow(value)
-    ]
+    if (!flags.has('pub')) {
+      reply.components = [
+        reply.components[0],
+        contentPublishButtonRow(value)
+      ]
+    }
     await sendCommandReply(interaction, reply)
   }
 }

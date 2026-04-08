@@ -129,7 +129,7 @@ async function runCommandInput(
       const storedValue = hasStoredValue(bare) ? getStoredValue(bare) : undefined
       const display = storedValue !== undefined ? `${bare}=${storedValue}` : `no ${bare}`
       const reply = container(bare, flags, display)
-      if (storedValue !== undefined) {
+      if (storedValue !== undefined && !flags.has('pub')) {
         reply.components = [reply.components[0], contentPublishButtonRow(storedValue)]
       }
       await sendCommandReply(interaction, reply)
