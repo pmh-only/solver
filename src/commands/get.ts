@@ -1,13 +1,6 @@
+import { MessageFlags } from 'discord.js'
 import type { Subcommand } from '../types.js'
-import {
-  commandContainer,
-  commandReferenceReply,
-  contentPublishButtonRow,
-  sendCommandReply,
-  separator,
-  summarySection,
-  text
-} from '../components.js'
+import { contentPublishButtonRow, sendPlainTextReply } from '../components.js'
 import { getStoredValue, hasStoredValue } from '../helpers/kv-store.js'
 
 function parseGetArgs(args: string): string {
@@ -22,45 +15,28 @@ export const subcommand: Subcommand = {
 
   async execute(interaction, args, flags) {
     const key = parseGetArgs(args)
+    const replyFlags = flags.has('pub') ? undefined : ([MessageFlags.Ephemeral] as const)
 
     if (!key) {
-      await sendCommandReply(
-        interaction,
-        commandReferenceReply(subcommand, args, flags, 'usage', 'no key')
-      )
+      await sendPlainTextReply(interaction, { content: 'no key', flags: replyFlags })
       return
     }
 
     if (!hasStoredValue(key)) {
-      await sendCommandReply(
-        interaction,
-        commandContainer(
-          subcommand,
-          args,
-          flags,
-          summarySection('Stored value', ['Key was not found']),
-          separator(),
-          text(`**Lookup**\n\`no ${key}\``)
-        )
-      )
+      await sendPlainTextReply(interaction, { content: `no ${key}`, flags: replyFlags })
       return
     }
 
     const value = getStoredValue(key) as string
-    const reply = commandContainer(
-      subcommand,
-      args,
-      flags,
-      summarySection('Stored value', [`Key \`${key}\` resolved successfully`]),
-      separator(),
-      text(`**Value**\n\`${key}=${value}\``)
+    await sendPlainTextReply(
+      interaction,
+      flags.has('pub')
+        ? { content: value }
+        : {
+            content: value,
+            components: [contentPublishButtonRow(value)],
+            flags: replyFlags
+          }
     )
-    if (!flags.has('pub')) {
-      reply.components = [
-        reply.components[0],
-        contentPublishButtonRow(value)
-      ]
-    }
-    await sendCommandReply(interaction, reply)
   }
 }

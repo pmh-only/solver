@@ -17,6 +17,7 @@ import {
   loadContentPublishValue,
   pinnedMessageComponents,
   sendCommandReply,
+  sendPlainTextReply,
   EDIT_PARAMETERS_BUTTON_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
@@ -93,6 +94,13 @@ function publishedComponents(interaction: ButtonInteraction): unknown[] {
   )
 }
 
+function hasComponentsV2Payload(components: readonly { toJSON(): unknown }[]) {
+  return components.some((component) => {
+    const json = component.toJSON() as { type?: number }
+    return json.type !== ComponentType.ActionRow
+  })
+}
+
 function resolveCommandInput(rawInput: string, subcommands: Collection<string, Subcommand>) {
   const raw = rawInput.trim()
   const { bare, flags: rawFlags } = parseFlags(raw)
@@ -127,12 +135,20 @@ async function runCommandInput(
 
     if (!bare.includes(' ')) {
       const storedValue = hasStoredValue(bare) ? getStoredValue(bare) : undefined
-      const display = storedValue !== undefined ? `${bare}=${storedValue}` : `no ${bare}`
-      const reply = container(bare, flags, display)
-      if (storedValue !== undefined && !flags.has('pub')) {
-        reply.components = [reply.components[0], contentPublishButtonRow(storedValue)]
-      }
-      await sendCommandReply(interaction, reply)
+      const replyFlags = flags.has('pub') ? undefined : ([MessageFlags.Ephemeral] as const)
+
+      await sendPlainTextReply(
+        interaction,
+        storedValue !== undefined
+          ? flags.has('pub')
+            ? { content: storedValue }
+            : {
+                content: storedValue,
+                components: [contentPublishButtonRow(storedValue)],
+                flags: replyFlags
+              }
+          : { content: `no ${bare}`, flags: replyFlags }
+      )
       return
     }
 
@@ -170,10 +186,15 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if (interaction.isButton()) {
         if (interaction.customId === PIN_BUTTON_ID) {
           cancelEphemeralDelete(interaction.message.id)
-          await interaction.update({
-            components: pinnedMessageComponents(interaction.message.components) as never,
-            flags: MessageFlags.IsComponentsV2
-          })
+          const components = pinnedMessageComponents(interaction.message.components) as never
+          if (hasComponentsV2Payload(interaction.message.components)) {
+            await interaction.update({
+              components,
+              flags: MessageFlags.IsComponentsV2
+            })
+          } else {
+            await interaction.update({ components })
+          }
           return
         }
 

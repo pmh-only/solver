@@ -74,6 +74,12 @@ interface CommandReplyOptions {
   tone?: ReplyTone
 }
 
+interface PlainTextReplyPayload {
+  content: string
+  components?: ActionRowBuilder<ButtonBuilder>[]
+  flags?: number | readonly number[]
+}
+
 type DeleteReplyCapable = {
   deleteReply(): Promise<unknown>
 }
@@ -653,6 +659,50 @@ export async function sendCommandReply(
     }
     if (payload.commandInput && typeof message.id === 'string') {
       rememberCommandInputForMessage(message.id, payload.commandInput)
+    }
+  }
+}
+
+export async function sendPlainTextReply(
+  interaction: CommandInteraction,
+  payload: PlainTextReplyPayload
+) {
+  if (interaction.deferred) {
+    const message = (await interaction.editReply({
+      content: payload.content,
+      components: payload.components
+    })) as { id?: string }
+    if (typeof message.id === 'string') {
+      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags ?? 0)
+    }
+    return
+  }
+
+  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    await interaction.update({
+      content: payload.content,
+      components: payload.components
+    })
+    scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags ?? 0)
+    return
+  }
+
+  if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
+    await interaction.deferUpdate()
+    const message = (await interaction.editReply({
+      content: payload.content,
+      components: payload.components
+    })) as { id?: string }
+    const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
+    scheduleEphemeralReplyDelete(interaction, messageId, payload.flags ?? 0)
+    return
+  }
+
+  await interaction.reply(payload)
+  if (hasEphemeralFlag(payload.flags ?? 0)) {
+    const message = (await interaction.fetchReply()) as { id?: string }
+    if (typeof message.id === 'string') {
+      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags ?? 0)
     }
   }
 }
