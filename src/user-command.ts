@@ -1,10 +1,13 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ComponentType,
   MessageFlags,
   type MediaGalleryComponentData,
   type UserContextMenuCommandInteraction
 } from 'discord.js'
-import { separator, text } from './components.js'
+import { PUB_BUTTON_ID, separator, text } from './components.js'
 
 export const USER_IMAGES_COMMAND_NAME = 'User Images'
 
@@ -53,6 +56,12 @@ function linksBlock(variants: ImageVariant[]) {
   )
 }
 
+function publishButtonRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(PUB_BUTTON_ID).setLabel('Publish').setStyle(ButtonStyle.Success)
+  )
+}
+
 export async function handleUserImagesCommand(interaction: UserContextMenuCommandInteraction) {
   const user = await interaction.targetUser.fetch(true)
   const variants = imageVariants(interaction)
@@ -63,7 +72,8 @@ export async function handleUserImagesCommand(interaction: UserContextMenuComman
       text(`## Images for ${user.displayName}\n-# ${user.tag} (${user.id})`),
       separator(),
       ...(gallery ? [gallery] : []),
-      linksBlock(variants)
+      linksBlock(variants),
+      publishButtonRow()
     ],
     flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
   })
