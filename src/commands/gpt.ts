@@ -148,36 +148,30 @@ function buildGptComponents(
           .setCustomId(PUB_BUTTON_ID)
           .setLabel('Publish')
           .setStyle(ButtonStyle.Success)
+      ),
+      modelRow,
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
+          .setPlaceholder(`Effort: ${effort}`)
+          .addOptions(
+            EFFORT_OPTIONS.map((e) =>
+              new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
+            )
+          )
+      ),
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${GPT_VERBOSITY_SELECT_ID}:${token}`)
+          .setPlaceholder(`Verbosity: ${verbosity}`)
+          .addOptions(
+            VERBOSITY_OPTIONS.map((v) =>
+              new StringSelectMenuOptionBuilder().setLabel(v.label).setValue(v.id)
+            )
+          )
       )
     )
   }
-
-  components.push(
-    modelRow,
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
-        .setPlaceholder(`Effort: ${effort}`)
-        .addOptions(
-          EFFORT_OPTIONS.map((e) =>
-            new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
-          )
-        )
-    )
-  )
-
-  components.push(
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`${GPT_VERBOSITY_SELECT_ID}:${token}`)
-        .setPlaceholder(`Verbosity: ${verbosity}`)
-        .addOptions(
-          VERBOSITY_OPTIONS.map((v) =>
-            new StringSelectMenuOptionBuilder().setLabel(v.label).setValue(v.id)
-          )
-        )
-    )
-  )
 
   return components
 }
