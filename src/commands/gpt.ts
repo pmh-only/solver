@@ -27,16 +27,16 @@ const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
 
 const GPT_MODELS = [
+  { id: 'gpt-5.4', label: 'GPT-5.4', reasoning: false },
+  { id: 'gpt-5.4-pro', label: 'GPT-5.4 pro', reasoning: false },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', reasoning: false },
+  { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', reasoning: false },
   { id: 'gpt-5.2', label: 'GPT-5.2', reasoning: false },
-  { id: 'gpt-5.2-pro', label: 'GPT-5.2 pro', reasoning: false },
-  { id: 'gpt-5-mini', label: 'GPT-5 mini', reasoning: false },
-  { id: 'gpt-5-nano', label: 'GPT-5 nano', reasoning: false },
-  { id: 'gpt-5.1', label: 'GPT-5.1', reasoning: false },
   { id: 'o3', label: 'o3', reasoning: true },
   { id: 'o4-mini', label: 'o4-mini', reasoning: true }
 ] as const
 
-const DEFAULT_MODEL = 'gpt-5.2'
+const DEFAULT_MODEL = 'gpt-5.4'
 
 const EFFORT_OPTIONS = [
   { id: 'low', label: 'Low effort' },
