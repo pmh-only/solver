@@ -27,21 +27,24 @@ const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
 
 const GPT_MODELS = [
-  { id: 'gpt-5.4', label: 'GPT-5.4', reasoning: false },
-  { id: 'gpt-5.4-pro', label: 'GPT-5.4 pro', reasoning: false },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', reasoning: false },
-  { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', reasoning: false },
-  { id: 'gpt-5.2', label: 'GPT-5.2', reasoning: false },
-  { id: 'o3', label: 'o3', reasoning: true },
-  { id: 'o4-mini', label: 'o4-mini', reasoning: true }
+  { id: 'gpt-5.4', label: 'GPT-5.4' },
+  { id: 'gpt-5.4-pro', label: 'GPT-5.4 pro' },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
+  { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
+  { id: 'gpt-5.2', label: 'GPT-5.2' },
+  { id: 'o3', label: 'o3' },
+  { id: 'o4-mini', label: 'o4-mini' }
 ] as const
 
 const DEFAULT_MODEL = 'gpt-5.4'
 
 const EFFORT_OPTIONS = [
-  { id: 'low', label: 'Low effort' },
-  { id: 'medium', label: 'Medium effort' },
-  { id: 'high', label: 'High effort' }
+  { id: 'none', label: 'None' },
+  { id: 'minimal', label: 'Minimal' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' }
 ] as const
 
 const VERBOSITY_OPTIONS = [
@@ -73,9 +76,6 @@ type AnyRow =
 
 type GptComponent = ContainerBuilder | AnyRow
 
-function isReasoningModel(model: string): boolean {
-  return GPT_MODELS.some((m) => m.id === model && m.reasoning)
-}
 
 function storeGptContext(token: string, ctx: GptContext) {
   setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify(ctx))
@@ -151,22 +151,19 @@ function buildGptComponents(
     )
   }
 
-  components.push(modelRow)
-
-  if (isReasoningModel(model)) {
-    components.push(
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
-          .setPlaceholder(`Effort: ${effort}`)
-          .addOptions(
-            EFFORT_OPTIONS.map((e) =>
-              new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
-            )
+  components.push(
+    modelRow,
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
+        .setPlaceholder(`Effort: ${effort}`)
+        .addOptions(
+          EFFORT_OPTIONS.map((e) =>
+            new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
           )
-      )
+        )
     )
-  }
+  )
 
   components.push(
     new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
@@ -339,7 +336,7 @@ async function runGptStream(
       stream: true
     }
 
-    if (isReasoningModel(ctx.model)) {
+    if (ctx.effort !== 'none') {
       createParams.reasoning = { effort: ctx.effort }
     }
 
