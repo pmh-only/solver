@@ -18,6 +18,7 @@ import { subcommand as sh } from './commands/sh.js'
 import { subcommand as mail } from './commands/mail.js'
 import { subcommand as list } from './commands/list.js'
 import { subcommand as pubtab } from './commands/pubtab.js'
+import { subcommand as gpt } from './commands/gpt.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
@@ -36,7 +37,8 @@ for (const sub of [
   run,
   sh,
   mail,
-  pubtab
+  pubtab,
+  gpt
 ]) {
   subcommands.set(sub.name, sub)
 }

@@ -66,6 +66,14 @@ import {
   MESSAGE_STORE_COMMAND_NAME,
   MESSAGE_STORE_MODAL_ID
 } from './commands/message-store.js'
+import {
+  GPT_EFFORT_SELECT_ID,
+  GPT_MODEL_SELECT_ID,
+  GPT_VERBOSITY_SELECT_ID,
+  handleGptEffortSelect,
+  handleGptModelSelect,
+  handleGptVerbositySelect
+} from './commands/gpt.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -285,6 +293,21 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           }
 
           await interaction.showModal(buildEditParametersModal(preset))
+          return
+        }
+
+        if (matchesInteractiveId(interaction.customId, GPT_MODEL_SELECT_ID)) {
+          await handleGptModelSelect(interaction)
+          return
+        }
+
+        if (matchesInteractiveId(interaction.customId, GPT_EFFORT_SELECT_ID)) {
+          await handleGptEffortSelect(interaction)
+          return
+        }
+
+        if (matchesInteractiveId(interaction.customId, GPT_VERBOSITY_SELECT_ID)) {
+          await handleGptVerbositySelect(interaction)
           return
         }
 

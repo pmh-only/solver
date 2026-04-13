@@ -25,8 +25,6 @@ import {
 import type { Interaction } from 'discord.js'
 import { ButtonInteraction, ModalSubmitInteraction } from 'discord.js'
 import {
-  COMMAND_RUN_INPUT_ID,
-  COMMAND_RUN_MODAL_ID,
   EDIT_PARAMETERS_INPUT_ID,
   EDIT_PARAMETERS_MODAL_ID,
   RETRY_BUTTON_ID
