@@ -52,7 +52,8 @@ const COMMAND_COLORS: Record<string, number> = {
   geoip: 0xec4899,
   run: 0xf97316,
   sh: 0xef4444,
-  mail: 0x2563eb
+  mail: 0x2563eb,
+  gpt: 0x10a37f
 }
 
 const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {

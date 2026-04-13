@@ -12,6 +12,7 @@ import {
 } from 'discord.js'
 import type { StringSelectMenuInteraction } from 'discord.js'
 import OpenAI from 'openai'
+import type { EasyInputMessage } from 'openai/resources/responses/responses.js'
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import type { Flags } from '../flags.js'
@@ -322,35 +323,26 @@ async function runGptStream(
           ? 'Be thorough and comprehensive. Explain in detail.'
           : null
 
-    type InputItem = { role: string; content: string }
-    const input: string | InputItem[] = systemInstruction
+    const input: string | EasyInputMessage[] = systemInstruction
       ? [
-          { role: 'system', content: systemInstruction },
-          { role: 'user', content: ctx.prompt }
+          { role: 'system' as const, content: systemInstruction },
+          { role: 'user' as const, content: ctx.prompt }
         ]
       : ctx.prompt
 
-    const createParams: Record<string, unknown> = {
+    const streamParams: Parameters<typeof openai.responses.stream>[0] = {
       model: ctx.model,
       input,
-      stream: true
+      ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort } } : {})
     }
 
-    if (ctx.effort !== 'none') {
-      createParams.reasoning = { effort: ctx.effort }
-    }
-
-    const stream = await openai.responses.create(
-      createParams as Parameters<typeof openai.responses.create>[0],
-      { signal: controller.signal }
-    )
+    const stream = openai.responses.stream(streamParams, { signal: controller.signal })
 
     for await (const event of stream) {
       if (controller.signal.aborted) break
 
-      const ev = event as { type?: string; delta?: string }
-      if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
-        currentPageContent += ev.delta
+      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+        currentPageContent += event.delta
 
         if (currentPageContent.length > PAGE_LIMIT) {
           const overflow = currentPageContent.slice(PAGE_LIMIT)
