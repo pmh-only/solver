@@ -20,6 +20,7 @@ import { subcommand as list } from './commands/list.js'
 import { subcommand as pubtab } from './commands/pubtab.js'
 import { subcommand as gpt } from './commands/gpt.js'
 import { subcommand as crawl } from './commands/crawl.js'
+import { subcommand as rps } from './commands/rps.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
@@ -40,7 +41,8 @@ for (const sub of [
   mail,
   pubtab,
   gpt,
-  crawl
+  crawl,
+  rps
 ]) {
   subcommands.set(sub.name, sub)
 }

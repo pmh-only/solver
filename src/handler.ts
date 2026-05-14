@@ -74,6 +74,7 @@ import {
   handleGptModelSelect,
   handleGptVerbositySelect
 } from './commands/gpt.js'
+import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -204,6 +205,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     try {
       if (interaction.isButton()) {
+        if (isRpsButtonId(interaction.customId)) {
+          await handleRpsButton(interaction)
+          return
+        }
+
         if (interaction.customId === PIN_BUTTON_ID) {
           cancelEphemeralDelete(interaction.message.id)
           const components = pinnedMessageComponents(interaction.message.components) as never

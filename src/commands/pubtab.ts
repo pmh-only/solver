@@ -9,7 +9,8 @@ const SAFE_COMMANDS = [
   { label: 'TLS', command: 'cert', args: 'example.com' },
   { label: 'GeoIP', command: 'geoip', args: '1.1.1.1' },
   { label: 'Math', command: 'math', args: '2*(3+4)' },
-  { label: 'Convert', command: 'conv', args: '255 to hex' }
+  { label: 'Convert', command: 'conv', args: '255 to hex' },
+  { label: 'RPS', command: 'rps', args: 'duel' }
 ]
 
 function buildRows() {
