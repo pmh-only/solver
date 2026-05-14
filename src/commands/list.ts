@@ -22,6 +22,7 @@ export const subcommand: Subcommand = {
       'message-input:',
       'message-render-',
       'message-store-',
+      'poll:',
       'pub-content:'
     ]
     const keys = listStoredKeys().filter((k) => !internalPrefixes.some((p) => k.startsWith(p)))

@@ -45,6 +45,7 @@ describe('list — command', () => {
     setStoredValue('message-input:0', 'ping 1.1.1.1')
     setStoredValue('message-render-collection:0:1', '{}')
     setStoredValue('message-store-pending:1', 'pending')
+    setStoredValue('poll:token', '{}')
     setStoredValue('pub-content:token', 'published content')
 
     const calls = await dispatch(commandJSON('list'), subs)
@@ -59,6 +60,7 @@ describe('list — command', () => {
     expect(json).not.toContain('message-input:0')
     expect(json).not.toContain('message-render-collection:0:1')
     expect(json).not.toContain('message-store-pending:1')
+    expect(json).not.toContain('poll:token')
     expect(json).not.toContain('pub-content:token')
   })
 
