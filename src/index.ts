@@ -21,6 +21,7 @@ import { subcommand as pubtab } from './commands/pubtab.js'
 import { subcommand as gpt } from './commands/gpt.js'
 import { subcommand as crawl } from './commands/crawl.js'
 import { subcommand as rps } from './commands/rps.js'
+import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
@@ -42,7 +43,8 @@ for (const sub of [
   pubtab,
   gpt,
   crawl,
-  rps
+  rps,
+  ...extraSubcommands
 ]) {
   subcommands.set(sub.name, sub)
 }

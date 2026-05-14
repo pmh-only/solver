@@ -75,6 +75,7 @@ import {
   handleGptVerbositySelect
 } from './commands/gpt.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
+import { handlePollButton, isPollButtonId } from './commands/more.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -207,6 +208,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if (interaction.isButton()) {
         if (isRpsButtonId(interaction.customId)) {
           await handleRpsButton(interaction)
+          return
+        }
+
+        if (isPollButtonId(interaction.customId)) {
+          await handlePollButton(interaction)
           return
         }
 
