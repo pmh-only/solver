@@ -15,7 +15,15 @@ export const subcommand: Subcommand = {
   examples: ['list'],
 
   async execute(interaction, args, flags) {
-    const internalPrefixes = ['command-input:', 'message-input:', 'message-render-', 'message-store-', 'pub-content:']
+    const internalPrefixes = [
+      'command-input:',
+      'constrained-command:',
+      'gpt-ctx:',
+      'message-input:',
+      'message-render-',
+      'message-store-',
+      'pub-content:'
+    ]
     const keys = listStoredKeys().filter((k) => !internalPrefixes.some((p) => k.startsWith(p)))
 
     if (keys.length === 0) {

@@ -37,6 +37,31 @@ describe('list — command', () => {
     expect(json).toContain('2 keys found')
   })
 
+  it('hides system-generated keys', async () => {
+    setStoredValue('alpha', '1')
+    setStoredValue('command-input:token', 'list')
+    setStoredValue('constrained-command:token', '{"command":"ping","args":"1.1.1.1"}')
+    setStoredValue('gpt-ctx:token', '{"prompt":"hi"}')
+    setStoredValue('message-input:0', 'ping 1.1.1.1')
+    setStoredValue('message-render-collection:0:1', '{}')
+    setStoredValue('message-store-pending:1', 'pending')
+    setStoredValue('pub-content:token', 'published content')
+
+    const calls = await dispatch(commandJSON('list'), subs)
+    const body = getCallback(calls)
+    const json = JSON.stringify(body)
+
+    expect(json).toContain('alpha')
+    expect(json).toContain('1 key found')
+    expect(json).not.toContain('command-input:token')
+    expect(json).not.toContain('constrained-command:token')
+    expect(json).not.toContain('gpt-ctx:token')
+    expect(json).not.toContain('message-input:0')
+    expect(json).not.toContain('message-render-collection:0:1')
+    expect(json).not.toContain('message-store-pending:1')
+    expect(json).not.toContain('pub-content:token')
+  })
+
   it('lists a single key with singular label', async () => {
     setStoredValue('only', 'one')
 
