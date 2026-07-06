@@ -15,12 +15,13 @@ function trimSource(source: string): string {
 }
 
 function formatShellResult(source: string, result: Awaited<ReturnType<typeof executeShell>>) {
+  const includeStderr = !result.ok
   const summary = result.timedOut
     ? 'timeout'
     : result.ok
       ? 'Process exited successfully'
-      : result.stderr
-        ? 'Process finished with stderr output'
+      : includeStderr
+        ? 'Process finished with errors'
         : 'Process finished with errors'
 
   return [
@@ -28,7 +29,7 @@ function formatShellResult(source: string, result: Awaited<ReturnType<typeof exe
     separator(),
     codeBlock('Command', trimSource(source), 'sh'),
     ...(result.stdout ? [codeBlock('stdout', result.stdout)] : []),
-    ...(result.stderr ? [codeBlock('stderr', result.stderr)] : []),
+    ...(includeStderr && result.stderr ? [codeBlock('stderr', result.stderr)] : []),
     text(
       `**Exit status**\n\`${
         result.exitCode === null
