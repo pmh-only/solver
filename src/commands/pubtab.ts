@@ -10,7 +10,11 @@ const SAFE_COMMANDS = [
   { label: 'GeoIP', command: 'geoip', args: '1.1.1.1' },
   { label: 'Math', command: 'math', args: '2*(3+4)' },
   { label: 'Convert', command: 'conv', args: '255 to hex' },
-  { label: 'RPS', command: 'rps', args: 'duel' }
+  { label: 'RPS', command: 'rps', args: 'duel' },
+  { label: 'Dice', command: 'dice', args: '' },
+  { label: 'Coin', command: 'coin', args: '' },
+  { label: 'Slots', command: 'slots', args: '' },
+  { label: 'TTT', command: 'ttt', args: '--pc' }
 ]
 
 function buildRows() {

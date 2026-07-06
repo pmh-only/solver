@@ -20,13 +20,17 @@ import { subcommand as list } from './commands/list.js'
 import { subcommand as pubtab } from './commands/pubtab.js'
 import { subcommand as gpt } from './commands/gpt.js'
 import { subcommand as crawl } from './commands/crawl.js'
+import { subcommand as coin } from './commands/coin.js'
+import { subcommand as dice } from './commands/dice.js'
 import { subcommand as rps } from './commands/rps.js'
+import { subcommand as slots } from './commands/slots.js'
+import { subcommand as ttt } from './commands/ttt.js'
 import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
-for (const sub of [
-  ping,
+  for (const sub of [
+    ping,
   whois,
   dig,
   conv,
@@ -41,11 +45,15 @@ for (const sub of [
   sh,
   mail,
   pubtab,
-  gpt,
-  crawl,
-  rps,
-  ...extraSubcommands
-]) {
+    gpt,
+    crawl,
+    coin,
+    dice,
+    rps,
+    slots,
+    ttt,
+    ...extraSubcommands
+  ]) {
   subcommands.set(sub.name, sub)
 }
 

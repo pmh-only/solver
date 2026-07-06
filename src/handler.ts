@@ -74,8 +74,12 @@ import {
   handleGptModelSelect,
   handleGptVerbositySelect
 } from './commands/gpt.js'
+import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
+import { handleTttMoveButton, isTttMoveButtonId } from './commands/ttt.js'
 import { handlePollButton, isPollButtonId } from './commands/more.js'
+import { handleDiceButton, isDiceButtonId } from './commands/dice.js'
+import { handleSlotsSpinButton, isSlotsSpinButtonId } from './commands/slots.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -208,6 +212,26 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if (interaction.isButton()) {
         if (isRpsButtonId(interaction.customId)) {
           await handleRpsButton(interaction)
+          return
+        }
+
+        if (isCoinButtonId(interaction.customId)) {
+          await handleCoinButton(interaction)
+          return
+        }
+
+        if (isDiceButtonId(interaction.customId)) {
+          await handleDiceButton(interaction)
+          return
+        }
+
+        if (isSlotsSpinButtonId(interaction.customId)) {
+          await handleSlotsSpinButton(interaction)
+          return
+        }
+
+        if (isTttMoveButtonId(interaction.customId)) {
+          await handleTttMoveButton(interaction)
           return
         }
 
