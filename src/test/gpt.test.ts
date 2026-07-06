@@ -12,19 +12,21 @@ import {
 
 // Mock the openai module so tests don't make real API calls
 vi.mock('openai', () => {
-  const mockCreate = vi.fn().mockResolvedValue(
+  const mockStream = vi.fn(() =>
     (async function* () {
       yield { type: 'response.output_text.delta', delta: 'hello' }
       yield { type: 'response.output_text.delta', delta: ' world' }
     })()
   )
 
+  class MockOpenAI {
+    responses = {
+      stream: mockStream
+    }
+  }
+
   return {
-    default: vi.fn().mockImplementation(() => ({
-      responses: {
-        create: mockCreate
-      }
-    }))
+    default: MockOpenAI
   }
 })
 
