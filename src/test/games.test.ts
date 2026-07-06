@@ -5,10 +5,12 @@ import { DICE_GUESS_BUTTON_ID, subcommand as dice } from '../commands/dice.js'
 import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../commands/coin.js'
 import { SLOTS_SPIN_BUTTON_ID, subcommand as slots } from '../commands/slots.js'
 import { TTT_MOVE_BUTTON_ID, subcommand as ttt } from '../commands/ttt.js'
+import { HILO_GUESS_BUTTON_ID, subcommand as hilo } from '../commands/hilo.js'
+import { QUIZ_ANSWER_BUTTON_ID, subcommand as quiz } from '../commands/quiz.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, buttonJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
 
-const subs = makeSubcommands(coin, dice, slots, ttt)
+const subs = makeSubcommands(coin, dice, slots, ttt, hilo, quiz)
 const storePath = join(process.cwd(), '.tmp', 'games.test.sqlite')
 
 function otherUser() {
@@ -197,6 +199,108 @@ describe('slots — command', () => {
 
     expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
     expect(body.data.choices.some((choice) => choice.value === 'slots')).toBe(true)
+  })
+})
+
+describe('hilo — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private prediction game', async () => {
+    const calls = await dispatch(commandJSON('hilo'), subs)
+    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('High-Low')
+  })
+
+  it('reveals if the prediction was right', async () => {
+    vi.spyOn(Math, 'random')
+      .mockReturnValueOnce(0.1)
+      .mockReturnValueOnce(0.9)
+
+    const firstCalls = await dispatch(commandJSON('hilo'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const firstButton = buttonIdByIndex(firstBody.data.components, HILO_GUESS_BUTTON_ID, 0)
+    const hiloCalls = await dispatch(buttonJSON(firstBody.data.components, firstButton), subs)
+    const body = getCallback(hiloCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('The next number was')
+    expect(rendered.includes('You win.') || rendered.includes('You lose.')).toBe(true)
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('hilo --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns hilo in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('hi'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'hilo')).toBe(true)
+  })
+})
+
+describe('quiz — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private quiz round', async () => {
+    const calls = await dispatch(commandJSON('quiz'), subs)
+    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Quiz')
+  })
+
+  it('reveals whether the selected answer is correct', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('quiz'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const correctButton = buttonIdByIndex(firstBody.data.components, QUIZ_ANSWER_BUTTON_ID, 2)
+    const quizCalls = await dispatch(buttonJSON(firstBody.data.components, correctButton), subs)
+    const body = getCallback(quizCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Correct answer:')
+    expect(rendered).toContain('Correct!')
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('quiz --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns quiz in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('qu'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'quiz')).toBe(true)
   })
 })
 

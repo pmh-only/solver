@@ -78,6 +78,8 @@ import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
 import { handleTttMoveButton, isTttMoveButtonId } from './commands/ttt.js'
 import { handlePollButton, isPollButtonId } from './commands/more.js'
+import { handleHiloGuessButton, isHiloButtonId } from './commands/hilo.js'
+import { handleQuizAnswerButton, isQuizAnswerButtonId } from './commands/quiz.js'
 import { handleDiceButton, isDiceButtonId } from './commands/dice.js'
 import { handleSlotsSpinButton, isSlotsSpinButtonId } from './commands/slots.js'
 
@@ -215,6 +217,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           return
         }
 
+        if (isHiloButtonId(interaction.customId)) {
+          await handleHiloGuessButton(interaction)
+          return
+        }
+
         if (isCoinButtonId(interaction.customId)) {
           await handleCoinButton(interaction)
           return
@@ -227,6 +234,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
         if (isSlotsSpinButtonId(interaction.customId)) {
           await handleSlotsSpinButton(interaction)
+          return
+        }
+
+        if (isQuizAnswerButtonId(interaction.customId)) {
+          await handleQuizAnswerButton(interaction)
           return
         }
 

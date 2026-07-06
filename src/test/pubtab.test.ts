@@ -67,7 +67,22 @@ describe('pubtab — command', () => {
       (row.components ?? []).map((component) => component.label)
     )
 
-    expect(labels).toEqual(['Ping', 'DNS', 'Whois', 'TLS', 'GeoIP', 'Math', 'Convert', 'RPS', 'Dice', 'Coin', 'Slots', 'TTT'])
+    expect(labels).toEqual([
+      'Ping',
+      'DNS',
+      'Whois',
+      'TLS',
+      'GeoIP',
+      'Math',
+      'Convert',
+      'RPS',
+      'Dice',
+      'Coin',
+      'Slots',
+      'High-Low',
+      'Quiz',
+      'TTT'
+    ])
     expect(JSON.stringify(body)).not.toContain('run js')
     expect(JSON.stringify(body)).not.toContain('run shell')
   })

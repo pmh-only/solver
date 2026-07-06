@@ -14,6 +14,8 @@ const SAFE_COMMANDS = [
   { label: 'Dice', command: 'dice', args: '' },
   { label: 'Coin', command: 'coin', args: '' },
   { label: 'Slots', command: 'slots', args: '' },
+  { label: 'High-Low', command: 'hilo', args: '' },
+  { label: 'Quiz', command: 'quiz', args: '' },
   { label: 'TTT', command: 'ttt', args: '--pc' }
 ]
 

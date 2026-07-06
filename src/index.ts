@@ -25,6 +25,8 @@ import { subcommand as dice } from './commands/dice.js'
 import { subcommand as rps } from './commands/rps.js'
 import { subcommand as slots } from './commands/slots.js'
 import { subcommand as ttt } from './commands/ttt.js'
+import { subcommand as hilo } from './commands/hilo.js'
+import { subcommand as quiz } from './commands/quiz.js'
 import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
@@ -47,6 +49,8 @@ const subcommands = new Collection<string, Subcommand>()
   pubtab,
     gpt,
     crawl,
+    hilo,
+    quiz,
     coin,
     dice,
     rps,
