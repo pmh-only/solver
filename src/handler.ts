@@ -82,6 +82,8 @@ import { handleHiloGuessButton, isHiloButtonId } from './commands/hilo.js'
 import { handleQuizAnswerButton, isQuizAnswerButtonId } from './commands/quiz.js'
 import { handleDiceButton, isDiceButtonId } from './commands/dice.js'
 import { handleSlotsSpinButton, isSlotsSpinButtonId } from './commands/slots.js'
+import { handleBlackjackButton, isBlackjackButtonId } from './commands/blackjack.js'
+import { handleMemoryButton, isMemoryButtonId } from './commands/memory.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -234,6 +236,16 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
         if (isSlotsSpinButtonId(interaction.customId)) {
           await handleSlotsSpinButton(interaction)
+          return
+        }
+
+        if (isBlackjackButtonId(interaction.customId)) {
+          await handleBlackjackButton(interaction)
+          return
+        }
+
+        if (isMemoryButtonId(interaction.customId)) {
+          await handleMemoryButton(interaction)
           return
         }
 

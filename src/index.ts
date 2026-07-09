@@ -27,6 +27,8 @@ import { subcommand as slots } from './commands/slots.js'
 import { subcommand as ttt } from './commands/ttt.js'
 import { subcommand as hilo } from './commands/hilo.js'
 import { subcommand as quiz } from './commands/quiz.js'
+import { subcommand as blackjack } from './commands/blackjack.js'
+import { subcommand as memory } from './commands/memory.js'
 import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
@@ -51,6 +53,8 @@ const subcommands = new Collection<string, Subcommand>()
     crawl,
     hilo,
     quiz,
+    blackjack,
+    memory,
     coin,
     dice,
     rps,

@@ -7,10 +7,12 @@ import { SLOTS_SPIN_BUTTON_ID, subcommand as slots } from '../commands/slots.js'
 import { TTT_MOVE_BUTTON_ID, subcommand as ttt } from '../commands/ttt.js'
 import { HILO_GUESS_BUTTON_ID, subcommand as hilo } from '../commands/hilo.js'
 import { QUIZ_ANSWER_BUTTON_ID, subcommand as quiz } from '../commands/quiz.js'
+import { BLACKJACK_BUTTON_ID, subcommand as blackjack } from '../commands/blackjack.js'
+import { MEMORY_TILE_BUTTON_ID, subcommand as memory } from '../commands/memory.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, buttonJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
 
-const subs = makeSubcommands(coin, dice, slots, ttt, hilo, quiz)
+const subs = makeSubcommands(coin, dice, slots, ttt, hilo, quiz, blackjack, memory)
 const storePath = join(process.cwd(), '.tmp', 'games.test.sqlite')
 
 function otherUser() {
@@ -301,6 +303,104 @@ describe('quiz — command', () => {
 
     expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
     expect(body.data.choices.some((choice) => choice.value === 'quiz')).toBe(true)
+  })
+})
+
+describe('blackjack — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private blackjack hand', async () => {
+    const calls = await dispatch(commandJSON('blackjack'), subs)
+    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Blackjack')
+  })
+
+  it('settles the hand when standing', async () => {
+    const firstCalls = await dispatch(commandJSON('blackjack'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const standButton = collectButtonIds(firstBody.data.components).find((id) => id.endsWith(':stand')) ?? BLACKJACK_BUTTON_ID
+
+    const standCalls = await dispatch(buttonJSON(firstBody.data.components, standButton), subs)
+    const body = getCallback(standCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).not.toContain('??')
+    expect(
+      rendered.includes('You win.') ||
+        rendered.includes('Dealer wins.') ||
+        rendered.includes('Dealer busts.') ||
+        rendered.includes('Push.') ||
+        rendered.includes('Bust.')
+    ).toBe(true)
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('blackjack --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns blackjack in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('bla'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'blackjack')).toBe(true)
+  })
+})
+
+describe('memory — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private memory board', async () => {
+    const calls = await dispatch(commandJSON('memory'), subs)
+    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Memory match')
+  })
+
+  it('reveals a selected tile', async () => {
+    const firstCalls = await dispatch(commandJSON('memory'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const firstTile = buttonIdByIndex(firstBody.data.components, MEMORY_TILE_BUTTON_ID, 0)
+
+    const tileCalls = await dispatch(buttonJSON(firstBody.data.components, firstTile), subs)
+    const body = getCallback(tileCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Pick one more tile.')
+    expect(/🍎|🍇|🍊|🍓|🥝|🍍|🥥|🍑/.test(rendered)).toBe(true)
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('memory --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns memory in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('mem'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'memory')).toBe(true)
   })
 })
 
