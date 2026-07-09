@@ -77,7 +77,7 @@ function isDirection(value: unknown): value is HiloDirection {
 }
 
 function isSafeNumber(value: unknown): value is number {
-  return Number.isInteger(value) && value >= HILO_MIN && value <= HILO_MAX
+  return typeof value === 'number' && Number.isInteger(value) && value >= HILO_MIN && value <= HILO_MAX
 }
 
 function parseGuessId(customId: string): { token: string; guess: HiloDirection } | null {

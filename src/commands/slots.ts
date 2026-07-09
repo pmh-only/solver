@@ -21,6 +21,7 @@ const SLOT_SYMBOLS = ['🍒', '🍋', '🍉', '⭐', '🔔'] as const
 const SLOT_REEL_COUNT = 3
 
 type SlotSymbol = (typeof SLOT_SYMBOLS)[number]
+type SlotState = [SlotSymbol, SlotSymbol, SlotSymbol]
 
 interface SlotsState {
   commandInput: string
@@ -44,14 +45,12 @@ function isSlotSymbol(value: unknown): value is SlotSymbol {
   return typeof value === 'string' && (SLOT_SYMBOLS as readonly string[]).includes(value)
 }
 
-function parseSpin(value: unknown): SlotState | null {
-  if (!Array.isArray(value) || value.length !== SLOT_REEL_COUNT) return null
+function parseSpin(value: unknown): SlotState | undefined {
+  if (!Array.isArray(value) || value.length !== SLOT_REEL_COUNT) return undefined
   const [a, b, c] = value
-  if (!isSlotSymbol(a) || !isSlotSymbol(b) || !isSlotSymbol(c)) return null
+  if (!isSlotSymbol(a) || !isSlotSymbol(b) || !isSlotSymbol(c)) return undefined
   return [a, b, c]
 }
-
-type SlotState = [SlotSymbol, SlotSymbol, SlotSymbol]
 
 function loadState(token: string): SlotsState | null {
   const stored = getStoredValue(stateKey(token))

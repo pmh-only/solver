@@ -63,7 +63,7 @@ function storeState(token: string, state: QuizState): void {
 }
 
 function isQuestionIndex(value: unknown): value is number {
-  return Number.isInteger(value as number) && value >= 0 && value < QUIZ_QUESTIONS.length
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < QUIZ_QUESTIONS.length
 }
 
 function loadState(token: string): QuizState | null {
@@ -94,7 +94,7 @@ function questionFromState(state: QuizState): QuizQuestion {
 }
 
 function isAnswerIndex(value: unknown): value is number {
-  return Number.isInteger(value as number) && value >= 0 && value < 4
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < 4
 }
 
 function parseAnswerId(customId: string): { token: string; answer: number } | null {

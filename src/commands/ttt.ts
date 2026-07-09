@@ -244,7 +244,7 @@ export function isTttMoveButtonId(customId: string): boolean {
   return customId.startsWith(`${TTT_MOVE_BUTTON_ID}:`)
 }
 
-function playerDisplayName(interaction: ButtonInteraction): string {
+function playerDisplayName(interaction: CommandInteraction): string {
   return interaction.user.globalName ?? interaction.user.username
 }
 
