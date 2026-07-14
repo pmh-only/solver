@@ -29,6 +29,7 @@ import { subcommand as hilo } from './commands/hilo.js'
 import { subcommand as quiz } from './commands/quiz.js'
 import { subcommand as blackjack } from './commands/blackjack.js'
 import { subcommand as memory } from './commands/memory.js'
+import { subcommand as usage } from './commands/usage.js'
 import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
@@ -54,6 +55,7 @@ const commands = [
   quiz,
   blackjack,
   memory,
+  usage,
   coin,
   dice,
   rps,

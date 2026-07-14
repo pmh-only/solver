@@ -1,9 +1,11 @@
 import {
   ActionRowBuilder,
+  type AttachmentBuilder,
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
   ContainerBuilder,
+  FileBuilder,
   LabelBuilder,
   MediaGalleryBuilder,
   MessageFlags,
@@ -53,12 +55,14 @@ interface ConstrainedCommandTemplate {
 export type TopLevelComponent =
   | string
   | TextDisplayBuilder
+  | FileBuilder
   | SeparatorBuilder
   | SectionBuilder
   | MediaGalleryBuilder
 
 interface CommandReplyOptions {
   subcommand?: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>
+  private?: boolean
 }
 
 interface PlainTextReplyPayload {
@@ -176,6 +180,11 @@ function addComponent(container: ContainerBuilder, component: TopLevelComponent)
 
   if (resolved instanceof SectionBuilder) {
     container.addSectionComponents(resolved)
+    return
+  }
+
+  if (resolved instanceof FileBuilder) {
+    container.addFileComponents(resolved)
     return
   }
 
@@ -354,17 +363,21 @@ function buildContainer(
     addComponent(body, component)
   }
 
-  const responseComponents = pub
-    ? withPubtabButton([body], isPubtabContext(flags))
-    : [body, ...controlRows(pub, options.subcommand, commandInput)]
+  const responseComponents = options.private
+    ? [body, pinButtonRow()]
+    : pub
+      ? withPubtabButton([body], isPubtabContext(flags))
+      : [body, ...controlRows(pub, options.subcommand, commandInput)]
 
   return {
     components: responseComponents,
     commandInput,
-    files: [],
-    flags: pub
-      ? ([MessageFlags.IsComponentsV2] as const)
-      : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
+    files: [] as AttachmentBuilder[],
+    flags: options.private
+      ? ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
+      : pub
+        ? ([MessageFlags.IsComponentsV2] as const)
+        : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
   }
 }
 
@@ -385,6 +398,10 @@ export function commandContainer(
   ...components: TopLevelComponent[]
 ) {
   return buildContainer(args, flags, components, { subcommand })
+}
+
+export function privateContainer(args: string, flags: Flags, ...components: TopLevelComponent[]) {
+  return buildContainer(args, flags, components, { private: true })
 }
 
 export function text(content: string) {
