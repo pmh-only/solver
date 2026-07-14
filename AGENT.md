@@ -1,261 +1,228 @@
-# Agent Instructions — solver
+# Feature Agent Instructions - solver
 
-You are working on a Discord.js bot. Follow every rule here exactly. Do not skip steps.
+Use this guide when implementing or changing features in this repository. Read the relevant source and neighboring tests before editing; do not infer behavior from the README.
 
----
+## Project Model
 
-## MANDATORY WORKFLOW
+`solver` is a Node.js 24, TypeScript, Discord.js bot. Discord exposes one `/c` slash command whose required `_` option contains an internal subcommand and its arguments. The bot also exposes user and message context-menu commands.
 
-Every time you change code, do these steps **in order**. Do not skip any step.
+The main flow is:
 
+```text
+Discord interaction
+  -> src/handler.ts
+  -> parseFlags() and subcommand lookup
+  -> Subcommand.execute()
+  -> Components V2 response
+  -> optional SQLite state
 ```
-1. Write or update code
-2. Always create or update automated tests in src/test/<name>.test.ts for the change you made
-3. Run: pnpm test      ← must pass, fix failures before continuing
-4. Run: pnpm lint      ← must pass, fix all errors before continuing
-5. Commit your changes
-6. Push your branch
+
+Important files:
+
+```text
+src/index.ts                  subcommand registration and bot startup
+src/application-commands.ts   Discord-visible slash/context commands
+src/handler.ts                central interaction router and autocomplete
+src/types.ts                  Subcommand and command result contracts
+src/flags.ts                  flag parsing and aliases
+src/components.ts             Components V2 builders and reply lifecycle
+src/commands/                 command and interaction implementations
+src/helpers/kv-store.ts       synchronous SQLite key/value storage
+src/test/e2e.ts               raw Discord JSON -> captured REST calls harness
+src/test/*.test.ts            Vitest feature and regression tests
 ```
 
-**Never finish a task without creating or updating tests for the change, then passing both `pnpm test` and `pnpm lint`, then committing and pushing the result.**
+Use `.js` suffixes for relative imports. The project is native ESM with Node16 module resolution and strict TypeScript.
 
-**Commit and push are mandatory for every completed task, every code change, and every documentation change. Treat a task as incomplete until both happened successfully.**
+## Feature Workflow
 
----
+For every feature change:
 
-## ABSOLUTE RULES
+1. Read the affected command, `src/handler.ts`, `src/components.ts`, and the closest tests.
+2. Make the smallest change that implements the requested behavior.
+3. Add or update focused automated tests in `src/test/<feature>.test.ts`.
+4. Run `pnpm test`.
+5. Run `pnpm lint`.
+6. Run `pnpm exec tsc --noEmit`.
+7. Commit the completed change and push the tracked branch without waiting for the user to request it.
 
-**NEVER** do these:
+Do not run `pnpm deploy` as verification. It replaces the application's global Discord command set. Do not start the bot without explicit permission because startup connects to Discord and may deploy missing commands.
 
-- Use `interaction.reply({ content: '...' })` — always use Components V2 (`container()`)
-- Use `ephemeral: true` — always use `flags: MessageFlags.Ephemeral`
-- Pass `container()`'s return value to `editReply()` — it breaks (see below)
-- Use `bare.includes(' ')` to detect args mode in autocomplete — use `focused.includes(' ')`
-- Forget to strip the subcommand name from `args` before using it as user input
+## Adding A Subcommand
 
-**ALWAYS** do these:
+Create substantial commands in `src/commands/<name>.ts`. Keep parsing or protocol code in a separate runtime module when it can be tested without Discord. Add only small, closely related utilities to `src/commands/more.ts`; do not make that module a default dumping ground.
 
-- Use `container(args, flags, 'your output')` for all replies
-- Use `MessageFlags.IsComponentsV2` on every `editReply` / non-deferred `reply`
-- Cast `Buffer.concat([...])` to `Buffer` — TypeScript 6 requires it
-- Always create or update automated tests for every code change in `src/test/<name>.test.ts`
-- Write tests for every subcommand in `src/test/<name>.test.ts`
-- Run `pnpm test` and `pnpm lint` before finishing
-- Commit and push after the work is complete
-- Always create a git commit for completed work
-- Always push the current branch after committing
-
-## GIT ENFORCEMENT
-
-- Every completed change must end with a new git commit
-- Every new git commit must be pushed to the tracked remote branch immediately
-- Do not stop after local validation only
-- Do not leave finished work uncommitted
-- Do not leave finished work unpushed
-- If tests or lint fail, fix them first, then commit, then push
-- If push fails, the task is not done yet
-
----
-
-## WRITING TESTS
-
-Every code change must include a new or updated automated test. If you cannot add a meaningful automated test, stop and explain the blocker instead of skipping test coverage.
-
-Tests use `src/test/e2e.ts`. The pattern is: raw Discord JSON in → captured REST JSON out.
+Every subcommand implements `Subcommand` from `src/types.ts`:
 
 ```ts
-import { describe, it, expect } from 'vitest'
-import { InteractionResponseType, MessageFlags } from 'discord.js'
-import { subcommand as myCmd } from '../commands/mycommand.js'
-import {
-  commandJSON,
-  autocompleteJSON,
-  dispatch,
-  getCallback,
-  getEdit,
-  makeSubcommands
-} from './e2e.js'
-
-const subs = makeSubcommands(myCmd)
-
-describe('mycommand — command', () => {
-  it('replies immediately for simple case', async () => {
-    const calls = await dispatch(commandJSON('mycommand'), subs)
-    const body = getCallback(calls) as { type: number; data: { flags: number } }
-    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
-  })
-
-  it('defers then edits for slow case', async () => {
-    const calls = await dispatch(commandJSON('mycommand somearg'), subs)
-    const defer = getCallback(calls) as { type: number }
-    const edit = getEdit(calls)
-    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect(edit).not.toBeNull()
-  })
-
-  it('defers publicly with --pub', async () => {
-    const calls = await dispatch(commandJSON('mycommand somearg --pub'), subs)
-    const defer = getCallback(calls) as { type: number; data: { flags: number } }
-    expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
-  })
-})
-
-describe('mycommand — autocomplete', () => {
-  it('returns choices in selection mode', async () => {
-    const calls = await dispatch(autocompleteJSON('my'), subs)
-    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
-    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
-    expect(body.data.choices.length).toBeGreaterThan(0)
-  })
-})
+export interface Subcommand {
+  name: string
+  description: string
+  usage?: string
+  examples?: string[]
+  flags?: Record<string, FlagDef>
+  autocomplete?: (restArgs: string, flags: Flags) => Promise<Choice[]>
+  execute: (interaction: CommandInteraction, args: string, flags: Flags) => Promise<void>
+  run?: (args: string, flags: Flags) => Promise<CommandRunResult>
+}
 ```
 
-**Minimum test coverage per subcommand:**
+Follow these rules:
 
-- Immediate reply (no defer)
-- Deferred reply (if the command defers)
-- `--pub` flag makes response non-ephemeral
-- Autocomplete selection mode returns the subcommand name
+- Include concise `usage` and realistic `examples`; they appear in command controls.
+- `args` passed to `execute` and `run` includes the subcommand name. Strip it with `args.replace(/^\S+\s*/, '').trim()` before treating it as user input.
+- `autocomplete` receives only arguments after the subcommand name.
+- Declare value-taking flags with `value: 'string'`; flags without `value` are booleans.
+- The global `--pub` / `-p` flag is supplied by the router and must not be redeclared.
+- Register a dedicated command by importing it and adding it to the collection in `src/index.ts`.
+- Register a small command exported through `extraSubcommands` in `src/commands/more.ts`.
+- Add commands to `pubtab` only after confirming they are safe to launch publicly with constrained input.
 
----
+The flag parser is whitespace-based, not shell-aware. Boolean flags may consume a following bare token in surprising ways, and quoted values are not preserved as shell tokens. Test the exact supported syntax, especially aliases and value flags.
 
-## ADDING A SUBCOMMAND — STEP BY STEP
+## Command Response Pattern
 
-### Step 1: Create `src/commands/<name>.ts`
+Use the helpers in `src/components.ts` rather than assembling ordinary command responses manually:
+
+- `commandContainer(subcommand, args, flags, ...)` builds a command response with usage, examples, retry, edit, pin, and publish controls.
+- `sendCommandReply(interaction, payload)` handles initial replies, component updates, deferred edits, command-input persistence, and ephemeral deletion.
+- `runRerunnableCommand(...)` is the preferred path for asynchronous or retryable work.
+- `commandReferenceReply(...)` renders validation and usage errors.
+- `summarySection`, `text`, `separator`, `codeBlock`, `bulletBlock`, and `keyValueBlock` build response content.
+- `container(...)` is for generic/system responses that do not need command controls.
+
+Preferred rerunnable structure:
 
 ```ts
-import { MessageFlags } from 'discord.js'
 import type { Subcommand } from '../types.js'
-import { container } from '../components.js'
+import {
+  commandReferenceReply,
+  runRerunnableCommand,
+  sendCommandReply,
+  summarySection
+} from '../components.js'
 
 export const subcommand: Subcommand = {
   name: 'example',
-  description: 'one-line description',
+  description: 'describe the result',
+  usage: 'example <value> [--pub]',
+  examples: ['example value'],
 
-  flags: {
-    myflag: { description: 'flag description', value: 'string' }, // value flag
-    verbose: { description: 'verbose output' } // boolean flag
-  },
-
-  async autocomplete(restArgs, flags) {
-    return [{ name: 'suggestion', value: 'example suggestion' }]
+  async run(args, flags) {
+    const input = args.replace(/^\S+\s*/, '').trim()
+    const result = await doWork(input, flags)
+    return summarySection('Example', [result])
   },
 
   async execute(interaction, args, flags) {
-    // !! args includes the subcommand name as the first word — strip it:
-    const restArgs = args.replace(/^\S+\s*/, '').trim()
-
-    if (restArgs) {
-      // Slow path: defer first, then edit
-      await interaction.deferReply({ flags: flags.has('pub') ? undefined : MessageFlags.Ephemeral })
-      const result = await doSlowWork(restArgs)
-      const reply = container(args, flags, result)
-      await interaction.editReply({
-        components: reply.components,
-        flags: MessageFlags.IsComponentsV2
-      })
-    } else {
-      // Fast path: reply immediately
-      await interaction.reply(container(args, flags, 'result here'))
+    const input = args.replace(/^\S+\s*/, '').trim()
+    if (!input) {
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'value is required')
+      )
+      return
     }
+
+    await runRerunnableCommand(interaction, subcommand, args, flags, () =>
+      subcommand.run!(args, flags)
+    )
   }
 }
 ```
 
-### Step 2: Register in `src/index.ts`
+Response invariants:
+
+- Commands are ephemeral by default and public only when `flags.has('pub')`.
+- Components V2 replies and updates require `MessageFlags.IsComponentsV2`.
+- Deferred replies may use `MessageFlags.Ephemeral`, but deferred edits must use `MessageFlags.IsComponentsV2` and pass `components`, not the entire `container()` result.
+- Do not use `interaction.reply({ content: '...' })` for normal feature output. Existing plain-text paths are intentional compatibility behavior, not a template for new commands.
+- Private replies are scheduled for deletion after 60 seconds. Use the shared send helpers so that pinning and deletion remain consistent.
+- Preserve Discord limits. Truncate external/user content and avoid oversized component trees, select menus, and message bodies.
+
+## Interactive Features
+
+Buttons, selects, modals, games, and context menus require explicit central routing.
+
+For component interactions:
+
+- Namespace every custom ID with a feature-specific exported prefix.
+- Include an opaque random token when the ID addresses persisted state.
+- Export an `is<Feature>...Id()` predicate and a focused handler from the feature module.
+- Import and route the predicate/handler in `src/handler.ts` before generic command controls.
+- Validate custom-ID structure and persisted JSON before use.
+- Return an ephemeral Components V2 "expired" response for missing or malformed state.
+- Enforce initiating-user or participant ownership when the interaction is not intentionally shared.
+- Use `interaction.update()` for immediate message replacement and `deferUpdate()` before slow work.
+- Test duplicate clicks, unauthorized users, malformed IDs, expired state, and public/private behavior when applicable.
+
+For context-menu features:
+
+- Define the Discord-visible command in `src/application-commands.ts`.
+- Put implementation and exported command/custom IDs in a focused file under `src/commands/`.
+- Add the matching user, message, modal, button, or select branch in `src/handler.ts`.
+- Remember that changing an existing command definition is not detected by startup's name/type-only deployment check; a real deployment requires an explicit `pnpm deploy` later.
+
+## Persistence
+
+`src/helpers/kv-store.ts` is a process-wide, synchronous SQLite key/value store. There is one global keyspace.
+
+- Prefix internal keys with `<feature>:` and use random tokens where practical.
+- Scope user-private or guild-private data by the relevant Discord ID.
+- Parse stored JSON defensively and handle missing/corrupt state as expired.
+- Never persist credentials, raw environment values, or unnecessary interaction tokens.
+- Add bounded retention or cleanup for transient state instead of allowing unlimited growth.
+- If a new internal prefix could appear in `list`, add it to the filtering policy in `src/commands/list.ts` and test that it stays hidden.
+- Clear stored values and reset mocks/timers in tests so cases remain isolated.
+- Avoid repeated synchronous database operations inside large loops or latency-sensitive handlers.
+
+## Security And Resource Limits
+
+Treat all Discord arguments, message content, component IDs, URLs, files, and stored values as untrusted.
+
+- Do not add shell execution, dynamic evaluation, or arbitrary process access to a feature.
+- For network features, use explicit timeouts, cap downloaded bytes, validate redirects, and block loopback, link-local, private, and cloud-metadata destinations unless the feature explicitly requires trusted internal access.
+- Do not include authorization headers, credentials, interaction tokens, or sensitive stored data in public responses or logs.
+- Add rate, concurrency, output-size, and cost controls for OpenAI or other metered APIs.
+- Avoid unbounded regular expressions, buffers, canvas dimensions, collections, timers, and follow-up messages.
+- Load credentials from environment variables and document new variables in `.env.example` with placeholder values only.
+- Do not rely on `node:vm`, Discord ephemeral responses, or Docker's non-root user as a security boundary.
+
+## Testing
+
+Tests use Vitest and the harness in `src/test/e2e.ts`. The normal pattern sends raw Discord interaction JSON through the production handler and inspects captured REST calls.
 
 ```ts
-import { subcommand as example } from './commands/example.js'
-// add to the array:
-for (const sub of [ping, example]) {
+const subs = makeSubcommands(subcommand)
+const calls = await dispatch(commandJSON('example value'), subs)
+const callback = getCallback(calls)
+const edit = getEdit(calls)
 ```
 
-### Step 3: Write tests in `src/test/<name>.test.ts`
+Add the cases relevant to the feature:
 
-Use the test pattern shown in WRITING TESTS above.
+- Immediate reply path.
+- Deferred/edit path for asynchronous work.
+- Ephemeral default and non-ephemeral `--pub` behavior.
+- Usage or validation failure.
+- Subcommand and argument autocomplete.
+- Long and short flag forms.
+- Retry and edit controls for rerunnable commands.
+- Component, select, and modal routing.
+- Persisted-state success, corruption, expiration, isolation, and ownership.
+- External-service success, timeout, malformed response, and failure.
+- Output truncation and Discord limits.
 
-### Step 4: Run and verify
+Mock network and paid services. Use fake timers for deletion or timer behavior. Put protocol parsing, calculation, and formatting in testable runtime functions when practical. Do not weaken assertions merely to make an existing failure pass.
 
-```
-pnpm test   ← all tests must pass
-pnpm lint   ← no errors allowed
-```
+## Absolute Rules
 
----
-
-## KEY PATTERNS
-
-### Reply immediately (no async work)
-
-```ts
-await interaction.reply(container(args, flags, 'output'))
-```
-
-### Reply after async work (defer first)
-
-```ts
-await interaction.deferReply({ flags: flags.has('pub') ? undefined : MessageFlags.Ephemeral })
-const result = await someAsyncWork()
-const reply = container(args, flags, result)
-await interaction.editReply({ components: reply.components, flags: MessageFlags.IsComponentsV2 })
-//                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-//                            NEVER pass container() directly to editReply — extract components
-```
-
-### Strip subcommand name from args
-
-```ts
-// args = "example foo bar"  ← includes subcommand name
-const restArgs = args.replace(/^\S+\s*/, '').trim()
-// restArgs = "foo bar"
-```
-
-### Buffer.concat cast
-
-```ts
-const buf = Buffer.concat([a, b, c]) as Buffer // ← cast required in TypeScript 6
-```
-
----
-
-## FLAGS API CHEAT SHEET
-
-| Method                  | Allowed flags                                           |
-| ----------------------- | ------------------------------------------------------- |
-| `deferReply({ flags })` | `MessageFlags.Ephemeral` only                           |
-| `editReply({ flags })`  | `MessageFlags.IsComponentsV2` only                      |
-| `reply({ flags })`      | `MessageFlags.IsComponentsV2 \| MessageFlags.Ephemeral` |
-| `container()`           | handles flags automatically — use for `reply()` only    |
-
----
-
-## FILE MAP
-
-```
-src/
-  index.ts          # bot entry point — registers client and routes interactions
-  handler.ts        # interaction handler logic (imported by index.ts and tests)
-  deploy.ts         # force-deploy slash command
-  types.ts          # Subcommand, FlagDef types
-  flags.ts          # parseFlags(), buildAliasMap(), resolveAliases()
-  components.ts     # container(), TopLevelComponent, PUB_BUTTON_ID
-  commands/
-    ping.ts         # reference subcommand implementation
-  test/
-    e2e.ts          # test harness: commandJSON, autocompleteJSON, dispatch, getCallback, getEdit
-    ping.test.ts    # reference test file
-```
-
----
-
-## AUTOCOMPLETE — ONE RULE
-
-When detecting whether the user has moved past the subcommand name into the args position:
-
-```ts
-// CORRECT
-const inArgs = focused.includes(' ')
-
-// WRONG — flags get stripped from bare, so "ping --flag" looks like bare="ping" (no space)
-const inArgs = bare.includes(' ')
-```
+- Never expose a new feature only in source; register every entrypoint and route every interaction it needs.
+- Never forget that command `args` starts with the subcommand name.
+- Never detect autocomplete argument mode with `bare.includes(' ')`; use `focused.includes(' ')` because flags are stripped from `bare`.
+- Never pass the full `container()` or `commandContainer()` result to `editReply()`; pass its `components` and `MessageFlags.IsComponentsV2`.
+- Never use `ephemeral: true`; use `MessageFlags.Ephemeral`.
+- Cast `Buffer.concat([...])` to `Buffer` where TypeScript 6 requires it.
+- Never make real Discord, OpenAI, IMAP, Firecrawl, or arbitrary internet calls from tests.
+- Never finish a code feature without focused tests and passing test, lint, and type-check commands.
+- Never leave completed work uncommitted or unpushed. Commit and push automatically without asking the user for permission.
