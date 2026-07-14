@@ -40,6 +40,19 @@ describe('canvas presentation', () => {
     expect(edgeHasOpaquePixel(image.width - 1)).toBe(true)
   })
 
+  it('renders a complete chess board and highlights selected squares', async () => {
+    const board = Array.from({ length: 8 }, () => Array(8).fill(null))
+    board[0][4] = { square: 'e8', type: 'k', color: 'b' }
+    board[7][4] = { square: 'e1', type: 'k', color: 'w' }
+    const plain = renderVisualCard({ kind: 'chess', board })
+    const selected = renderVisualCard({ kind: 'chess', board, selected: 'e1' })
+    const image = await loadImage(selected)
+
+    expect(image.width).toBeGreaterThan(540)
+    expect(image.height).toBe(560)
+    expect(selected).not.toEqual(plain)
+  })
+
   it('wraps long unbroken command values within the card width', () => {
     const ctx = createCanvas(300, 100).getContext('2d')
     ctx.font = '16px sans-serif'

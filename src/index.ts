@@ -30,6 +30,7 @@ import { subcommand as quiz } from './commands/quiz.js'
 import { subcommand as blackjack } from './commands/blackjack.js'
 import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
+import { subcommand as chess } from './commands/chess.js'
 import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
@@ -56,6 +57,7 @@ const commands = [
   blackjack,
   memory,
   usage,
+  chess,
   coin,
   dice,
   rps,

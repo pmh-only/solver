@@ -20,6 +20,7 @@ import {
   Client,
   Collection,
   MessageContextMenuCommandInteraction,
+  StringSelectMenuInteraction,
   UserContextMenuCommandInteraction
 } from 'discord.js'
 import type { Interaction } from 'discord.js'
@@ -135,6 +136,13 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
     return new Ctor(client, raw)
   }
   if (type === 3) {
+    if ((raw.data as { component_type?: number } | undefined)?.component_type === 3) {
+      const Ctor = StringSelectMenuInteraction as unknown as new (
+        client: Client,
+        data: unknown
+      ) => Interaction
+      return new Ctor(client, raw)
+    }
     const Ctor = ButtonInteraction as unknown as new (client: Client, data: unknown) => Interaction
     return new Ctor(client, raw)
   }
@@ -431,6 +439,39 @@ export function buttonJSON(
       global_name: 'Test User'
     },
     token: 'test_button_token',
+    version: 1,
+    locale: 'en-US',
+    entitlements: [],
+    authorizing_integration_owners: {},
+    ...overrides
+  }
+}
+
+export function selectJSON(
+  components: unknown[],
+  customId: string,
+  value: string,
+  overrides: Partial<RawInteraction> = {}
+): RawInteraction {
+  return {
+    id: '1000000000000000005',
+    application_id: '999999999999999999',
+    type: 3,
+    data: {
+      component_type: 3,
+      custom_id: resolveCustomId(components, customId),
+      values: [value]
+    },
+    channel_id: '777777777777777777',
+    message: messageJSON(components),
+    user: {
+      id: '666666666666666666',
+      username: 'testuser',
+      discriminator: '0',
+      avatar: null,
+      global_name: 'Test User'
+    },
+    token: 'test_select_token',
     version: 1,
     locale: 'en-US',
     entitlements: [],

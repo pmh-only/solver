@@ -23,6 +23,7 @@
   "dependencies": {
     "@napi-rs/canvas": "^0.1.97",
     "@twemoji/svg": "^15.0.0",
+    "chess.js": "^1.4.0",
     "discord.js": "^14.26.2",
     "dotenv": "^17.4.1",
     "imapflow": "^1.2.18",

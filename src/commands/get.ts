@@ -1,7 +1,7 @@
 import { MessageFlags } from 'discord.js'
 import type { Subcommand } from '../types.js'
 import { contentPublishButtonRow, sendPlainTextReply } from '../components.js'
-import { getStoredValue, hasStoredValue } from '../helpers/kv-store.js'
+import { getStoredValue, hasStoredValue, isInternalStoredKey } from '../helpers/kv-store.js'
 
 function parseGetArgs(args: string): string {
   return args.replace(/^\S+\s*/, '').trim()
@@ -22,7 +22,7 @@ export const subcommand: Subcommand = {
       return
     }
 
-    if (!hasStoredValue(key)) {
+    if (isInternalStoredKey(key) || !hasStoredValue(key)) {
       await sendPlainTextReply(interaction, { content: `no ${key}`, flags: replyFlags })
       return
     }

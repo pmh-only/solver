@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { join } from 'node:path'
 import { subcommand as set } from '../commands/set.js'
-import { getStoredValue, clearStoredValues } from '../helpers/kv-store.js'
+import { clearStoredValues, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues, reopenStoredValuesForTests } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
 
@@ -29,6 +29,15 @@ describe('set — command', () => {
     await dispatch(commandJSON('set aaaa hello world'), subs)
 
     expect(getStoredValue('aaaa')).toBe('hello world')
+  })
+
+  it('does not overwrite internal state keys', async () => {
+    setStoredValue('__chess-state:token', 'original')
+
+    const calls = await dispatch(commandJSON('set __chess-state:token replaced'), subs)
+
+    expect(getStoredValue('__chess-state:token')).toBe('original')
+    expect(JSON.stringify(getCallback(calls))).toContain('reserved key')
   })
 
   it('replies publicly when --pub is set', async () => {

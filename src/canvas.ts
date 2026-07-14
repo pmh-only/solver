@@ -32,6 +32,15 @@ export type LocaleKind = 'ko' | 'ja' | 'zh-CN' | 'zh-TW' | 'default'
 
 export type CardVisual =
   | { kind: 'ttt'; board: Array<'X' | 'O' | null>; winner?: 'X' | 'O' }
+  | {
+      kind: 'chess'
+      board: Array<
+        Array<{ square: string; type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k'; color: 'w' | 'b' } | null>
+      >
+      selected?: string
+      lastMove?: { from: string; to: string }
+      checkSquare?: string
+    }
   | { kind: 'coin'; side?: 'heads' | 'tails' }
   | { kind: 'dice'; value?: number }
   | { kind: 'slots'; symbols?: string[] }
@@ -265,6 +274,7 @@ function fillRoundRect(
 
 function visualFrame(visual: CardVisual) {
   if (visual.kind === 'ttt') return { offsetY: 18, height: 342 }
+  if (visual.kind === 'chess') return { offsetY: 8, height: 560 }
   if (visual.kind === 'coin') return { offsetY: 12, height: 192 }
   if (visual.kind === 'dice') return { offsetY: 0, height: 216 }
   if (visual.kind === 'slots') return { offsetY: 24, height: 170 }
@@ -277,6 +287,69 @@ function visualFrame(visual: CardVisual) {
     offsetY: 14,
     height: Math.max(40, (Math.min(visual.options.length, 10) - 1) * 54 + 40)
   }
+}
+
+const CHESS_PIECES = {
+  w: { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' },
+  b: { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
+} as const
+
+function drawChess(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'chess' }>, y: number) {
+  const cell = 68
+  const size = cell * 8
+  const startX = (920 - size) / 2
+  const startY = y + 8
+
+  for (let row = 0; row < 8; row++) {
+    for (let column = 0; column < 8; column++) {
+      const square = `${String.fromCharCode(97 + column)}${8 - row}`
+      const x = startX + column * cell
+      const squareY = startY + row * cell
+      const highlighted =
+        visual.selected === square ||
+        visual.lastMove?.from === square ||
+        visual.lastMove?.to === square
+
+      ctx.fillStyle = (row + column) % 2 === 0 ? '#dbeafe' : '#475569'
+      ctx.fillRect(x, squareY, cell, cell)
+      if (highlighted) {
+        ctx.fillStyle =
+          visual.selected === square ? 'rgba(34, 211, 238, 0.58)' : 'rgba(250, 204, 21, 0.48)'
+        ctx.fillRect(x, squareY, cell, cell)
+      }
+      if (visual.checkSquare === square) {
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.6)'
+        ctx.fillRect(x, squareY, cell, cell)
+      }
+
+      const piece = visual.board[row]?.[column]
+      if (piece) {
+        const symbol = CHESS_PIECES[piece.color][piece.type]
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        setCanvasFont(ctx, 500, 52, JA_FAMILY)
+        ctx.lineWidth = 3
+        ctx.strokeStyle = piece.color === 'w' ? '#0f172a' : '#f8fafc'
+        ctx.fillStyle = piece.color === 'w' ? '#f8fafc' : '#0f172a'
+        ctx.strokeText(symbol, x + cell / 2, squareY + cell / 2 + 2)
+        ctx.fillText(symbol, x + cell / 2, squareY + cell / 2 + 2)
+      }
+
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'top'
+      setCanvasFont(ctx, 700, 11, GG_SANS_FAMILY)
+      ctx.fillStyle = (row + column) % 2 === 0 ? '#475569' : '#dbeafe'
+      if (column === 0) drawCanvasText(ctx, `${8 - row}`, x + 4, squareY + 3)
+      if (row === 7)
+        drawCanvasText(ctx, String.fromCharCode(97 + column), x + cell - 11, squareY + cell - 15)
+    }
+  }
+
+  ctx.strokeStyle = '#0f172a'
+  ctx.lineWidth = 4
+  ctx.strokeRect(startX, startY, size, size)
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
 }
 
 function drawTtt(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'ttt' }>, y: number) {
@@ -598,6 +671,7 @@ function drawPoll(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'poll'
 
 function drawVisual(ctx: SKRSContext2D, visual: CardVisual, y: number) {
   if (visual.kind === 'ttt') drawTtt(ctx, visual, y)
+  else if (visual.kind === 'chess') drawChess(ctx, visual, y)
   else if (visual.kind === 'coin') drawCoin(ctx, visual, y)
   else if (visual.kind === 'dice') drawDice(ctx, visual, y)
   else if (visual.kind === 'slots') drawSlots(ctx, visual, y)

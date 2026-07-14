@@ -41,7 +41,7 @@ import {
 } from './components.js'
 import { buildAliasMap, markPubtabContext, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
-import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
+import { getStoredValue, hasStoredValue, isInternalStoredKey } from './helpers/kv-store.js'
 import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
 import { handleUserImagesCommand, USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
@@ -86,6 +86,12 @@ import { handleDiceButton, isDiceButtonId } from './commands/dice.js'
 import { handleSlotsSpinButton, isSlotsSpinButtonId } from './commands/slots.js'
 import { handleBlackjackButton, isBlackjackButtonId } from './commands/blackjack.js'
 import { handleMemoryButton, isMemoryButtonId } from './commands/memory.js'
+import {
+  handleChessButton,
+  handleChessSelect,
+  isChessButtonId,
+  isChessSelectId
+} from './commands/chess.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -159,7 +165,8 @@ async function runCommandInput(
     }
 
     if (!bare.includes(' ')) {
-      const storedValue = hasStoredValue(bare) ? getStoredValue(bare) : undefined
+      const storedValue =
+        !isInternalStoredKey(bare) && hasStoredValue(bare) ? getStoredValue(bare) : undefined
       const replyFlags = flags.has('pub') ? undefined : ([MessageFlags.Ephemeral] as const)
 
       await sendPlainTextReply(
@@ -257,6 +264,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           return
         }
 
+        if (isChessButtonId(interaction.customId)) {
+          await handleChessButton(interaction)
+          return
+        }
+
         if (isQuizAnswerButtonId(interaction.customId)) {
           await handleQuizAnswerButton(interaction)
           return
@@ -350,6 +362,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (interaction.isStringSelectMenu()) {
+        if (isChessSelectId(interaction.customId)) {
+          await handleChessSelect(interaction)
+          return
+        }
+
         if (interaction.customId === MESSAGE_COLLECTION_EDIT_SELECT_ID) {
           await handleMessageCollectionEditSelect(interaction)
           return

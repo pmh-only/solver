@@ -7,6 +7,22 @@ import { getDefaultKvStorePath } from './kv-store-path.js'
 let storePath = getDefaultKvStorePath()
 let database: DatabaseSync | null = null
 
+const INTERNAL_KEY_PREFIXES = [
+  '__chess-state:',
+  'command-input:',
+  'constrained-command:',
+  'gpt-ctx:',
+  'message-input:',
+  'message-render-',
+  'message-store-',
+  'poll:',
+  'pub-content:'
+]
+
+export function isInternalStoredKey(key: string): boolean {
+  return INTERNAL_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))
+}
+
 function getDatabase(): DatabaseSync {
   if (database) return database
 
@@ -37,6 +53,10 @@ export function hasStoredValue(key: string): boolean {
     | { present: number }
     | undefined
   return row?.present === 1
+}
+
+export function deleteStoredValue(key: string): void {
+  getDatabase().prepare('DELETE FROM kv_store WHERE key = ?').run(key)
 }
 
 export function listStoredKeys(): string[] {

@@ -40,6 +40,7 @@ describe('list — command', () => {
   it('hides system-generated keys', async () => {
     setStoredValue('alpha', '1')
     setStoredValue('command-input:token', 'list')
+    setStoredValue('__chess-state:token', '{}')
     setStoredValue('constrained-command:token', '{"command":"ping","args":"1.1.1.1"}')
     setStoredValue('gpt-ctx:token', '{"prompt":"hi"}')
     setStoredValue('message-input:0', 'ping 1.1.1.1')
@@ -55,6 +56,7 @@ describe('list — command', () => {
     expect(json).toContain('alpha')
     expect(json).toContain('1 key found')
     expect(json).not.toContain('command-input:token')
+    expect(json).not.toContain('__chess-state:token')
     expect(json).not.toContain('constrained-command:token')
     expect(json).not.toContain('gpt-ctx:token')
     expect(json).not.toContain('message-input:0')
@@ -71,6 +73,14 @@ describe('list — command', () => {
     const body = getCallback(calls)
 
     expect(JSON.stringify(body)).toContain('1 key found')
+  })
+
+  it('keeps ordinary chess-prefixed user keys visible', async () => {
+    setStoredValue('chess:opening', 'Sicilian')
+
+    const calls = await dispatch(commandJSON('list'), subs)
+
+    expect(JSON.stringify(getCallback(calls))).toContain('chess:opening')
   })
 
   it('replies publicly when --pub is set', async () => {

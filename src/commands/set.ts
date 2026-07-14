@@ -7,7 +7,7 @@ import {
   summarySection,
   text
 } from '../components.js'
-import { setStoredValue } from '../helpers/kv-store.js'
+import { isInternalStoredKey, setStoredValue } from '../helpers/kv-store.js'
 
 function parseSetArgs(args: string): { key: string; value: string } | null {
   const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -36,6 +36,14 @@ export const subcommand: Subcommand = {
       await sendCommandReply(
         interaction,
         commandReferenceReply(subcommand, args, flags, 'usage', 'no args')
+      )
+      return
+    }
+
+    if (isInternalStoredKey(parsed.key)) {
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args, flags, 'usage', 'reserved key')
       )
       return
     }

@@ -6,7 +6,7 @@ import {
   summarySection,
   text
 } from '../components.js'
-import { listStoredKeys } from '../helpers/kv-store.js'
+import { isInternalStoredKey, listStoredKeys } from '../helpers/kv-store.js'
 
 export const subcommand: Subcommand = {
   name: 'list',
@@ -15,17 +15,7 @@ export const subcommand: Subcommand = {
   examples: ['list'],
 
   async execute(interaction, args, flags) {
-    const internalPrefixes = [
-      'command-input:',
-      'constrained-command:',
-      'gpt-ctx:',
-      'message-input:',
-      'message-render-',
-      'message-store-',
-      'poll:',
-      'pub-content:'
-    ]
-    const keys = listStoredKeys().filter((k) => !internalPrefixes.some((p) => k.startsWith(p)))
+    const keys = listStoredKeys().filter((key) => !isInternalStoredKey(key))
 
     if (keys.length === 0) {
       await sendCommandReply(

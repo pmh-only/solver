@@ -6,6 +6,7 @@ import {
   MediaGalleryBuilder,
   SeparatorBuilder,
   SeparatorSpacingSize,
+  StringSelectMenuBuilder,
   TextDisplayBuilder
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -23,11 +24,15 @@ export interface CanvasPresentationOptions {
 }
 
 export interface GamePresentationOptions extends CanvasPresentationOptions {
-  controls?: ActionRowBuilder<ButtonBuilder>[]
+  controls?: GameControl[]
 }
 
+export type GameControl =
+  | ActionRowBuilder<ButtonBuilder>
+  | ActionRowBuilder<StringSelectMenuBuilder>
+
 export interface GamePresentation {
-  components: Array<ContainerBuilder | ActionRowBuilder<ButtonBuilder>>
+  components: Array<ContainerBuilder | GameControl>
   files: AttachmentBuilder[]
 }
 

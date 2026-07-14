@@ -14,6 +14,9 @@ importers:
       '@twemoji/svg':
         specifier: ^15.0.0
         version: 15.0.0
+      chess.js:
+        specifier: ^1.4.0
+        version: 1.4.0
       discord.js:
         specifier: ^14.26.2
         version: 14.26.2
@@ -784,6 +787,9 @@ packages:
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
+
+  chess.js@1.4.0:
+    resolution: {integrity: sha512-BBJgrrtKQOzFLonR0l+k64A98NLemPwNsCskwb+29bRwobUa4iTm51E1kwGPbWXAcfdDa18nad6vpPPKPWarqw==}
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
@@ -1765,6 +1771,8 @@ snapshots:
   atomic-sleep@1.0.0: {}
 
   chai@6.2.2: {}
+
+  chess.js@1.4.0: {}
 
   convert-source-map@2.0.0: {}
 

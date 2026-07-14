@@ -47,6 +47,15 @@ describe('get — command', () => {
     expect(body.data.content).toBe('no a')
   })
 
+  it('does not expose internal state keys', async () => {
+    setStoredValue('__chess-state:token', 'private state')
+
+    const calls = await dispatch(commandJSON('get __chess-state:token'), subs)
+    const body = getCallback(calls) as { data: { content: string } }
+
+    expect(body.data.content).toBe('no __chess-state:token')
+  })
+
   it('replies publicly when --pub is set', async () => {
     setStoredValue('a', 'b')
 
