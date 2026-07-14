@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const BLACKJACK_BUTTON_ID = 'blackjack-action'
 
@@ -30,6 +32,7 @@ interface Card {
 interface BlackjackState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   player: Card[]
   dealer: Card[]
   chooser: string
@@ -66,6 +69,7 @@ function loadState(token: string): BlackjackState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       player: parsed.player.filter(isCard),
       dealer: parsed.dealer.filter(isCard),
       chooser: parsed.chooser,
@@ -171,7 +175,7 @@ function buildComponents(token: string, state: BlackjackState): BlackjackCompone
     actionButton(token, 'stand', over)
   )
 
-  return [container, row]
+  return withPubtabButton([container, row], state.pubtab)
 }
 
 function buildExpiredComponents(): BlackjackComponent[] {
@@ -234,6 +238,7 @@ export const subcommand: Subcommand = {
     const state: BlackjackState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       player: [drawCard(), drawCard()],
       dealer: [drawCard(), drawCard()],
       chooser: interaction.user.globalName ?? interaction.user.username

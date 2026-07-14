@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const DICE_GUESS_BUTTON_ID = 'dice-guess'
 
@@ -23,6 +25,7 @@ type DiceValue = 1 | 2 | 3 | 4 | 5 | 6
 interface DiceState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   lastGuess?: DiceValue
   result?: DiceValue
   chooser: string
@@ -54,6 +57,7 @@ function loadState(token: string): DiceState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       chooser: parsed.chooser,
       lastGuess: isDiceValue(parsed.lastGuess) ? parsed.lastGuess : undefined,
       result: isDiceValue(parsed.result) ? parsed.result : undefined
@@ -117,7 +121,7 @@ function buildComponents(token: string, state: DiceState): DiceComponent[] {
     buildGuessButton(token, 6, Boolean(state.result))
   )
 
-  return [container, rowOne, rowTwo]
+  return withPubtabButton([container, rowOne, rowTwo], state.pubtab)
 }
 
 function buildExpiredComponents(): DiceComponent[] {
@@ -183,6 +187,7 @@ export const subcommand: Subcommand = {
     const state: DiceState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       chooser: interaction.user.globalName ?? interaction.user.username
     }
 

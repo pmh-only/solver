@@ -33,11 +33,12 @@ import {
   PIN_BUTTON_ID,
   PUB_BUTTON_ID,
   PUB_CONTENT_BUTTON_ID,
+  PUBTAB_BUTTON_ID,
   RETRY_BUTTON_ID,
   scheduleEphemeralMessageDelete,
   scheduleEphemeralReplyDelete
 } from './components.js'
-import { buildAliasMap, parseFlags, resolveAliases } from './flags.js'
+import { buildAliasMap, markPubtabContext, parseFlags, resolveAliases } from './flags.js'
 import { evaluateMathString } from './commands/math_core.js'
 import { getStoredValue, hasStoredValue } from './helpers/kv-store.js'
 import { handleMailSelect, MAIL_MESSAGE_SELECT_ID } from './commands/mail.js'
@@ -148,9 +149,11 @@ function resolveCommandInput(rawInput: string, subcommands: Collection<string, S
 async function runCommandInput(
   interaction: CommandInteraction,
   subcommands: Collection<string, Subcommand>,
-  rawInput: string
+  rawInput: string,
+  fromPubtab = false
 ) {
   const { bare, flags, sub } = resolveCommandInput(rawInput, subcommands)
+  if (fromPubtab) markPubtabContext(flags)
 
   if (!sub) {
     if (looksLikeMath(bare)) {
@@ -214,6 +217,17 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     try {
       if (interaction.isButton()) {
+        if (interaction.customId === PUBTAB_BUTTON_ID) {
+          const pubtab = subcommands.get('pubtab')
+          if (!pubtab) {
+            await interaction.reply(container('pubtab', new Map(), 'no cmd'))
+            return
+          }
+
+          await pubtab.execute(interaction, 'pubtab', new Map())
+          return
+        }
+
         if (isRpsButtonId(interaction.customId)) {
           await handleRpsButton(interaction)
           return
@@ -423,7 +437,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         )
 
         await interaction.deferReply()
-        await runCommandInput(interaction, subcommands, commandInput)
+        await runCommandInput(interaction, subcommands, commandInput, true)
         return
       }
 

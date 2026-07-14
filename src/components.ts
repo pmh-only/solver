@@ -21,6 +21,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, CommandRunResult, Subcommand } from './types.js'
 import type { Flags } from './flags.js'
+import { isPubtabContext } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const PUB_BUTTON_ID = 'pub'
@@ -35,6 +36,7 @@ export const COMMAND_PRESET_SELECT_ID = 'command-presets'
 export const COMMAND_RUN_BUTTON_ID = 'run-command'
 export const COMMAND_RUN_MODAL_ID = 'run-command-modal'
 export const COMMAND_RUN_INPUT_ID = 'run-command-args'
+export const PUBTAB_BUTTON_ID = 'pubtab'
 
 type ReferenceView = 'usage' | 'examples' | 'flags'
 type ReplyTone = 'default' | 'success' | 'warning' | 'danger'
@@ -234,6 +236,19 @@ export function pinButtonRow() {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(pinButton())
 }
 
+export function pubtabButtonRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(PUBTAB_BUTTON_ID)
+      .setLabel('Pubtab')
+      .setStyle(ButtonStyle.Secondary)
+  )
+}
+
+export function withPubtabButton<T>(components: T[], include: boolean) {
+  return include ? [...components, pubtabButtonRow()] : components
+}
+
 const CONTENT_PUBLISH_KEY = 'pub-content'
 
 export function contentPublishButtonRow(content: string) {
@@ -373,8 +388,12 @@ function buildContainer(
     addComponent(body, component)
   }
 
+  const responseComponents = pub
+    ? withPubtabButton([body], isPubtabContext(flags))
+    : [body, ...controlRows(pub, options.subcommand, commandInput)]
+
   return {
-    components: pub ? [body] : [body, ...controlRows(pub, options.subcommand, commandInput)],
+    components: responseComponents,
     commandInput,
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)

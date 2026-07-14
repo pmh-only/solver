@@ -1,6 +1,10 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js'
 import type { Subcommand } from '../types.js'
-import { constrainedCommandButton, sendPlainTextReply } from '../components.js'
+import {
+  constrainedCommandButton,
+  PUBTAB_BUTTON_ID,
+  sendPlainTextReply
+} from '../components.js'
 
 interface SafeCommand {
   label: string
@@ -36,10 +40,17 @@ export function createPubtabSubcommand(commands: Iterable<Subcommand>): Subcomma
     examples: ['pubtab'],
 
     async execute(interaction) {
-      await sendPlainTextReply(interaction, {
+      const payload = {
         content: 'Safe commands for anyone to run:',
         components: buildRows(safeCommands)
-      })
+      }
+
+      if (interaction.isButton() && interaction.customId === PUBTAB_BUTTON_ID) {
+        await interaction.reply(payload)
+        return
+      }
+
+      await sendPlainTextReply(interaction, payload)
     }
   }
 }

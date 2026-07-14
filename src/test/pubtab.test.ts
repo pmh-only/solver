@@ -1,6 +1,11 @@
 import { InteractionResponseType } from 'discord.js'
 import { describe, expect, it } from 'vitest'
-import { COMMAND_RUN_BUTTON_ID, COMMAND_RUN_INPUT_ID, COMMAND_RUN_MODAL_ID } from '../components.js'
+import {
+  COMMAND_RUN_BUTTON_ID,
+  COMMAND_RUN_INPUT_ID,
+  COMMAND_RUN_MODAL_ID,
+  PUBTAB_BUTTON_ID
+} from '../components.js'
 import { subcommand as blackjack } from '../commands/blackjack.js'
 import { subcommand as cert } from '../commands/cert.js'
 import { subcommand as coin } from '../commands/coin.js'
@@ -13,7 +18,7 @@ import { subcommand as math } from '../commands/math.js'
 import { subcommand as memory } from '../commands/memory.js'
 import { createPubtabSubcommand } from '../commands/pubtab.js'
 import { subcommand as quiz } from '../commands/quiz.js'
-import { subcommand as rps } from '../commands/rps.js'
+import { RPS_PICK_BUTTON_ID, subcommand as rps } from '../commands/rps.js'
 import { subcommand as run } from '../commands/run.js'
 import { subcommand as sh } from '../commands/sh.js'
 import { subcommand as slots } from '../commands/slots.js'
@@ -161,6 +166,16 @@ describe('pubtab — command', () => {
     expect(JSON.stringify(editBody.components)).toContain('81')
     expect(JSON.stringify(editBody.components)).toContain('math 9*9 --pub')
     expect(JSON.stringify(editBody.components)).not.toContain('run js')
+    expect(findButtonByLabel(editBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
+
+    const returnCalls = await dispatch(
+      buttonJSON(editBody.components, PUBTAB_BUTTON_ID),
+      subs
+    )
+    const returnBody = getCallback(returnCalls) as { type: number; data: { content: string } }
+
+    expect(returnBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(returnBody.data.content).toContain('Safe commands for anyone to run:')
   })
 
   it('submits rerunnable commands from the modal as a new reply', async () => {
@@ -185,5 +200,36 @@ describe('pubtab — command', () => {
     expect(runCalls.some((call) => call.method === 'PATCH')).toBe(true)
     expect(JSON.stringify(runCalls)).toContain('ping 8.8.8.8 --pub')
     expect(JSON.stringify(runCalls)).not.toContain('Safe commands for anyone to run:')
+    expect(JSON.stringify(runCalls)).toContain(`"custom_id":"${PUBTAB_BUTTON_ID}"`)
+  })
+
+  it('keeps the pubtab button on interactive game updates', async () => {
+    const firstCalls = await dispatch(commandJSON('pubtab'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const customId = findButtonByLabel(firstBody.data.components, 'RPS')
+    const openCalls = await dispatch(buttonJSON(firstBody.data.components, customId ?? ''), subs)
+    const openBody = getCallback(openCalls) as { data: { custom_id: string } }
+    const runCalls = await dispatch(
+      modalJSON('duel', {}, { customId: openBody.data.custom_id, inputId: COMMAND_RUN_INPUT_ID }),
+      subs
+    )
+    const runBody = getEdit(runCalls) as { components: unknown[] }
+
+    expect(findButtonByLabel(runBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
+
+    const pickCalls = await dispatch(
+      buttonJSON(runBody.components, RPS_PICK_BUTTON_ID),
+      subs
+    )
+    const pickBody = getCallback(pickCalls) as { data: { components: unknown[] } }
+
+    expect(findButtonByLabel(pickBody.data.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
+  })
+
+  it('does not add the pubtab button to ordinary public commands', async () => {
+    const calls = await dispatch(commandJSON('math 1+1 --pub'), subs)
+    const body = getCallback(calls) as { data: { components: unknown[] } }
+
+    expect(findButtonByLabel(body.data.components, 'Pubtab')).toBeNull()
   })
 })

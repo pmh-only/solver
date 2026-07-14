@@ -11,8 +11,9 @@ import {
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, Subcommand } from '../types.js'
-import type { Flags } from '../flags.js'
+import { isPubtabContext, type Flags } from '../flags.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { withPubtabButton } from '../components.js'
 
 export const RPS_PICK_BUTTON_ID = 'rps-pick'
 export const RPS_PUBLISH_BUTTON_ID = 'rps-publish'
@@ -45,6 +46,7 @@ interface RpsState {
   mode: RpsMode
   commandInput: string
   pub: boolean
+  pubtab: boolean
   picks: RpsPick[]
   lastPc?: PcResult
 }
@@ -71,7 +73,8 @@ function loadState(token: string): RpsState | null {
     return {
       ...state,
       commandInput: typeof state.commandInput === 'string' ? state.commandInput : 'rps',
-      pub: Boolean(state.pub)
+      pub: Boolean(state.pub),
+      pubtab: Boolean(state.pubtab)
     }
   } catch {
     return null
@@ -192,7 +195,7 @@ function buildComponents(
 
   const components: RpsComponent[] = [container, buildPickRow(token, state)]
   if (includePublish) components.push(buildPublishRow(token))
-  return components
+  return withPubtabButton(components, state.pubtab)
 }
 
 function buildExpiredComponents(): RpsComponent[] {
@@ -239,7 +242,13 @@ export async function handleRpsButton(interaction: ButtonInteraction): Promise<v
   const publishToken = parsePublishId(interaction.customId)
   if (publishToken) {
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
-    const state: RpsState = { mode: 'duel', commandInput: 'rps --pub', pub: true, picks: [] }
+    const state: RpsState = {
+      mode: 'duel',
+      commandInput: 'rps --pub',
+      pub: true,
+      pubtab: false,
+      picks: []
+    }
     storeState(token, state)
     await interaction.reply({
       components: buildComponents(token, state, state.commandInput, false) as never,
@@ -305,7 +314,13 @@ export const subcommand: Subcommand = {
     const pub = flags.has('pub')
     const mode = initialMode(restArgs, flags)
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
-    const state: RpsState = { mode, commandInput: args, pub, picks: [] }
+    const state: RpsState = {
+      mode,
+      commandInput: args,
+      pub,
+      pubtab: isPubtabContext(flags),
+      picks: []
+    }
 
     storeState(token, state)
     await sendInitialGame(interaction, token, state, args, pub)

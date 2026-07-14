@@ -1,5 +1,15 @@
 export type Flags = Map<string, string | true>
 
+const pubtabContexts = new WeakSet<Flags>()
+
+export function markPubtabContext(flags: Flags): void {
+  pubtabContexts.add(flags)
+}
+
+export function isPubtabContext(flags: Flags): boolean {
+  return pubtabContexts.has(flags)
+}
+
 export interface ParseResult {
   bare: string // args with all flags stripped
   flags: Flags

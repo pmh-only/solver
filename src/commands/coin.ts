@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const COIN_GUESS_BUTTON_ID = 'coin-guess'
 
@@ -25,6 +27,7 @@ type CoinSide = typeof HEADS | typeof TAILS
 interface CoinState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   lastGuess?: CoinSide
   result?: CoinSide
   chooser: string
@@ -53,6 +56,7 @@ function loadState(token: string): CoinState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       lastGuess: isSide(parsed.lastGuess as CoinSide | undefined) ? parsed.lastGuess : undefined,
       result: isSide(parsed.result as CoinSide | undefined) ? parsed.result : undefined,
       chooser: parsed.chooser
@@ -113,7 +117,7 @@ function buildComponents(token: string, state: CoinState): CoinComponent[] {
     buildGuessButton(token, TAILS, Boolean(state.result))
   )
 
-  return [container, row]
+  return withPubtabButton([container, row], state.pubtab)
 }
 
 function buildExpiredComponents(): CoinComponent[] {
@@ -174,6 +178,7 @@ export const subcommand: Subcommand = {
     const state: CoinState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       chooser: interaction.user.globalName ?? interaction.user.username
     }
 

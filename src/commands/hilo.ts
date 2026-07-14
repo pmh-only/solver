@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const HILO_GUESS_BUTTON_ID = 'hilo-guess'
 
@@ -27,6 +29,7 @@ type HiloResult = HiloDirection | 'same'
 interface HiloState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   current: number
   chooser: string
   lastGuess?: HiloDirection
@@ -61,6 +64,7 @@ function loadState(token: string): HiloState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       current: parsed.current,
       chooser: parsed.chooser,
       lastGuess: isDirection(parsed.lastGuess) ? parsed.lastGuess : undefined,
@@ -143,7 +147,7 @@ function buildComponents(token: string, state: HiloState): HiloComponent[] {
     buildGuessButton(token, 'higher', Boolean(state.result))
   )
 
-  return [container, row]
+  return withPubtabButton([container, row], state.pubtab)
 }
 
 function buildExpiredComponents(): HiloComponent[] {
@@ -212,6 +216,7 @@ export const subcommand: Subcommand = {
     const state: HiloState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       chooser: interaction.user.globalName ?? interaction.user.username,
       current: randomNumber()
     }

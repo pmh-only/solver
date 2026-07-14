@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const TTT_MOVE_BUTTON_ID = 'ttt-move'
 
@@ -38,6 +40,7 @@ interface TttState {
   mode: TttMode
   commandInput: string
   pub: boolean
+  pubtab: boolean
   board: (TttSymbol | null)[]
   turn: TttSymbol
   xPlayerId: string
@@ -94,6 +97,7 @@ function loadState(token: string): TttState | null {
       mode: parsed.mode,
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       board,
       turn: parsed.turn,
       xPlayerId: parsed.xPlayerId,
@@ -211,7 +215,7 @@ ${boardLine(state.board.slice(6, 9))}`.trim())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
 
   const rows = buildBoardRows(token, state)
-  return [container, ...rows]
+  return withPubtabButton([container, ...rows], state.pubtab)
 }
 
 function buildExpiredComponents(): TttComponent[] {
@@ -337,11 +341,18 @@ export async function handleTttMoveButton(interaction: ButtonInteraction): Promi
   })
 }
 
-function buildInitialState(interaction: CommandInteraction, mode: TttMode, args: string, pub: boolean): TttState {
+function buildInitialState(
+  interaction: CommandInteraction,
+  mode: TttMode,
+  args: string,
+  pub: boolean,
+  pubtab: boolean
+): TttState {
   return {
     mode,
     commandInput: args,
     pub,
+    pubtab,
     board: Array(TTT_SIZE).fill(null),
     turn: 'X',
     xPlayerId: interaction.user.id,
@@ -363,7 +374,7 @@ export const subcommand: Subcommand = {
     const pub = flags.has('pub')
     const mode = parseMode(restArgs, flags.has('pc'))
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
-    const state = buildInitialState(interaction, mode, args, pub)
+    const state = buildInitialState(interaction, mode, args, pub, isPubtabContext(flags))
 
     if (mode === 'pc') {
       state.turn = 'X'

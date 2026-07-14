@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const MEMORY_TILE_BUTTON_ID = 'memory-tile'
 
@@ -24,6 +26,7 @@ const MEMORY_WIDTH = 4
 interface MemoryState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   tiles: string[]
   matched: number[]
   selected: number[]
@@ -55,6 +58,7 @@ function loadState(token: string): MemoryState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       tiles: parsed.tiles.map((tile) => (typeof tile === 'string' ? tile : '?')),
       matched: Array.isArray(parsed.matched) ? parsed.matched.filter(isTileIndex) : [],
       selected: Array.isArray(parsed.selected) ? parsed.selected.filter(isTileIndex).slice(0, 2) : [],
@@ -136,7 +140,7 @@ function buildComponents(token: string, state: MemoryState): MemoryComponent[] {
     )
   })
 
-  return [container, ...rows]
+  return withPubtabButton([container, ...rows], state.pubtab)
 }
 
 function buildExpiredComponents(): MemoryComponent[] {
@@ -211,6 +215,7 @@ export const subcommand: Subcommand = {
     const state: MemoryState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       tiles: shuffledTiles(),
       matched: [],
       selected: [],

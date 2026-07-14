@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const SLOTS_SPIN_BUTTON_ID = 'slots-spin'
 
@@ -26,6 +28,7 @@ type SlotState = [SlotSymbol, SlotSymbol, SlotSymbol]
 interface SlotsState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   lastSpin?: [SlotSymbol, SlotSymbol, SlotSymbol]
   pulls?: number
   lastPlayer: string
@@ -64,6 +67,7 @@ function loadState(token: string): SlotsState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       pulls: Number.isFinite(parsed.pulls) && typeof parsed.pulls === 'number' && Number.isInteger(parsed.pulls) ? parsed.pulls : 0,
       lastPlayer: parsed.lastPlayer,
       lastSpin: parseSpin(parsed.lastSpin)
@@ -122,10 +126,10 @@ function buildComponents(token: string, state: SlotsState): SlotsComponent[] {
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
 
-  return [
-    container,
-    new ActionRowBuilder<ButtonBuilder>().addComponents(buildSpinButton(token, false))
-  ]
+  return withPubtabButton(
+    [container, new ActionRowBuilder<ButtonBuilder>().addComponents(buildSpinButton(token, false))],
+    state.pubtab
+  )
 }
 
 function buildExpiredComponents(): SlotsComponent[] {
@@ -192,6 +196,7 @@ export const subcommand: Subcommand = {
     const state: SlotsState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       pulls: 0,
       lastPlayer: interaction.user.globalName ?? interaction.user.username
     }

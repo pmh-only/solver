@@ -12,6 +12,8 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { isPubtabContext } from '../flags.js'
+import { withPubtabButton } from '../components.js'
 
 export const QUIZ_ANSWER_BUTTON_ID = 'quiz-answer'
 
@@ -46,6 +48,7 @@ type QuizQuestion = (typeof QUIZ_QUESTIONS)[number]
 interface QuizState {
   commandInput: string
   pub: boolean
+  pubtab: boolean
   questionIndex: number
   chooser: string
   lastAnswer?: number
@@ -79,6 +82,7 @@ function loadState(token: string): QuizState | null {
     return {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
+      pubtab: Boolean(parsed.pubtab),
       questionIndex: parsed.questionIndex,
       chooser: parsed.chooser,
       lastAnswer: Number.isInteger(parsed.lastAnswer) ? (parsed.lastAnswer as number) : undefined,
@@ -163,7 +167,7 @@ function buildComponents(token: string, state: QuizState): QuizComponent[] {
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
 
-  return [container, ...buildAnswerRows(token, state, question)]
+  return withPubtabButton([container, ...buildAnswerRows(token, state, question)], state.pubtab)
 }
 
 function buildExpiredComponents(): QuizComponent[] {
@@ -229,6 +233,7 @@ export const subcommand: Subcommand = {
     const state: QuizState = {
       commandInput: args,
       pub: flags.has('pub'),
+      pubtab: isPubtabContext(flags),
       chooser: interaction.user.globalName ?? interaction.user.username,
       questionIndex: randomQuestionIndex()
     }
