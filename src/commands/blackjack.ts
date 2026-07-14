@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const BLACKJACK_BUTTON_ID = 'blackjack-action'
 
-const BLACKJACK_COLOR = 0x111827
 const BLACKJACK_STATE_KEY = 'blackjack'
 const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'] as const
 const SUITS = ['♠', '♥', '♦', '♣'] as const
@@ -170,7 +169,6 @@ function buildComponents(token: string, state: BlackjackState): GamePresentation
     title: 'Blackjack',
     kicker: over ? 'Hand settled' : 'Your move',
     lines: resultLines(state),
-    accent: BLACKJACK_COLOR,
     footer: state.commandInput,
     visual: {
       kind: 'blackjack',
@@ -188,8 +186,7 @@ function buildExpiredComponents(): GamePresentation {
     id: 'blackjack-expired',
     title: 'Blackjack',
     kicker: 'Hand unavailable',
-    lines: ['Game expired. Deal a new hand with `blackjack`.'],
-    accent: BLACKJACK_COLOR
+    lines: ['Game expired. Deal a new hand with `blackjack`.']
   })
 }
 

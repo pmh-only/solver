@@ -18,7 +18,6 @@ export interface CanvasPresentationOptions {
   kicker: string
   lines: string[]
   descriptionLines?: string[]
-  accent: number
   footer?: string
   visual?: CardVisual
 }
@@ -46,13 +45,13 @@ function safeFilePart(value: string) {
   )
 }
 
-export function createCanvasMedia(options: CanvasPresentationOptions) {
+export function createCanvasMedia(options: CanvasPresentationOptions & { visual: CardVisual }) {
   const fileName = options.fileName ?? `${safeFilePart(options.id)}-${randomUUID().slice(0, 8)}.png`
   const description = truncate(
     [options.title, ...(options.descriptionLines ?? options.lines)].join('\n'),
     1000
   )
-  const image = renderVisualCard(options)
+  const image = renderVisualCard(options.visual)
   const file = new AttachmentBuilder(image, { name: fileName, description })
   const gallery = new MediaGalleryBuilder({
     items: [{ media: { url: `attachment://${fileName}` }, description }]
@@ -62,8 +61,17 @@ export function createCanvasMedia(options: CanvasPresentationOptions) {
 }
 
 export function createGamePresentation(options: GamePresentationOptions): GamePresentation {
-  const { file, gallery } = createCanvasMedia(options)
-  const container = new ContainerBuilder().addMediaGalleryComponents(gallery)
+  const content = [`## ${options.title}`, `-# ${options.kicker}`, ...options.lines].join('\n')
+  const container = new ContainerBuilder().addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(content)
+  )
+  const files: AttachmentBuilder[] = []
+
+  if (options.visual) {
+    const { file, gallery } = createCanvasMedia({ ...options, visual: options.visual })
+    container.addMediaGalleryComponents(gallery)
+    files.push(file)
+  }
 
   if (options.footer) {
     container
@@ -73,5 +81,5 @@ export function createGamePresentation(options: GamePresentationOptions): GamePr
       .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${options.footer}\``))
   }
 
-  return { components: [container, ...(options.controls ?? [])], files: [file] }
+  return { components: [container, ...(options.controls ?? [])], files }
 }

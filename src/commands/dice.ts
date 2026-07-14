@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const DICE_GUESS_BUTTON_ID = 'dice-guess'
 
-const DICE_COLOR = 0x22c55e
 const DICE_STATE_KEY = 'dice'
 
 type DiceValue = 1 | 2 | 3 | 4 | 5 | 6
@@ -115,7 +114,6 @@ function buildComponents(token: string, state: DiceState): GamePresentation {
     title: 'Dice roll',
     kicker: state.result ? 'Roll complete' : 'Choose your number',
     lines: resultLines(state),
-    accent: DICE_COLOR,
     footer: state.commandInput,
     visual: { kind: 'dice', value: state.result },
     controls: [rowOne, rowTwo]
@@ -130,7 +128,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'Dice roll',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new roll with `dice`.'],
-    accent: DICE_COLOR,
     visual: { kind: 'dice' }
   })
 }

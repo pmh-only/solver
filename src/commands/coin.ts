@@ -15,7 +15,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 export const COIN_GUESS_BUTTON_ID = 'coin-guess'
 
 const COIN_STATE_KEY = 'coin'
-const COIN_COLOR = 0xf59e0b
 const HEADS = 'heads'
 const TAILS = 'tails'
 
@@ -110,7 +109,6 @@ function buildComponents(token: string, state: CoinState): GamePresentation {
     title: 'Coin flip',
     kicker: state.result ? 'Toss complete' : 'Call the toss',
     lines: resultLines(state),
-    accent: COIN_COLOR,
     footer: state.commandInput,
     visual: { kind: 'coin', side: state.result },
     controls: [row]
@@ -125,7 +123,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'Coin flip',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new toss with `coin`.'],
-    accent: COIN_COLOR,
     visual: { kind: 'coin' }
   })
 }

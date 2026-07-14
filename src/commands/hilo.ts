@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const HILO_GUESS_BUTTON_ID = 'hilo-guess'
 
-const HILO_COLOR = 0x06b6d4
 const HILO_STATE_KEY = 'hilo'
 const HILO_MIN = 1
 const HILO_MAX = 100
@@ -152,7 +151,6 @@ function buildComponents(token: string, state: HiloState): GamePresentation {
     title: 'High-Low',
     kicker: state.result ? 'Prediction complete' : 'Predict the next number',
     lines: resultLines(state),
-    accent: HILO_COLOR,
     footer: state.commandInput,
     visual: { kind: 'hilo', current: state.current, previous: state.previous },
     controls: [row]
@@ -167,7 +165,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'High-Low',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new prediction with `hilo`.'],
-    accent: HILO_COLOR,
     visual: { kind: 'hilo', current: 50 }
   })
 }

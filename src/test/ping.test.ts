@@ -243,9 +243,8 @@ describe('ping — command', () => {
     expect(JSON.stringify(published.components)).not.toContain('Retry')
     expect(JSON.stringify(published.components)).not.toContain('Edit parameters')
     expect(JSON.stringify(published.components)).not.toContain(PUB_BUTTON_ID)
-    expect(JSON.stringify(published.components)).toContain('attachment://')
-    const publishedFile = publishCalls.flatMap((call) => call.files)[0] as { data?: unknown }
-    expect(Buffer.isBuffer(publishedFile?.data)).toBe(true)
+    expect(JSON.stringify(published.components)).not.toContain('attachment://')
+    expect(publishCalls.flatMap((call) => call.files)).toHaveLength(0)
   })
 
   it('pins an ephemeral reply so it is not auto-deleted', async () => {

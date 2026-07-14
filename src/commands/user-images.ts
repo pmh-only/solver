@@ -5,7 +5,6 @@ import {
   type UserContextMenuCommandInteraction
 } from 'discord.js'
 import { publishButtonRow, scheduleEphemeralReplyDelete, separator, text } from '../components.js'
-import { createCanvasMedia } from '../canvas-presentation.js'
 
 export const USER_IMAGES_COMMAND_NAME = 'User Images'
 
@@ -58,28 +57,15 @@ export async function handleUserImagesCommand(interaction: UserContextMenuComman
   const user = await interaction.targetUser.fetch(true)
   const variants = imageVariants(interaction)
   const gallery = buildGallery(variants)
-  const canvas = createCanvasMedia({
-    id: `user-images-${user.id}`,
-    title: user.displayName,
-    kicker: 'User image library',
-    lines: [
-      user.tag,
-      user.id,
-      `${variants.filter((variant) => variant.url).length} images available`
-    ],
-    accent: 0x5865f2
-  })
 
   await interaction.reply({
     components: [
-      canvas.gallery,
       text(`## Images for ${user.displayName}\n-# ${user.tag} (${user.id})`),
       separator(),
       ...(gallery ? [gallery] : []),
       linksBlock(variants),
       publishButtonRow()
     ],
-    files: [canvas.file],
     flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
   })
   const message = (await interaction.fetchReply()) as { id?: string }

@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const QUIZ_ANSWER_BUTTON_ID = 'quiz-answer'
 
-const QUIZ_COLOR = 0xdb2777
 const QUIZ_STATE_KEY = 'quiz'
 
 const QUIZ_QUESTIONS = [
@@ -177,11 +176,10 @@ function buildComponents(token: string, state: QuizState): GamePresentation {
     title: 'Quiz',
     kicker: answered ? (state.correct ? 'Correct answer' : 'Round complete') : 'Choose one answer',
     lines: statusLines(state, question),
-    accent: QUIZ_COLOR,
     footer: state.commandInput,
     visual: {
       kind: 'quiz',
-      options: [...question.answers],
+      optionCount: question.answers.length,
       selected: answered ? state.lastAnswer : undefined,
       correct: answered ? question.correct : undefined
     },
@@ -196,8 +194,7 @@ function buildExpiredComponents(): GamePresentation {
     id: 'quiz-expired',
     title: 'Quiz',
     kicker: 'Round unavailable',
-    lines: ['Round expired. Start a new question with `quiz`.'],
-    accent: QUIZ_COLOR
+    lines: ['Round expired. Start a new question with `quiz`.']
   })
 }
 

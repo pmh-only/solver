@@ -3,14 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { drawCanvasText, renderVisualCard, wrapCanvasText } from '../canvas.js'
 
 describe('canvas presentation', () => {
-  it('renders a decodable command card PNG', async () => {
-    const png = renderVisualCard({
-      title: 'Math result',
-      kicker: 'math / solver',
-      lines: ['Expression: 9 * 9', 'Result: 81'],
-      accent: 0x06b6d4,
-      footer: 'math 9*9'
-    })
+  it('renders a compact visual-only PNG', async () => {
+    const png = renderVisualCard({ kind: 'dice', value: 4 })
     const image = await loadImage(png)
     const pixels = createCanvas(image.width, image.height)
     const ctx = pixels.getContext('2d')
@@ -18,25 +12,15 @@ describe('canvas presentation', () => {
 
     expect(png.subarray(1, 4).toString('ascii')).toBe('PNG')
     expect(image.width).toBe(824)
-    expect(image.height).toBeGreaterThan(150)
-    expect(image.height).toBeLessThan(200)
+    expect(image.height).toBe(216)
     expect(ctx.getImageData(0, 0, 1, 1).data[3]).toBe(0)
   })
 
   it('draws Tic-Tac-Toe board state into the image', () => {
-    const empty = renderVisualCard({
-      title: 'Tic tac toe',
-      kicker: 'Player vs PC',
-      lines: ['Your turn.'],
-      accent: 0x4f46e5,
-      visual: { kind: 'ttt', board: Array(9).fill(null) }
-    })
+    const empty = renderVisualCard({ kind: 'ttt', board: Array(9).fill(null) })
     const played = renderVisualCard({
-      title: 'Tic tac toe',
-      kicker: 'Player vs PC',
-      lines: ['Your turn.'],
-      accent: 0x4f46e5,
-      visual: { kind: 'ttt', board: ['X', 'O', null, null, null, null, null, null, null] }
+      kind: 'ttt',
+      board: ['X', 'O', null, null, null, null, null, null, null]
     })
 
     expect(played).not.toEqual(empty)

@@ -73,12 +73,9 @@ function pollComponents(token: string, state: PollState) {
     title: state.question,
     kicker: `${total} total vote${total === 1 ? '' : 's'}`,
     lines,
-    accent: 0x5865f2,
     visual: {
       kind: 'poll',
-      options: state.options.map((label, index) => ({
-        label,
-        count: counts[index],
+      options: state.options.map((_, index) => ({
         percent: total === 0 ? 0 : Math.round((counts[index] / total) * 100)
       }))
     },

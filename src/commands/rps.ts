@@ -15,7 +15,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 export const RPS_PICK_BUTTON_ID = 'rps-pick'
 export const RPS_PUBLISH_BUTTON_ID = 'rps-publish'
 
-const RPS_COLOR = 0x5865f2
 const RPS_STATE_KEY = 'rps'
 const CHOICES = ['rock', 'paper', 'scissors'] as const
 const BEATS: Record<Choice, Choice> = {
@@ -186,7 +185,7 @@ function buildComponents(
   const lines = state.mode === 'pc' ? pcLines(state) : duelLines(state)
   const controls = [buildPickRow(token, state)]
   if (includePublish) controls.push(buildPublishRow(token))
-  const choices: [string, string] | undefined =
+  const choices: [Choice, Choice] | undefined =
     state.mode === 'pc'
       ? state.lastPc
         ? [state.lastPc.playerChoice, state.lastPc.pcChoice]
@@ -194,10 +193,6 @@ function buildComponents(
       : state.picks.length >= 2
         ? [state.picks[0].choice, state.picks[1].choice]
         : undefined
-  const labels: [string, string] =
-    state.mode === 'pc'
-      ? [state.lastPc?.player ?? 'Player', 'PC']
-      : [state.picks[0]?.name ?? 'Player one', state.picks[1]?.name ?? 'Player two']
   const presentation = createGamePresentation({
     id: `rps-${token}`,
     title,
@@ -207,9 +202,8 @@ function buildComponents(
         ? 'Choose your throw'
         : 'Lock in secretly',
     lines,
-    accent: RPS_COLOR,
     footer: commandInput,
-    visual: { kind: 'rps', choices, labels },
+    visual: { kind: 'rps', choices },
     controls
   })
   presentation.components = withPubtabButton(presentation.components, state.pubtab)
@@ -222,7 +216,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'Rock paper scissors',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new round with `rps`.'],
-    accent: RPS_COLOR,
     visual: { kind: 'rps' }
   })
 }

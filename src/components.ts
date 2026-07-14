@@ -23,7 +23,6 @@ import type { CommandInteraction, CommandRunResult, Subcommand } from './types.j
 import type { Flags } from './flags.js'
 import { isPubtabContext } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
-import { createCanvasMedia } from './canvas-presentation.js'
 
 export const PUB_BUTTON_ID = 'pub'
 export const PUB_CONTENT_BUTTON_ID = 'pub-content'
@@ -40,30 +39,6 @@ export const COMMAND_RUN_INPUT_ID = 'run-command-args'
 export const PUBTAB_BUTTON_ID = 'pubtab'
 
 type ReferenceView = 'usage' | 'examples' | 'flags'
-type ReplyTone = 'default' | 'success' | 'warning' | 'danger'
-
-const COMMAND_COLORS: Record<string, number> = {
-  ping: 0x3b82f6,
-  whois: 0x8b5cf6,
-  dig: 0x22c55e,
-  conv: 0xa855f7,
-  math: 0x06b6d4,
-  set: 0x14b8a6,
-  get: 0x64748b,
-  curl: 0xf59e0b,
-  cert: 0x0ea5e9,
-  geoip: 0xec4899,
-  run: 0xf97316,
-  sh: 0xef4444,
-  mail: 0x2563eb,
-  gpt: 0x10a37f
-}
-
-const TONE_COLORS: Record<Exclude<ReplyTone, 'default'>, number> = {
-  success: 0x22c55e,
-  warning: 0xf59e0b,
-  danger: 0xef4444
-}
 
 const COMMAND_INPUT_KEY = 'command-input'
 const MESSAGE_INPUT_KEY = 'message-input'
@@ -84,7 +59,6 @@ export type TopLevelComponent =
 
 interface CommandReplyOptions {
   subcommand?: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>
-  tone?: ReplyTone
 }
 
 interface PlainTextReplyPayload {
@@ -109,10 +83,6 @@ function resolve(c: TopLevelComponent) {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}...` : value
-}
-
-function commandName(args: string): string {
-  return args.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 }
 
 function footerText(args: string, flags: Flags): string {
@@ -191,11 +161,6 @@ function rememberCommandInputForMessage(messageId: string, commandInput: string)
   storeCommandInput(commandInputKey(MESSAGE_INPUT_KEY, messageId), commandInput)
 }
 
-function accentColor(args: string, tone: ReplyTone): number {
-  if (tone !== 'default') return TONE_COLORS[tone]
-  return COMMAND_COLORS[commandName(args)] ?? 0x5865f2
-}
-
 function addComponent(container: ContainerBuilder, component: TopLevelComponent) {
   const resolved = resolve(component)
 
@@ -217,32 +182,6 @@ function addComponent(container: ContainerBuilder, component: TopLevelComponent)
   if (resolved instanceof MediaGalleryBuilder) {
     container.addMediaGalleryComponents(resolved)
   }
-}
-
-function collectCanvasText(node: unknown, lines: string[]) {
-  if (!node || typeof node !== 'object') return
-  const value = node as { content?: unknown; components?: unknown[] }
-  if (typeof value.content === 'string') lines.push(...value.content.split(/\r?\n/))
-  if (Array.isArray(value.components)) {
-    for (const component of value.components) collectCanvasText(component, lines)
-  }
-}
-
-function canvasSummary(components: TopLevelComponent[], fallbackTitle: string) {
-  const lines: string[] = []
-  for (const component of components) {
-    collectCanvasText(
-      typeof component === 'string' ? { content: component } : component.toJSON(),
-      lines
-    )
-  }
-
-  const meaningful = lines.map((line) => line.trim()).filter(Boolean)
-  const headingIndex = meaningful.findIndex((line) => /^#{1,6}\s+/.test(line))
-  const titleLine = headingIndex >= 0 ? meaningful[headingIndex] : ''
-  const title = titleLine.replace(/^#{1,6}\s+/, '').trim() || `${fallbackTitle} result`
-  const body = meaningful.filter((_, index) => index !== headingIndex)
-  return { title, lines: body.length > 0 ? body : ['Command completed.'] }
 }
 
 function pinButton() {
@@ -402,17 +341,6 @@ function buildContainer(
   const resolved = components.map(resolve)
   const commandInput = options.subcommand ? serializeCommandInput(args, flags) : undefined
   const footer = footerText(args, flags)
-  const color = accentColor(args, options.tone ?? 'default')
-  const name = commandName(args) || 'solver'
-  const summary = canvasSummary(resolved, name)
-  const canvas = createCanvasMedia({
-    id: `command-${name}`,
-    title: summary.title,
-    kicker: `${name} / solver`,
-    lines: summary.lines,
-    accent: color,
-    footer: serializeCommandInput(args, flags)
-  })
   const last = resolved.at(-1)
 
   if (last instanceof TextDisplayBuilder) {
@@ -422,8 +350,6 @@ function buildContainer(
   }
 
   const body = new ContainerBuilder()
-  body.addMediaGalleryComponents(canvas.gallery)
-  body.addSeparatorComponents(separator())
   for (const component of resolved) {
     addComponent(body, component)
   }
@@ -435,7 +361,7 @@ function buildContainer(
   return {
     components: responseComponents,
     commandInput,
-    files: [canvas.file],
+    files: [],
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)
       : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
@@ -605,8 +531,7 @@ export function commandReferenceReply(
   detail?: string
 ) {
   return buildContainer(args, flags, commandReferenceComponents(subcommand, view, detail), {
-    subcommand,
-    tone: detail ? 'warning' : 'default'
+    subcommand
   })
 }
 
@@ -773,19 +698,10 @@ export async function sendPlainTextReply(
   interaction: CommandInteraction,
   payload: PlainTextReplyPayload
 ) {
-  const canvas = createCanvasMedia({
-    id: 'solver-result',
-    title: 'Solver result',
-    kicker: 'solver',
-    lines: payload.content.split(/\r?\n/),
-    accent: 0x5865f2
-  })
-
   if (interaction.deferred) {
     const message = (await interaction.editReply({
       content: payload.content,
       components: payload.components,
-      files: [canvas.file],
       attachments: []
     })) as { id?: string }
     if (typeof message.id === 'string') {
@@ -798,7 +714,6 @@ export async function sendPlainTextReply(
     await interaction.update({
       content: payload.content,
       components: payload.components,
-      files: [canvas.file],
       attachments: []
     })
     scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags ?? 0)
@@ -810,7 +725,6 @@ export async function sendPlainTextReply(
     const message = (await interaction.editReply({
       content: payload.content,
       components: payload.components,
-      files: [canvas.file],
       attachments: []
     })) as { id?: string }
     const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
@@ -818,7 +732,7 @@ export async function sendPlainTextReply(
     return
   }
 
-  await interaction.reply({ ...payload, files: [canvas.file] })
+  await interaction.reply(payload)
   if (hasEphemeralFlag(payload.flags ?? 0)) {
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {

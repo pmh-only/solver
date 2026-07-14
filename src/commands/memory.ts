@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const MEMORY_TILE_BUTTON_ID = 'memory-tile'
 
-const MEMORY_COLOR = 0x7c3aed
 const MEMORY_STATE_KEY = 'memory'
 const MEMORY_SYMBOLS = ['🍎', '🍇', '🍊', '🍓', '🥝', '🍍', '🥥', '🍑'] as const
 const MEMORY_NAMES = [
@@ -163,7 +162,6 @@ function buildComponents(token: string, state: MemoryState): GamePresentation {
       ...(visibleTiles.length > 0 ? [`Revealed tiles: ${visibleTiles.join(', ')}`] : [])
     ],
     descriptionLines: [statusText(state), accessibleBoard(state)],
-    accent: MEMORY_COLOR,
     footer: state.commandInput,
     visual: {
       kind: 'memory',
@@ -181,8 +179,7 @@ function buildExpiredComponents(): GamePresentation {
     id: 'memory-expired',
     title: 'Memory match',
     kicker: 'Board unavailable',
-    lines: ['Game expired. Start a new board with `memory`.'],
-    accent: MEMORY_COLOR
+    lines: ['Game expired. Start a new board with `memory`.']
   })
 }
 

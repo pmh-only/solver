@@ -1,7 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js'
 import type { Subcommand } from '../types.js'
 import { constrainedCommandButton, PUBTAB_BUTTON_ID, sendPlainTextReply } from '../components.js'
-import { createCanvasMedia } from '../canvas-presentation.js'
 
 interface SafeCommand {
   label: string
@@ -45,14 +44,7 @@ export function createPubtabSubcommand(commands: Iterable<Subcommand>): Subcomma
       }
 
       if (interaction.isButton() && interaction.customId === PUBTAB_BUTTON_ID) {
-        const canvas = createCanvasMedia({
-          id: 'pubtab',
-          title: 'Public command tab',
-          kicker: 'Safe for everyone',
-          lines: ['Choose a command below, edit its arguments, then run it publicly.'],
-          accent: 0x5865f2
-        })
-        await interaction.reply({ ...payload, files: [canvas.file] })
+        await interaction.reply(payload)
         return
       }
 

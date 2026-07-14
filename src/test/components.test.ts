@@ -8,15 +8,16 @@ import {
 } from '../components.js'
 
 describe('canvas command presentation', () => {
-  it('keeps the image inside an unaccented content container', () => {
+  it('does not create images for text-only command output', () => {
     const reply = container('math 1+1', new Map(), '2')
     const components = reply.components.map((component) => component.toJSON()) as Array<{
       type?: number
     }>
 
     expect(components[0]?.type).toBe(ComponentType.Container)
-    expect(JSON.stringify(components)).toContain(`"type":${ComponentType.MediaGallery}`)
+    expect(JSON.stringify(components)).not.toContain(`"type":${ComponentType.MediaGallery}`)
     expect(JSON.stringify(components)).not.toContain('accent_color')
+    expect(reply.files).toHaveLength(0)
   })
 })
 

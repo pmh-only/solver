@@ -3,7 +3,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
-  MediaGalleryBuilder,
   MessageFlags,
   SeparatorBuilder,
   SeparatorSpacingSize,
@@ -19,7 +18,6 @@ import type { Subcommand } from '../types.js'
 import type { Flags } from '../flags.js'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
-import { createCanvasMedia } from '../canvas-presentation.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
@@ -97,10 +95,6 @@ function tokenFromId(customId: string, baseId: string): string | null {
   return customId.slice(prefix.length)
 }
 
-function gptImageName(token: string) {
-  return `gpt-${token}.png`
-}
-
 function buildGptComponents(
   prompt: string,
   content: string,
@@ -115,16 +109,6 @@ function buildGptComponents(
   const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
   const ctr = new ContainerBuilder()
-    .addMediaGalleryComponents(
-      new MediaGalleryBuilder({
-        items: [
-          {
-            media: { url: `attachment://${gptImageName(token)}` },
-            description: `GPT request: ${prompt}`.slice(0, 1000)
-          }
-        ]
-      })
-    )
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${prompt}**`))
     .addSeparatorComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
@@ -505,16 +489,6 @@ export const subcommand: Subcommand = {
 
     await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
 
-    const canvas = createCanvasMedia({
-      id: `gpt-${token}`,
-      fileName: gptImageName(token),
-      title: 'GPT workspace',
-      kicker: 'AI response workspace',
-      lines: [prompt],
-      accent: GPT_COLOR,
-      footer: args
-    })
-
     await interaction.editReply({
       components: buildGptComponents(
         prompt,
@@ -527,8 +501,6 @@ export const subcommand: Subcommand = {
         'normal',
         true
       ) as never,
-      files: [canvas.file],
-      attachments: [],
       flags: MessageFlags.IsComponentsV2
     })
 

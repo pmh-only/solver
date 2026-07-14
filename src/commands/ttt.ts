@@ -15,7 +15,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 export const TTT_MOVE_BUTTON_ID = 'ttt-move'
 
 const TTT_STATE_KEY = 'ttt'
-const TTT_COLOR = 0x4f46e5
 const TTT_SIZE = 9
 const WIN_LINES: [number, number, number][] = [
   [0, 1, 2],
@@ -219,7 +218,6 @@ function buildComponents(token: string, state: TttState): GamePresentation {
       accessibleBoard(state.board),
       'Choose a numbered square below to make your move.'
     ],
-    accent: TTT_COLOR,
     footer: state.commandInput,
     visual: {
       kind: 'ttt',
@@ -238,7 +236,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'Tic tac toe',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new game with `ttt`.'],
-    accent: TTT_COLOR,
     visual: { kind: 'ttt', board: Array(TTT_SIZE).fill(null) }
   })
 }
@@ -260,8 +257,7 @@ function buildErrorContainer(message: string): GamePresentation {
     id: 'ttt-error',
     title: 'Tic tac toe',
     kicker: 'Move blocked',
-    lines: [message],
-    accent: TTT_COLOR
+    lines: [message]
   })
 }
 

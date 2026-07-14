@@ -14,7 +14,6 @@ import { createGamePresentation, type GamePresentation } from '../canvas-present
 
 export const SLOTS_SPIN_BUTTON_ID = 'slots-spin'
 
-const SLOTS_COLOR = 0xf59e0b
 const SLOTS_STATE_KEY = 'slots'
 const SLOT_SYMBOLS = ['🍒', '🍋', '🍉', '⭐', '🔔'] as const
 const SLOT_REEL_COUNT = 3
@@ -135,7 +134,6 @@ function buildComponents(token: string, state: SlotsState): GamePresentation {
     title: 'Slot machine',
     kicker: state.lastSpin ? `Pull ${state.pulls ?? 0}` : 'Ready to spin',
     lines: outcomeLines(state),
-    accent: SLOTS_COLOR,
     footer: state.commandInput,
     visual: { kind: 'slots', symbols: state.lastSpin },
     controls: [controls]
@@ -150,7 +148,6 @@ function buildExpiredComponents(): GamePresentation {
     title: 'Slot machine',
     kicker: 'Game unavailable',
     lines: ['Game expired. Start a new machine with `slots`.'],
-    accent: SLOTS_COLOR,
     visual: { kind: 'slots' }
   })
 }
