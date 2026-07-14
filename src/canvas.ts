@@ -289,10 +289,146 @@ function visualFrame(visual: CardVisual) {
   }
 }
 
-const CHESS_PIECES = {
-  w: { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' },
-  b: { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
-} as const
+type ChessPieceType = Extract<CardVisual, { kind: 'chess' }>['board'][number][number]
+
+function paintChessPiecePath(ctx: SKRSContext2D) {
+  ctx.fill()
+  ctx.stroke()
+}
+
+function drawChessPieceBase(ctx: SKRSContext2D) {
+  ctx.beginPath()
+  ctx.roundRect(-21, 15, 42, 9, 3)
+  paintChessPiecePath(ctx)
+}
+
+function drawChessPiece(
+  ctx: SKRSContext2D,
+  piece: NonNullable<ChessPieceType>,
+  centerX: number,
+  centerY: number
+) {
+  ctx.save()
+  ctx.translate(centerX, centerY)
+  ctx.fillStyle = piece.color === 'w' ? '#f8fafc' : '#0f172a'
+  ctx.strokeStyle = piece.color === 'w' ? '#0f172a' : '#f8fafc'
+  ctx.lineWidth = 2.5
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+
+  if (piece.type === 'p') {
+    ctx.beginPath()
+    ctx.arc(0, -14, 9, 0, Math.PI * 2)
+    paintChessPiecePath(ctx)
+    ctx.beginPath()
+    ctx.moveTo(-6, -5)
+    ctx.quadraticCurveTo(-5, 5, -14, 15)
+    ctx.lineTo(14, 15)
+    ctx.quadraticCurveTo(5, 5, 6, -5)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+  }
+
+  if (piece.type === 'r') {
+    ctx.beginPath()
+    ctx.moveTo(-18, -21)
+    ctx.lineTo(-10, -21)
+    ctx.lineTo(-10, -14)
+    ctx.lineTo(-4, -14)
+    ctx.lineTo(-4, -21)
+    ctx.lineTo(4, -21)
+    ctx.lineTo(4, -14)
+    ctx.lineTo(10, -14)
+    ctx.lineTo(10, -21)
+    ctx.lineTo(18, -21)
+    ctx.lineTo(16, -8)
+    ctx.lineTo(11, -4)
+    ctx.lineTo(13, 15)
+    ctx.lineTo(-13, 15)
+    ctx.lineTo(-11, -4)
+    ctx.lineTo(-16, -8)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+  }
+
+  if (piece.type === 'n') {
+    ctx.beginPath()
+    ctx.moveTo(-17, 15)
+    ctx.quadraticCurveTo(-15, 2, -6, -7)
+    ctx.lineTo(-10, -19)
+    ctx.lineTo(1, -16)
+    ctx.quadraticCurveTo(14, -13, 16, -2)
+    ctx.lineTo(9, 4)
+    ctx.lineTo(2, 0)
+    ctx.quadraticCurveTo(-2, 7, 10, 15)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+    ctx.beginPath()
+    ctx.arc(5, -9, 1.8, 0, Math.PI * 2)
+    ctx.fillStyle = piece.color === 'w' ? '#0f172a' : '#f8fafc'
+    ctx.fill()
+    ctx.fillStyle = piece.color === 'w' ? '#f8fafc' : '#0f172a'
+  }
+
+  if (piece.type === 'b') {
+    ctx.beginPath()
+    ctx.moveTo(0, -24)
+    ctx.bezierCurveTo(13, -17, 13, -6, 5, 0)
+    ctx.quadraticCurveTo(12, 7, 14, 15)
+    ctx.lineTo(-14, 15)
+    ctx.quadraticCurveTo(-12, 7, -5, 0)
+    ctx.bezierCurveTo(-13, -6, -13, -17, 0, -24)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+    ctx.beginPath()
+    ctx.moveTo(5, -18)
+    ctx.lineTo(-5, -8)
+    ctx.stroke()
+  }
+
+  if (piece.type === 'q') {
+    ctx.beginPath()
+    ctx.moveTo(-18, -16)
+    ctx.lineTo(-9, -5)
+    ctx.lineTo(0, -20)
+    ctx.lineTo(9, -5)
+    ctx.lineTo(18, -16)
+    ctx.lineTo(13, 7)
+    ctx.lineTo(15, 15)
+    ctx.lineTo(-15, 15)
+    ctx.lineTo(-13, 7)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+    for (const x of [-18, 0, 18]) {
+      ctx.beginPath()
+      ctx.arc(x, -17, 3, 0, Math.PI * 2)
+      paintChessPiecePath(ctx)
+    }
+  }
+
+  if (piece.type === 'k') {
+    ctx.beginPath()
+    ctx.moveTo(-4, -24)
+    ctx.lineTo(4, -24)
+    ctx.lineTo(4, -17)
+    ctx.lineTo(10, -17)
+    ctx.lineTo(10, -10)
+    ctx.lineTo(4, -10)
+    ctx.lineTo(4, -5)
+    ctx.quadraticCurveTo(13, 1, 12, 15)
+    ctx.lineTo(-12, 15)
+    ctx.quadraticCurveTo(-13, 1, -4, -5)
+    ctx.lineTo(-4, -10)
+    ctx.lineTo(-10, -10)
+    ctx.lineTo(-10, -17)
+    ctx.lineTo(-4, -17)
+    ctx.closePath()
+    paintChessPiecePath(ctx)
+  }
+
+  drawChessPieceBase(ctx)
+  ctx.restore()
+}
 
 function drawChess(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'chess' }>, y: number) {
   const cell = 68
@@ -324,15 +460,7 @@ function drawChess(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'ches
 
       const piece = visual.board[row]?.[column]
       if (piece) {
-        const symbol = CHESS_PIECES[piece.color][piece.type]
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        setCanvasFont(ctx, 500, 52, JA_FAMILY)
-        ctx.lineWidth = 3
-        ctx.strokeStyle = piece.color === 'w' ? '#0f172a' : '#f8fafc'
-        ctx.fillStyle = piece.color === 'w' ? '#f8fafc' : '#0f172a'
-        ctx.strokeText(symbol, x + cell / 2, squareY + cell / 2 + 2)
-        ctx.fillText(symbol, x + cell / 2, squareY + cell / 2 + 2)
+        drawChessPiece(ctx, piece, x + cell / 2, squareY + cell / 2)
       }
 
       ctx.textAlign = 'left'

@@ -53,6 +53,17 @@ describe('canvas presentation', () => {
     expect(selected).not.toEqual(plain)
   })
 
+  it('renders six distinct chess piece silhouettes without symbol fonts', () => {
+    const pieceTypes = ['p', 'n', 'b', 'r', 'q', 'k'] as const
+    const images = pieceTypes.map((type) => {
+      const board = Array.from({ length: 8 }, () => Array(8).fill(null))
+      board[4][4] = { square: 'e4', type, color: 'w' }
+      return renderVisualCard({ kind: 'chess', board }).toString('base64')
+    })
+
+    expect(new Set(images).size).toBe(pieceTypes.length)
+  })
+
   it('wraps long unbroken command values within the card width', () => {
     const ctx = createCanvas(300, 100).getContext('2d')
     ctx.font = '16px sans-serif'
