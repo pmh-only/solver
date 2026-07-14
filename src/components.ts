@@ -817,6 +817,8 @@ export function buildConstrainedCommandModal(
   customId: string,
   template: ConstrainedCommandTemplate
 ) {
+  const defaultArgs = template.args.trim() || '--null'
+
   return new ModalBuilder()
     .setCustomId(customId.replace(`${COMMAND_RUN_BUTTON_ID}:`, `${COMMAND_RUN_MODAL_ID}:`))
     .setTitle(`Run ${template.command}`)
@@ -832,8 +834,8 @@ export function buildConstrainedCommandModal(
             .setStyle(TextInputStyle.Paragraph)
             .setMaxLength(4000)
             .setRequired(true)
-            .setValue(template.args.slice(0, 4000))
-            .setPlaceholder(template.args.slice(0, 100) || 'arguments')
+            .setValue(defaultArgs.slice(0, 4000))
+            .setPlaceholder(defaultArgs.slice(0, 100))
         )
     )
 }
@@ -842,7 +844,7 @@ export function buildConstrainedCommandInput(
   template: ConstrainedCommandTemplate,
   input: string
 ): string {
-  const args = input.trim()
+  const args = input.trim() === '--null' ? '' : input.trim()
   return [template.command, args, '--pub'].filter(Boolean).join(' ')
 }
 

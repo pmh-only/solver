@@ -203,6 +203,29 @@ describe('pubtab — command', () => {
     expect(JSON.stringify(runCalls)).toContain(`"custom_id":"${PUBTAB_BUTTON_ID}"`)
   })
 
+  it('uses --null for commands without editable arguments', async () => {
+    const firstCalls = await dispatch(commandJSON('pubtab'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const customId = findButtonByLabel(firstBody.data.components, 'Coin')
+
+    const openCalls = await dispatch(buttonJSON(firstBody.data.components, customId ?? ''), subs)
+    const openBody = getCallback(openCalls) as { data: { custom_id: string } }
+
+    expect(JSON.stringify(openBody)).toContain('"value":"--null"')
+
+    const runCalls = await dispatch(
+      modalJSON('--null', {}, { customId: openBody.data.custom_id, inputId: COMMAND_RUN_INPUT_ID }),
+      subs
+    )
+    const runBody = getCallback(runCalls) as { type: number }
+    const editBody = getEdit(runCalls) as { components: unknown[] }
+
+    expect(runBody.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(JSON.stringify(editBody.components)).toContain('-# `coin`')
+    expect(JSON.stringify(editBody.components)).not.toContain('--null')
+    expect(findButtonByLabel(editBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
+  })
+
   it('keeps the pubtab button on interactive game updates', async () => {
     const firstCalls = await dispatch(commandJSON('pubtab'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
