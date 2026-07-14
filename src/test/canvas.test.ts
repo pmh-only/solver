@@ -1,6 +1,6 @@
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { describe, expect, it } from 'vitest'
-import { renderVisualCard, wrapCanvasText } from '../canvas.js'
+import { drawCanvasText, renderVisualCard, wrapCanvasText } from '../canvas.js'
 
 describe('canvas presentation', () => {
   it('renders a decodable command card PNG', async () => {
@@ -12,10 +12,15 @@ describe('canvas presentation', () => {
       footer: 'math 9*9'
     })
     const image = await loadImage(png)
+    const pixels = createCanvas(image.width, image.height)
+    const ctx = pixels.getContext('2d')
+    ctx.drawImage(image, 0, 0)
 
     expect(png.subarray(1, 4).toString('ascii')).toBe('PNG')
-    expect(image.width).toBe(920)
-    expect(image.height).toBeGreaterThan(200)
+    expect(image.width).toBe(824)
+    expect(image.height).toBeGreaterThan(150)
+    expect(image.height).toBeLessThan(200)
+    expect(ctx.getImageData(0, 0, 1, 1).data[3]).toBe(0)
   })
 
   it('draws Tic-Tac-Toe board state into the image', () => {
@@ -47,5 +52,20 @@ describe('canvas presentation', () => {
     expect(lines.length).toBeGreaterThan(1)
     expect(lines.join('')).toBe(value)
     expect(lines.every((line) => ctx.measureText(line).width <= 120)).toBe(true)
+  })
+
+  it('renders emoji with local Twemoji artwork', () => {
+    const canvas = createCanvas(64, 64)
+    const ctx = canvas.getContext('2d')
+    ctx.font = '48px sans-serif'
+    ctx.textBaseline = 'top'
+    drawCanvasText(ctx, '🍒', 8, 8)
+
+    const pixels = ctx.getImageData(0, 0, 64, 64).data
+    let redPixels = 0
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] > 150 && pixels[index + 1] < 100 && pixels[index + 3] > 0) redPixels++
+    }
+    expect(redPixels).toBeGreaterThan(20)
   })
 })

@@ -421,7 +421,7 @@ function buildContainer(
     resolved.push(text(footer))
   }
 
-  const body = new ContainerBuilder().setAccentColor(color)
+  const body = new ContainerBuilder()
   body.addMediaGalleryComponents(canvas.gallery)
   body.addSeparatorComponents(separator())
   for (const component of resolved) {

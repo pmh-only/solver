@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { MessageFlags } from 'discord.js'
+import { ComponentType, MessageFlags } from 'discord.js'
 import {
+  container,
   extractCommandInputFromComponents,
   hasEphemeralFlag,
   matchesInteractiveId
 } from '../components.js'
+
+describe('canvas command presentation', () => {
+  it('keeps the image inside an unaccented content container', () => {
+    const reply = container('math 1+1', new Map(), '2')
+    const components = reply.components.map((component) => component.toJSON()) as Array<{
+      type?: number
+    }>
+
+    expect(components[0]?.type).toBe(ComponentType.Container)
+    expect(JSON.stringify(components)).toContain(`"type":${ComponentType.MediaGallery}`)
+    expect(JSON.stringify(components)).not.toContain('accent_color')
+  })
+})
 
 describe('hasEphemeralFlag', () => {
   it('returns true when number has ephemeral bit set', () => {

@@ -74,6 +74,7 @@ function pngFromCalls(calls: Array<{ files: unknown[] }>): Buffer | null {
 function expectCanvasGallery(components: unknown[], calls: Array<{ files: unknown[] }>) {
   expect(JSON.stringify(components)).toContain(`"type":${ComponentType.MediaGallery}`)
   expect(JSON.stringify(components)).toContain('attachment://')
+  expect(JSON.stringify(components)).not.toContain('accent_color')
   const png = pngFromCalls(calls)
   expect(png?.subarray(1, 4).toString('ascii')).toBe('PNG')
 }

@@ -63,9 +63,7 @@ export function createCanvasMedia(options: CanvasPresentationOptions) {
 
 export function createGamePresentation(options: GamePresentationOptions): GamePresentation {
   const { file, gallery } = createCanvasMedia(options)
-  const container = new ContainerBuilder()
-    .setAccentColor(options.accent)
-    .addMediaGalleryComponents(gallery)
+  const container = new ContainerBuilder().addMediaGalleryComponents(gallery)
 
   if (options.footer) {
     container

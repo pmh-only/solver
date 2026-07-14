@@ -115,7 +115,6 @@ function buildGptComponents(
   const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
   const ctr = new ContainerBuilder()
-    .setAccentColor(GPT_COLOR)
     .addMediaGalleryComponents(
       new MediaGalleryBuilder({
         items: [

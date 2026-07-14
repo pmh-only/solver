@@ -26,8 +26,10 @@ import {
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import {
   detectLocale,
+  drawCanvasText,
   fontFamilyForText,
   GG_SANS_FAMILY,
+  measureCanvasText,
   setCanvasFont as setFont,
   wrapCanvasText as wrapText,
   type LocaleKind
@@ -41,8 +43,8 @@ export const MESSAGE_COLLECTION_EDIT_MODAL_ID = 'message-render-edit-modal'
 export const MESSAGE_COLLECTION_EDIT_INPUT_ID = 'message-render-edit-input'
 
 const MAX_WIDTH = 920
-const PADDING_X = 16
-const PADDING_Y = 2
+const PADDING_X = 0
+const PADDING_Y = 0
 const AVATAR_SIZE = 40
 const CONTENT_X = PADDING_X + AVATAR_SIZE + 16
 const BODY_FONT_SIZE = 16
@@ -210,13 +212,13 @@ function buildMessageLayout(
   const bodyLines = wrapText(measure, bodyText, CONTENT_WIDTH)
   const bodyHeight = bodyLines.length * BODY_LINE_HEIGHT
   setFont(measure, 500, HEADER_FONT_SIZE, fontFamilyForText(message.displayName, detectedLocale))
-  const nameWidth = measure.measureText(message.displayName).width
+  const nameWidth = measureCanvasText(measure, message.displayName)
   const timestamp = formatTimestamp(new Date(message.createdTimestamp))
   setFont(measure, 400, TIMESTAMP_FONT_SIZE, GG_SANS_FAMILY)
-  const timestampWidth = measure.measureText(timestamp).width
+  const timestampWidth = measureCanvasText(measure, timestamp)
   const bodyWidth = bodyLines.reduce((max, line) => {
     setFont(measure, 400, BODY_FONT_SIZE, fontFamilyForText(line, detectedLocale))
-    return Math.max(max, measure.measureText(line || ' ').width)
+    return Math.max(max, measureCanvasText(measure, line || ' '))
   }, 0)
   return {
     bodyLines,
@@ -250,8 +252,6 @@ async function renderMessagesPng(
 
   const canvas = createCanvas(canvasWidth, totalHeight)
   const ctx = canvas.getContext('2d')
-  ctx.fillStyle = '#313338'
-  ctx.fillRect(0, 0, canvasWidth, totalHeight)
 
   let cursorY = 0
   for (const [index, message] of messages.entries()) {
@@ -288,15 +288,15 @@ async function renderMessagesPng(
     ctx.textBaseline = 'top'
     ctx.fillStyle = message.nameColor
     setFont(ctx, 500, HEADER_FONT_SIZE, fontFamilyForText(layout.displayName, layout.locale))
-    ctx.fillText(layout.displayName, CONTENT_X, cursorY + PADDING_Y)
+    drawCanvasText(ctx, layout.displayName, CONTENT_X, cursorY + PADDING_Y)
     ctx.fillStyle = '#949ba4'
     setFont(ctx, 400, TIMESTAMP_FONT_SIZE, GG_SANS_FAMILY)
-    ctx.fillText(layout.timestamp, CONTENT_X + layout.nameWidth + 8, cursorY + PADDING_Y + 4)
+    drawCanvasText(ctx, layout.timestamp, CONTENT_X + layout.nameWidth + 8, cursorY + PADDING_Y + 4)
     ctx.fillStyle = message.content.trim() ? '#dbdee1' : '#949ba4'
     const bodyY = cursorY + PADDING_Y + HEADER_LINE_HEIGHT + 2
     layout.bodyLines.forEach((line, lineIndex) => {
       setFont(ctx, 400, BODY_FONT_SIZE, fontFamilyForText(line, layout.locale))
-      ctx.fillText(line || ' ', CONTENT_X, bodyY + lineIndex * BODY_LINE_HEIGHT)
+      drawCanvasText(ctx, line || ' ', CONTENT_X, bodyY + lineIndex * BODY_LINE_HEIGHT)
     })
     cursorY += layout.height
   }

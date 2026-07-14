@@ -1,4 +1,5 @@
-import { createCanvas, GlobalFonts, type SKRSContext2D } from '@napi-rs/canvas'
+import { createCanvas, GlobalFonts, Image, type SKRSContext2D } from '@napi-rs/canvas'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const GG_SANS_REGULAR = fileURLToPath(new URL('../assets/fonts/gg-sans-400.woff2', import.meta.url))
@@ -16,6 +17,10 @@ const NOTO_SANS_CJK_SC = fileURLToPath(
 const NOTO_SANS_CJK_TC = fileURLToPath(
   new URL('../assets/fonts/NotoSansCJKtc-Regular.otf', import.meta.url)
 )
+const TWEMOJI_BASE_URL = new URL('../node_modules/@twemoji/svg/', import.meta.url)
+const EMOJI_PATTERN = /[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u20E3]/u
+const graphemeSegmenter = new Intl.Segmenter('en', { granularity: 'grapheme' })
+const twemojiCache = new Map<string, Image | null>()
 
 export const GG_SANS_FAMILY = 'gg sans'
 export const KO_FAMILY = 'discord-cjk-ko'
@@ -110,6 +115,101 @@ export function setCanvasFont(
   ctx.font = `${weight} ${size}px "${family}"`
 }
 
+function graphemes(value: string) {
+  return [...graphemeSegmenter.segment(value)].map((entry) => entry.segment)
+}
+
+function twemojiCodePoints(value: string) {
+  const points = [...value].map((character) => character.codePointAt(0)!.toString(16))
+  const stripped = points.filter((point) => point !== 'fe0f').join('-')
+  const raw = points.join('-')
+  return stripped === raw ? [raw] : [stripped, raw]
+}
+
+function twemojiImage(value: string): Image | null {
+  if (!EMOJI_PATTERN.test(value)) return null
+  const cached = twemojiCache.get(value)
+  if (cached !== undefined) return cached
+
+  for (const codePoint of twemojiCodePoints(value)) {
+    try {
+      const image = new Image(36, 36)
+      image.src = readFileSync(new URL(`${codePoint}.svg`, TWEMOJI_BASE_URL))
+      if (image.complete) {
+        twemojiCache.set(value, image)
+        return image
+      }
+    } catch {
+      // Try the next Twemoji filename variant before falling back to text.
+    }
+  }
+
+  twemojiCache.set(value, null)
+  return null
+}
+
+function canvasFontSize(ctx: SKRSContext2D) {
+  return Number.parseFloat(ctx.font.match(/([\d.]+)px/)?.[1] ?? '16')
+}
+
+function canvasTextRuns(ctx: SKRSContext2D, value: string) {
+  const runs: Array<{ text: string; image: Image | null; width: number }> = []
+  let text = ''
+  const flushText = () => {
+    if (!text) return
+    runs.push({ text, image: null, width: ctx.measureText(text).width })
+    text = ''
+  }
+
+  for (const grapheme of graphemes(value)) {
+    const image = twemojiImage(grapheme)
+    if (!image) {
+      text += grapheme
+      continue
+    }
+    flushText()
+    runs.push({ text: grapheme, image, width: canvasFontSize(ctx) })
+  }
+  flushText()
+  return runs
+}
+
+export function measureCanvasText(ctx: SKRSContext2D, value: string) {
+  return canvasTextRuns(ctx, value).reduce((width, run) => width + run.width, 0)
+}
+
+export function drawCanvasText(ctx: SKRSContext2D, value: string, x: number, y: number) {
+  const runs = canvasTextRuns(ctx, value)
+  const width = runs.reduce((sum, run) => sum + run.width, 0)
+  const originalAlign = ctx.textAlign
+  let cursor =
+    originalAlign === 'center'
+      ? x - width / 2
+      : originalAlign === 'right' || originalAlign === 'end'
+        ? x - width
+        : x
+  const size = canvasFontSize(ctx)
+  const imageY =
+    ctx.textBaseline === 'top' || ctx.textBaseline === 'hanging'
+      ? y
+      : ctx.textBaseline === 'middle'
+        ? y - size / 2
+        : ctx.textBaseline === 'bottom' || ctx.textBaseline === 'ideographic'
+          ? y - size
+          : y - size * 0.82
+
+  ctx.textAlign = 'left'
+  for (const run of runs) {
+    if (run.image) {
+      ctx.drawImage(run.image, cursor, imageY, size, size)
+    } else {
+      ctx.fillText(run.text, cursor, y)
+    }
+    cursor += run.width
+  }
+  ctx.textAlign = originalAlign
+}
+
 export function wrapCanvasText(ctx: SKRSContext2D, value: string, maxWidth: number) {
   const lines: string[] = []
   for (const paragraph of value.split(/\r?\n/)) {
@@ -121,19 +221,19 @@ export function wrapCanvasText(ctx: SKRSContext2D, value: string, maxWidth: numb
     let current = ''
     for (const token of paragraph.match(/\s+|\S+/g) ?? []) {
       const candidate = `${current}${token}`
-      if (ctx.measureText(candidate).width <= maxWidth) {
+      if (measureCanvasText(ctx, candidate) <= maxWidth) {
         current = candidate
         continue
       }
 
       if (current) lines.push(current.trimEnd())
       current = current ? token.trimStart() : token
-      while (ctx.measureText(current).width > maxWidth && current.length > 1) {
-        const chars = [...current]
+      while (measureCanvasText(ctx, current) > maxWidth && current.length > 1) {
+        const chars = graphemes(current)
         let splitIndex = chars.length - 1
         while (
           splitIndex > 1 &&
-          ctx.measureText(chars.slice(0, splitIndex).join('')).width > maxWidth
+          measureCanvasText(ctx, chars.slice(0, splitIndex).join('')) > maxWidth
         ) {
           splitIndex--
         }
@@ -187,12 +287,12 @@ function cleanMarkdown(value: string) {
 }
 
 function fitText(ctx: SKRSContext2D, value: string, width: number) {
-  if (ctx.measureText(value).width <= width) return value
-  let next = value
-  while (next.length > 1 && ctx.measureText(`${next}...`).width > width) {
-    next = next.slice(0, -1)
+  if (measureCanvasText(ctx, value) <= width) return value
+  const next = graphemes(value)
+  while (next.length > 1 && measureCanvasText(ctx, `${next.join('')}...`) > width) {
+    next.pop()
   }
-  return `${next}...`
+  return `${next.join('')}...`
 }
 
 function visualHeight(visual: CardVisual | undefined) {
@@ -209,11 +309,10 @@ function drawTtt(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'ttt' }
   const size = 342
   const x = (920 - size) / 2
   const cell = size / 3
-  fillRoundRect(ctx, x - 18, y, size + 36, size + 36, 28, 'rgba(15, 23, 42, 0.72)')
 
   ctx.lineCap = 'round'
   ctx.lineWidth = 5
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)'
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.65)'
   for (let index = 1; index < 3; index++) {
     ctx.beginPath()
     ctx.moveTo(x + cell * index, y + 18)
@@ -235,7 +334,7 @@ function drawTtt(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'ttt' }
       ctx.textBaseline = 'middle'
       ctx.fillStyle = '#475569'
       setCanvasFont(ctx, 500, 22, GG_SANS_FAMILY)
-      ctx.fillText(`${index + 1}`, centerX, centerY)
+      drawCanvasText(ctx, `${index + 1}`, centerX, centerY)
       return
     }
 
@@ -277,7 +376,8 @@ function drawCoin(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'coin'
   ctx.textBaseline = 'middle'
   ctx.fillStyle = '#451a03'
   setCanvasFont(ctx, 700, visual.side ? 62 : 52, GG_SANS_FAMILY)
-  ctx.fillText(
+  drawCanvasText(
+    ctx,
     visual.side === 'heads' ? 'H' : visual.side === 'tails' ? 'T' : '?',
     centerX,
     centerY
@@ -332,7 +432,7 @@ function drawDice(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'dice'
     ctx.textBaseline = 'middle'
     ctx.fillStyle = '#64748b'
     setCanvasFont(ctx, 700, 64, GG_SANS_FAMILY)
-    ctx.fillText('?', 460, y + 108)
+    drawCanvasText(ctx, '?', 460, y + 108)
   } else {
     for (const [column, row] of pips) {
       ctx.fillStyle = '#0f172a'
@@ -346,14 +446,6 @@ function drawDice(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'dice'
   ctx.textBaseline = 'alphabetic'
 }
 
-const SLOT_LABELS = new Map([
-  ['🍒', 'CHERRY'],
-  ['🍋', 'LEMON'],
-  ['🍉', 'MELON'],
-  ['⭐', 'STAR'],
-  ['🔔', 'BELL']
-])
-
 function drawSlots(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'slots' }>, y: number) {
   const symbols = visual.symbols ?? ['?', '?', '?']
   const reelWidth = 208
@@ -366,8 +458,8 @@ function drawSlots(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'slot
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillStyle = '#0f172a'
-    setCanvasFont(ctx, 700, 26, GG_SANS_FAMILY)
-    ctx.fillText(SLOT_LABELS.get(symbol) ?? symbol, x + reelWidth / 2, y + 109)
+    setCanvasFont(ctx, 700, 72, GG_SANS_FAMILY)
+    drawCanvasText(ctx, symbol, x + reelWidth / 2, y + 109)
   })
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
@@ -382,14 +474,14 @@ function drawRps(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'rps' }
     ctx.textAlign = 'center'
     ctx.fillStyle = '#94a3b8'
     setCanvasFont(ctx, 700, 13, GG_SANS_FAMILY)
-    ctx.fillText(labels[index].toUpperCase(), x + 160, y + 69)
+    drawCanvasText(ctx, labels[index].toUpperCase(), x + 160, y + 69)
     ctx.fillStyle = '#f8fafc'
     setCanvasFont(ctx, 700, 35, GG_SANS_FAMILY)
-    ctx.fillText(choice.toUpperCase(), x + 160, y + 132)
+    drawCanvasText(ctx, choice.toUpperCase(), x + 160, y + 132)
   })
   ctx.fillStyle = '#64748b'
   setCanvasFont(ctx, 700, 22, GG_SANS_FAMILY)
-  ctx.fillText('VS', 460, y + 116)
+  drawCanvasText(ctx, 'VS', 460, y + 116)
   ctx.textAlign = 'left'
 }
 
@@ -403,19 +495,21 @@ function drawHilo(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'hilo'
     ctx.textAlign = 'center'
     ctx.fillStyle = '#94a3b8'
     setCanvasFont(ctx, 700, 13, GG_SANS_FAMILY)
-    ctx.fillText(
+    drawCanvasText(
+      ctx,
       values.length === 1 ? 'CURRENT' : index === 0 ? 'BEFORE' : 'NEXT',
       x + width / 2,
       y + 66
     )
     ctx.fillStyle = '#f8fafc'
     setCanvasFont(ctx, 700, 72, GG_SANS_FAMILY)
-    ctx.fillText(`${value}`, x + width / 2, y + 143)
+    drawCanvasText(ctx, `${value}`, x + width / 2, y + 143)
   })
   if (values.length === 2) {
     ctx.fillStyle = '#67e8f9'
     setCanvasFont(ctx, 700, 36, GG_SANS_FAMILY)
-    ctx.fillText(
+    drawCanvasText(
+      ctx,
       visual.current > values[0] ? '>' : visual.current < values[0] ? '<' : '=',
       460,
       y + 124
@@ -442,14 +536,14 @@ function drawPlayingCard(
     ctx.stroke()
     ctx.fillStyle = '#94a3b8'
     setCanvasFont(ctx, 700, 28, GG_SANS_FAMILY)
-    ctx.fillText('?', x + width / 2, y + height / 2)
+    drawCanvasText(ctx, '?', x + width / 2, y + height / 2)
   } else {
     const red = card.suit === '♥' || card.suit === '♦'
     ctx.fillStyle = red ? '#e11d48' : '#0f172a'
     setCanvasFont(ctx, 700, 25, GG_SANS_FAMILY)
-    ctx.fillText(card.rank, x + width / 2, y + 45)
+    drawCanvasText(ctx, card.rank, x + width / 2, y + 45)
     setCanvasFont(ctx, 500, 34, fontFamilyForText(card.suit, 'default'))
-    ctx.fillText(card.suit, x + width / 2, y + 88)
+    drawCanvasText(ctx, card.suit, x + width / 2, y + 88)
   }
 }
 
@@ -465,40 +559,13 @@ function drawBlackjack(
   ) => {
     ctx.fillStyle = '#94a3b8'
     setCanvasFont(ctx, 700, 13, GG_SANS_FAMILY)
-    ctx.fillText(label, 66, rowY + 72)
+    drawCanvasText(ctx, label, 66, rowY + 72)
     cards.slice(0, 7).forEach((card, index) => drawPlayingCard(ctx, card, 170 + index * 101, rowY))
   }
   drawHand(visual.dealer, y + 4, 'DEALER')
   drawHand(visual.player, y + 150, 'PLAYER')
   ctx.textAlign = 'left'
   ctx.textBaseline = 'alphabetic'
-}
-
-const MEMORY_LABELS = new Map([
-  ['🍎', 'AP'],
-  ['🍇', 'GR'],
-  ['🍊', 'OR'],
-  ['🍓', 'ST'],
-  ['🥝', 'KI'],
-  ['🍍', 'PI'],
-  ['🥥', 'CO'],
-  ['🍑', 'PE']
-])
-
-function tokenColor(value: string) {
-  let hash = 0
-  for (const character of value) hash = (hash * 31 + character.codePointAt(0)!) >>> 0
-  const colors = [
-    '#38bdf8',
-    '#a78bfa',
-    '#fb7185',
-    '#fbbf24',
-    '#34d399',
-    '#f472b6',
-    '#818cf8',
-    '#22d3ee'
-  ]
-  return colors[hash % colors.length]
 }
 
 function drawMemory(
@@ -516,16 +583,12 @@ function drawMemory(
     const x = startX + column * (size + gap)
     const tileY = y + 17 + row * (size + gap)
     const matched = visual.matched.includes(index)
-    fillRoundRect(ctx, x, tileY, size, size, 17, value ? tokenColor(value) : '#1e293b')
+    fillRoundRect(ctx, x, tileY, size, size, 17, value ? '#f8fafc' : '#1e293b')
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillStyle = value ? '#0f172a' : '#64748b'
-    setCanvasFont(ctx, 700, value ? 24 : 16, GG_SANS_FAMILY)
-    ctx.fillText(
-      value ? (MEMORY_LABELS.get(value) ?? value.slice(0, 2)) : `${index + 1}`,
-      x + size / 2,
-      tileY + size / 2
-    )
+    setCanvasFont(ctx, 700, value ? 48 : 16, GG_SANS_FAMILY)
+    drawCanvasText(ctx, value ?? `${index + 1}`, x + size / 2, tileY + size / 2)
     if (matched) {
       ctx.strokeStyle = '#f8fafc'
       ctx.lineWidth = 3
@@ -554,7 +617,8 @@ function drawQuiz(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'quiz'
     )
     ctx.fillStyle = '#f8fafc'
     setCanvasFont(ctx, 500, 18, GG_SANS_FAMILY)
-    ctx.fillText(
+    drawCanvasText(
+      ctx,
       `${index + 1}. ${fitText(ctx, cleanMarkdown(option), 650)}`,
       148,
       y + 48 + index * 58
@@ -571,9 +635,9 @@ function drawPoll(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'poll'
     }
     ctx.fillStyle = '#f8fafc'
     setCanvasFont(ctx, 500, 17, GG_SANS_FAMILY)
-    ctx.fillText(`${index + 1}. ${fitText(ctx, option.label, 575)}`, 98, rowY + 26)
+    drawCanvasText(ctx, `${index + 1}. ${fitText(ctx, option.label, 575)}`, 98, rowY + 26)
     ctx.textAlign = 'right'
-    ctx.fillText(`${option.count} / ${option.percent}%`, 822, rowY + 26)
+    drawCanvasText(ctx, `${option.count} / ${option.percent}%`, 822, rowY + 26)
     ctx.textAlign = 'left'
   })
 }
@@ -594,6 +658,7 @@ function drawVisual(ctx: SKRSContext2D, visual: CardVisual, y: number) {
 export function renderVisualCard(card: VisualCard): Buffer {
   const width = 920
   const padding = 48
+  const cropTop = 40
   const locale = detectLocale('en-US', [card.title, ...card.lines].join('\n'))
   const measureCanvas = createCanvas(width, 200)
   const measure = measureCanvas.getContext('2d')
@@ -601,7 +666,7 @@ export function renderVisualCard(card: VisualCard): Buffer {
 
   const sourceLines = card.lines.flatMap((line) => {
     const cleaned = cleanMarkdown(line)
-    return cleaned ? wrapCanvasText(measure, cleaned, width - padding * 2 - 48) : ['']
+    return cleaned ? wrapCanvasText(measure, cleaned, width - padding * 2) : ['']
   })
   const maxBodyLines = card.visual ? 8 : 16
   const clipped = sourceLines.length > maxBodyLines
@@ -609,50 +674,55 @@ export function renderVisualCard(card: VisualCard): Buffer {
   if (clipped && bodyLines.length > 0) bodyLines[bodyLines.length - 1] = `${bodyLines.at(-1)} ...`
 
   const visualSize = visualHeight(card.visual)
-  const bodyHeight = Math.max(86, 36 + bodyLines.length * 27)
+  const bodyHeight = Math.max(27, bodyLines.length * 27)
   const visualGap = card.visual ? 20 : 0
   const bodyY = 138 + visualSize + visualGap
-  const height = bodyY + bodyHeight + 74
+  const footerHeight = card.footer ? 36 : 0
+  const height = bodyY + bodyHeight + footerHeight
   const canvas = createCanvas(width, height)
   const ctx = canvas.getContext('2d')
   const accent = accentHex(card.accent)
 
-  const background = ctx.createLinearGradient(0, 0, width, height)
-  background.addColorStop(0, '#0b1020')
-  background.addColorStop(0.55, '#111827')
-  background.addColorStop(1, '#172033')
-  ctx.fillStyle = background
-  ctx.fillRect(0, 0, width, height)
-
-  const glow = ctx.createRadialGradient(width - 84, 54, 0, width - 84, 54, 330)
-  glow.addColorStop(0, `${accent}55`)
-  glow.addColorStop(1, `${accent}00`)
-  ctx.fillStyle = glow
-  ctx.fillRect(0, 0, width, Math.min(height, 430))
-  fillRoundRect(ctx, 24, 28, 7, height - 56, 4, accent)
-
   ctx.fillStyle = accent
   setCanvasFont(ctx, 700, 13, GG_SANS_FAMILY)
-  ctx.fillText(card.kicker.toUpperCase(), padding, 55)
+  drawCanvasText(ctx, card.kicker.toUpperCase(), padding, 55)
   ctx.fillStyle = '#f8fafc'
   setCanvasFont(ctx, 700, 38, fontFamilyForText(card.title, locale))
-  ctx.fillText(fitText(ctx, cleanMarkdown(card.title), width - padding * 2), padding, 103)
+  drawCanvasText(ctx, fitText(ctx, cleanMarkdown(card.title), width - padding * 2), padding, 103)
 
   if (card.visual) drawVisual(ctx, card.visual, 128)
 
-  fillRoundRect(ctx, padding, bodyY, width - padding * 2, bodyHeight, 22, 'rgba(15, 23, 42, 0.66)')
   ctx.fillStyle = '#cbd5e1'
   ctx.textBaseline = 'top'
   bodyLines.forEach((line, index) => {
     setCanvasFont(ctx, 400, 19, fontFamilyForText(line, locale))
-    ctx.fillText(line || ' ', padding + 24, bodyY + 20 + index * 27)
+    drawCanvasText(ctx, line || ' ', padding, bodyY + index * 27)
   })
 
   if (card.footer) {
     ctx.fillStyle = '#64748b'
     setCanvasFont(ctx, 500, 14, GG_SANS_FAMILY)
-    ctx.fillText(fitText(ctx, card.footer, width - padding * 2), padding, height - 37)
+    drawCanvasText(
+      ctx,
+      fitText(ctx, card.footer, width - padding * 2),
+      padding,
+      bodyY + bodyHeight + 10
+    )
   }
 
-  return canvas.encodeSync('png')
+  const output = createCanvas(width - padding * 2, height - cropTop)
+  output
+    .getContext('2d')
+    .drawImage(
+      canvas,
+      padding,
+      cropTop,
+      width - padding * 2,
+      height - cropTop,
+      0,
+      0,
+      width - padding * 2,
+      height - cropTop
+    )
+  return output.encodeSync('png')
 }
