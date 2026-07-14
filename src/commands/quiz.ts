@@ -214,6 +214,7 @@ export const subcommand: Subcommand = {
   description: 'tiny quiz challenge',
   usage: 'quiz [--pub]',
   examples: ['quiz', 'quiz --pub'],
+  pubtab: { label: 'Quiz', args: '' },
 
   async autocomplete(restArgs, flags) {
     if (!restArgs.includes(' ')) {

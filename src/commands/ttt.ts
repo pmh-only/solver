@@ -354,6 +354,7 @@ export const subcommand: Subcommand = {
   description: 'tic tac toe',
   usage: 'ttt [pc|duel] [--pc] [--pub]',
   examples: ['ttt', 'ttt --pc', 'ttt duel --pub'],
+  pubtab: { label: 'TTT', args: '--pc' },
   flags: {
     pc: { description: 'play against the PC' }
   },

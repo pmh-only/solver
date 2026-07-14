@@ -294,6 +294,7 @@ export const subcommand: Subcommand = {
   description: 'rock paper scissors',
   usage: 'rps [pc|duel] [--pub] [--pc]',
   examples: ['rps', 'rps --pub', 'rps pc --pub'],
+  pubtab: { label: 'RPS', args: 'duel' },
 
   flags: {
     pc: { description: 'play the PC even in a public reply' }

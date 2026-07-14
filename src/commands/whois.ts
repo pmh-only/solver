@@ -35,6 +35,7 @@ export const subcommand: Subcommand = {
   description: 'whois',
   usage: 'whois <domain> [--pub]',
   examples: ['whois example.com', 'whois discord.com'],
+  pubtab: { label: 'Whois', args: 'example.com' },
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

@@ -32,6 +32,7 @@ export const subcommand: Subcommand = {
   description: 'convert',
   usage: 'conv <value> to <unit> [--pub]',
   examples: ['conv 15 usd to eur', 'conv 255 to hex', 'conv hello to base64'],
+  pubtab: { label: 'Convert', args: '255 to hex' },
 
   async execute(interaction, args, flags) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

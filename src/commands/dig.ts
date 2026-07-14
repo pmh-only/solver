@@ -55,6 +55,7 @@ export const subcommand: Subcommand = {
   description: 'dns',
   usage: 'dig <name> [type] [--pub]',
   examples: ['dig example.com', 'dig example.com AAAA', 'dig _discord._tcp.example.com SRV'],
+  pubtab: { label: 'DNS', args: 'example.com' },
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

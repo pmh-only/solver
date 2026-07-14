@@ -88,6 +88,7 @@ export const subcommand: Subcommand = {
   description: 'probe host',
   usage: 'ping <host> [--count <1-10>] [--type <icmp,http,https,http3>] [--pub]',
   examples: ['ping 1.1.1.1', 'ping example.com --count 5', 'ping example.com --type https,http3'],
+  pubtab: { label: 'Ping', args: '1.1.1.1' },
 
   flags: {
     ip: { description: 'host', value: 'string' },

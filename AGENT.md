@@ -76,7 +76,7 @@ Follow these rules:
 - The global `--pub` / `-p` flag is supplied by the router and must not be redeclared.
 - Register a dedicated command by importing it and adding it to the collection in `src/index.ts`.
 - Register a small command exported through `extraSubcommands` in `src/commands/more.ts`.
-- Add commands to `pubtab` only after confirming they are safe to launch publicly with constrained input.
+- Add `pubtab` metadata only after confirming a command is safe to launch publicly with constrained input; registered commands with that metadata are added to the tab automatically.
 
 The flag parser is whitespace-based, not shell-aware. Boolean flags may consume a following bare token in surprising ways, and quoted values are not preserved as shell tokens. Test the exact supported syntax, especially aliases and value flags.
 

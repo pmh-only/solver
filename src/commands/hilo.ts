@@ -197,6 +197,7 @@ export const subcommand: Subcommand = {
   description: 'high-low prediction',
   usage: 'hilo [--pub]',
   examples: ['hilo', 'hilo --pub'],
+  pubtab: { label: 'High-Low', args: '' },
 
   async autocomplete(restArgs, flags) {
     if (!restArgs.includes(' ')) {

@@ -60,6 +60,7 @@ export const subcommand: Subcommand = {
   description: 'geo ip',
   usage: 'geoip <ip> [--pub]',
   examples: ['geoip 1.1.1.1', 'geoip 8.8.8.8'],
+  pubtab: { label: 'GeoIP', args: '1.1.1.1' },
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

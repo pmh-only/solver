@@ -168,6 +168,7 @@ export const subcommand: Subcommand = {
   description: 'dice roll',
   usage: 'dice [--pub]',
   examples: ['dice', 'dice --pub'],
+  pubtab: { label: 'Dice', args: '' },
 
   async autocomplete(restArgs, flags) {
     if (!restArgs.includes(' ')) {

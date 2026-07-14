@@ -14,6 +14,7 @@ export const subcommand: Subcommand = {
   description: 'do math',
   usage: 'math <expression> [--pub]',
   examples: ['math 2*(3+4)', 'math sqrt(144)+cos(0)', 'math max(1,2,3)^2'],
+  pubtab: { label: 'Math', args: '2*(3+4)' },
 
   async execute(interaction, args, flags) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

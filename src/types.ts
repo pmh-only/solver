@@ -26,6 +26,10 @@ export interface Subcommand {
   description: string
   usage?: string
   examples?: string[]
+  pubtab?: {
+    label: string
+    args: string
+  }
   flags?: Record<string, FlagDef>
   autocomplete?: (restArgs: string, flags: Flags) => Promise<{ name: string; value: string }[]>
   execute: (interaction: CommandInteraction, args: string, flags: Flags) => Promise<void>

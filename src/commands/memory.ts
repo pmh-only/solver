@@ -204,6 +204,7 @@ export const subcommand: Subcommand = {
   description: 'memory matching game',
   usage: 'memory [--pub]',
   examples: ['memory', 'memory --pub'],
+  pubtab: { label: 'Memory', args: '' },
 
   async execute(interaction, args, flags) {
     const token = randomUUID().replace(/-/g, '').slice(0, 16)

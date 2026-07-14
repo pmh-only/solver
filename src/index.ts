@@ -17,7 +17,7 @@ import { subcommand as run } from './commands/run.js'
 import { subcommand as sh } from './commands/sh.js'
 import { subcommand as mail } from './commands/mail.js'
 import { subcommand as list } from './commands/list.js'
-import { subcommand as pubtab } from './commands/pubtab.js'
+import { createPubtabSubcommand } from './commands/pubtab.js'
 import { subcommand as gpt } from './commands/gpt.js'
 import { subcommand as crawl } from './commands/crawl.js'
 import { subcommand as coin } from './commands/coin.js'
@@ -33,8 +33,8 @@ import { extraSubcommands } from './commands/more.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
-  for (const sub of [
-    ping,
+const commands = [
+  ping,
   whois,
   dig,
   conv,
@@ -48,20 +48,21 @@ const subcommands = new Collection<string, Subcommand>()
   run,
   sh,
   mail,
-  pubtab,
-    gpt,
-    crawl,
-    hilo,
-    quiz,
-    blackjack,
-    memory,
-    coin,
-    dice,
-    rps,
-    slots,
-    ttt,
-    ...extraSubcommands
-  ]) {
+  gpt,
+  crawl,
+  hilo,
+  quiz,
+  blackjack,
+  memory,
+  coin,
+  dice,
+  rps,
+  slots,
+  ttt,
+  ...extraSubcommands
+]
+
+for (const sub of [...commands, createPubtabSubcommand(commands)]) {
   subcommands.set(sub.name, sub)
 }
 

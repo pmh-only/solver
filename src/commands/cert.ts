@@ -46,6 +46,7 @@ export const subcommand: Subcommand = {
   description: 'tls cert',
   usage: 'cert <host[:port]> [--pub]',
   examples: ['cert example.com', 'cert discord.com', 'cert example.com:8443'],
+  pubtab: { label: 'TLS', args: 'example.com' },
 
   async run(args) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()

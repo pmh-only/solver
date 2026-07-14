@@ -227,6 +227,7 @@ export const subcommand: Subcommand = {
   description: 'blackjack hand',
   usage: 'blackjack [--pub]',
   examples: ['blackjack', 'blackjack --pub'],
+  pubtab: { label: 'Blackjack', args: '' },
 
   async execute(interaction, args, flags) {
     const token = randomUUID().replace(/-/g, '').slice(0, 16)

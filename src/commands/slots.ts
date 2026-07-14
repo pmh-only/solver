@@ -176,6 +176,7 @@ export const subcommand: Subcommand = {
   description: 'slot machine',
   usage: 'slots [--pub]',
   examples: ['slots', 'slots --pub'],
+  pubtab: { label: 'Slots', args: '' },
 
   async autocomplete(restArgs, flags) {
     if (!restArgs.includes(' ')) {

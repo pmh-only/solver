@@ -168,6 +168,7 @@ export const subcommand: Subcommand = {
   description: 'coin flip',
   usage: 'coin [--pub]',
   examples: ['coin', 'coin --pub'],
+  pubtab: { label: 'Coin', args: '' },
   async execute(interaction, args, flags) {
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
     const state: CoinState = {

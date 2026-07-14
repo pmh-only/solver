@@ -1,9 +1,25 @@
 import { InteractionResponseType } from 'discord.js'
 import { describe, expect, it } from 'vitest'
 import { COMMAND_RUN_BUTTON_ID, COMMAND_RUN_INPUT_ID, COMMAND_RUN_MODAL_ID } from '../components.js'
+import { subcommand as blackjack } from '../commands/blackjack.js'
+import { subcommand as cert } from '../commands/cert.js'
+import { subcommand as coin } from '../commands/coin.js'
+import { subcommand as conv } from '../commands/conv.js'
+import { subcommand as dice } from '../commands/dice.js'
+import { subcommand as dig } from '../commands/dig.js'
+import { subcommand as geoip } from '../commands/geoip.js'
+import { subcommand as hilo } from '../commands/hilo.js'
 import { subcommand as math } from '../commands/math.js'
+import { subcommand as memory } from '../commands/memory.js'
+import { createPubtabSubcommand } from '../commands/pubtab.js'
+import { subcommand as quiz } from '../commands/quiz.js'
+import { subcommand as rps } from '../commands/rps.js'
+import { subcommand as run } from '../commands/run.js'
+import { subcommand as sh } from '../commands/sh.js'
+import { subcommand as slots } from '../commands/slots.js'
+import { subcommand as ttt } from '../commands/ttt.js'
+import { subcommand as whois } from '../commands/whois.js'
 import type { Subcommand } from '../types.js'
-import { subcommand as pubtab } from '../commands/pubtab.js'
 import {
   buttonJSON,
   commandJSON,
@@ -20,6 +36,7 @@ const fakePing: Subcommand = {
   description: 'fake ping',
   usage: 'ping <host> [--pub]',
   examples: ['ping 1.1.1.1'],
+  pubtab: { label: 'Ping', args: '1.1.1.1' },
   async run(args) {
     return text(`pong ${args.replace(/^\S+\s*/, '').trim()}`)
   },
@@ -30,7 +47,27 @@ const fakePing: Subcommand = {
   }
 }
 
-const subs = makeSubcommands(math, fakePing, pubtab)
+const commands = [
+  fakePing,
+  dig,
+  whois,
+  cert,
+  geoip,
+  math,
+  conv,
+  rps,
+  dice,
+  coin,
+  slots,
+  hilo,
+  quiz,
+  ttt,
+  blackjack,
+  memory,
+  run,
+  sh
+]
+const subs = makeSubcommands(...commands, createPubtabSubcommand(commands))
 
 function findButtonByLabel(components: unknown[], label: string): string | null {
   const queue = [...components]
@@ -53,7 +90,7 @@ function findButtonByLabel(components: unknown[], label: string): string | null 
 }
 
 describe('pubtab — command', () => {
-  it('shows only predefined safe command buttons in a public reply', async () => {
+  it('automatically shows registered safe command buttons in a public reply', async () => {
     const calls = await dispatch(commandJSON('pubtab'), subs)
     const body = getCallback(calls) as {
       type: number
@@ -81,7 +118,9 @@ describe('pubtab — command', () => {
       'Slots',
       'High-Low',
       'Quiz',
-      'TTT'
+      'TTT',
+      'Blackjack',
+      'Memory'
     ])
     expect(JSON.stringify(body)).not.toContain('run js')
     expect(JSON.stringify(body)).not.toContain('run shell')
