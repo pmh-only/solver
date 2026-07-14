@@ -57,7 +57,7 @@ describe('gpt — with prompt', () => {
     const calls = await dispatch(commandJSON('gpt explain recursion'), subs)
     const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect(defer.data?.flags ?? 0 & MessageFlags.Ephemeral).toBeTruthy()
+    expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeTruthy()
     const edit = getEdit(calls)
     expect(edit).not.toBeNull()
   })
@@ -66,7 +66,7 @@ describe('gpt — with prompt', () => {
     const calls = await dispatch(commandJSON('gpt hello --pub'), subs)
     const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect(defer.data?.flags ?? 0 & MessageFlags.Ephemeral).toBeFalsy()
+    expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeFalsy()
   })
 
   it('edits reply when no API key', async () => {

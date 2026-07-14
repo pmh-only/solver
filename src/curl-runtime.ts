@@ -170,7 +170,7 @@ function formatBodyPreview(buffer: Buffer, contentType: string): string {
     return `[bin: ${buffer.length}]`
   }
 
-  const text = buffer.toString('utf8').replace(/\0/g, '')
+  const text = buffer.toString('utf8').replaceAll('\0', '')
   return text.length > BODY_PREVIEW_LIMIT ? `${text.slice(0, BODY_PREVIEW_LIMIT)}\n...` : text
 }
 

@@ -11,20 +11,33 @@ describe('canvas presentation', () => {
     ctx.drawImage(image, 0, 0)
 
     expect(png.subarray(1, 4).toString('ascii')).toBe('PNG')
-    expect(image.width).toBe(824)
+    expect(image.width).toBeLessThan(824)
     expect(image.height).toBe(216)
     expect(ctx.getImageData(0, 0, 1, 1).data[3]).toBe(0)
   })
 
-  it('draws Tic-Tac-Toe board state into the image', () => {
+  it('draws Tic-Tac-Toe board state without horizontal spacing', async () => {
     const empty = renderVisualCard({ kind: 'ttt', board: Array(9).fill(null) })
     const played = renderVisualCard({
       kind: 'ttt',
       board: ['X', 'O', null, null, null, null, null, null, null]
     })
+    const image = await loadImage(played)
+    const pixels = createCanvas(image.width, image.height)
+    const ctx = pixels.getContext('2d')
+    ctx.drawImage(image, 0, 0)
+    const edgeHasOpaquePixel = (x: number) => {
+      const data = ctx.getImageData(x, 0, 1, image.height).data
+      for (let index = 3; index < data.length; index += 4) {
+        if (data[index] > 0) return true
+      }
+      return false
+    }
 
     expect(played).not.toEqual(empty)
-    expect(played.length).toBeGreaterThan(10_000)
+    expect(image.width).toBeLessThan(400)
+    expect(edgeHasOpaquePixel(0)).toBe(true)
+    expect(edgeHasOpaquePixel(image.width - 1)).toBe(true)
   })
 
   it('wraps long unbroken command values within the card width', () => {

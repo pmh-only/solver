@@ -611,24 +611,36 @@ function drawVisual(ctx: SKRSContext2D, visual: CardVisual, y: number) {
 
 export function renderVisualCard(visual: CardVisual): Buffer {
   const width = 920
-  const padding = 48
   const frame = visualFrame(visual)
   const canvas = createCanvas(width, frame.offsetY + frame.height)
   const ctx = canvas.getContext('2d')
   drawVisual(ctx, visual, 0)
 
-  const output = createCanvas(width - padding * 2, frame.height)
+  const pixels = ctx.getImageData(0, frame.offsetY, width, frame.height).data
+  let left = width
+  let right = -1
+  for (let y = 0; y < frame.height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (pixels[(y * width + x) * 4 + 3] === 0) continue
+      left = Math.min(left, x)
+      right = Math.max(right, x)
+    }
+  }
+
+  if (right < left) left = 0
+  const outputWidth = right >= left ? right - left + 1 : 1
+  const output = createCanvas(outputWidth, frame.height)
   output
     .getContext('2d')
     .drawImage(
       canvas,
-      padding,
+      left,
       frame.offsetY,
-      width - padding * 2,
+      outputWidth,
       frame.height,
       0,
       0,
-      width - padding * 2,
+      outputWidth,
       frame.height
     )
   return output.encodeSync('png')
