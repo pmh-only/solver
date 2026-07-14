@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,12 +10,23 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const MEMORY_TILE_BUTTON_ID = 'memory-tile'
 
 const MEMORY_COLOR = 0x7c3aed
 const MEMORY_STATE_KEY = 'memory'
 const MEMORY_SYMBOLS = ['🍎', '🍇', '🍊', '🍓', '🥝', '🍍', '🥥', '🍑'] as const
+const MEMORY_NAMES = [
+  'apple',
+  'grape',
+  'orange',
+  'strawberry',
+  'kiwi',
+  'pineapple',
+  'coconut',
+  'peach'
+] as const
 const MEMORY_SIZE = 16
 const MEMORY_WIDTH = 4
 
@@ -34,8 +41,6 @@ interface MemoryState {
   chooser: string
   lastResult?: string
 }
-
-type MemoryComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${MEMORY_STATE_KEY}:${token}`
@@ -61,7 +66,9 @@ function loadState(token: string): MemoryState | null {
       pubtab: Boolean(parsed.pubtab),
       tiles: parsed.tiles.map((tile) => (typeof tile === 'string' ? tile : '?')),
       matched: Array.isArray(parsed.matched) ? parsed.matched.filter(isTileIndex) : [],
-      selected: Array.isArray(parsed.selected) ? parsed.selected.filter(isTileIndex).slice(0, 2) : [],
+      selected: Array.isArray(parsed.selected)
+        ? parsed.selected.filter(isTileIndex).slice(0, 2)
+        : [],
       moves: typeof parsed.moves === 'number' && Number.isInteger(parsed.moves) ? parsed.moves : 0,
       chooser: parsed.chooser,
       lastResult: typeof parsed.lastResult === 'string' ? parsed.lastResult : undefined
@@ -103,6 +110,20 @@ function isVisible(state: MemoryState, index: number): boolean {
   return state.matched.includes(index) || state.selected.includes(index)
 }
 
+function tileName(value: string) {
+  const index = (MEMORY_SYMBOLS as readonly string[]).indexOf(value)
+  return MEMORY_NAMES[index] ?? 'symbol'
+}
+
+function accessibleBoard(state: MemoryState) {
+  return state.tiles
+    .map((tile, index) => {
+      if (!isVisible(state, index)) return `${index + 1}: hidden`
+      return `${index + 1}: ${tileName(tile)}${state.matched.includes(index) ? ' matched' : ''}`
+    })
+    .join(', ')
+}
+
 function statusText(state: MemoryState): string {
   if (isDone(state)) return `${state.chooser} cleared the board in ${state.moves} moves.`
   if (state.lastResult) return state.lastResult
@@ -116,20 +137,12 @@ function tileButton(token: string, state: MemoryState, index: number): ButtonBui
 
   return new ButtonBuilder()
     .setCustomId(`${MEMORY_TILE_BUTTON_ID}:${token}:${index}`)
-    .setLabel(visible ? state.tiles[index] ?? '?' : '?')
+    .setLabel(`${index + 1}`)
     .setStyle(matched ? ButtonStyle.Success : visible ? ButtonStyle.Primary : ButtonStyle.Secondary)
     .setDisabled(matched || isDone(state))
 }
 
-function buildComponents(token: string, state: MemoryState): MemoryComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(MEMORY_COLOR)
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`## Memory match\nMoves: ${state.moves}\n${statusText(state)}`)
-    )
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
+function buildComponents(token: string, state: MemoryState): GamePresentation {
   const rows = Array.from({ length: MEMORY_WIDTH }, (_, row) => {
     const start = row * MEMORY_WIDTH
     return new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -140,15 +153,37 @@ function buildComponents(token: string, state: MemoryState): MemoryComponent[] {
     )
   })
 
-  return withPubtabButton([container, ...rows], state.pubtab)
+  const visibleTiles = state.selected.map((index) => index + 1)
+  const presentation = createGamePresentation({
+    id: `memory-${token}`,
+    title: 'Memory match',
+    kicker: `${state.moves} move${state.moves === 1 ? '' : 's'}`,
+    lines: [
+      statusText(state),
+      ...(visibleTiles.length > 0 ? [`Revealed tiles: ${visibleTiles.join(', ')}`] : [])
+    ],
+    descriptionLines: [statusText(state), accessibleBoard(state)],
+    accent: MEMORY_COLOR,
+    footer: state.commandInput,
+    visual: {
+      kind: 'memory',
+      cells: state.tiles.map((tile, index) => (isVisible(state, index) ? tile : null)),
+      matched: state.matched
+    },
+    controls: rows
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): MemoryComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(MEMORY_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('## Memory match\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'memory-expired',
+    title: 'Memory match',
+    kicker: 'Board unavailable',
+    lines: ['Game expired. Start a new board with `memory`.'],
+    accent: MEMORY_COLOR
+  })
 }
 
 export function isMemoryButtonId(customId: string): boolean {
@@ -158,8 +193,10 @@ export function isMemoryButtonId(customId: string): boolean {
 export async function handleMemoryButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseTileId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -167,8 +204,10 @@ export async function handleMemoryButton(interaction: ButtonInteraction): Promis
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -178,7 +217,11 @@ export async function handleMemoryButton(interaction: ButtonInteraction): Promis
     state.selected = []
   }
 
-  if (!state.matched.includes(parsed.index) && !state.selected.includes(parsed.index) && !isDone(state)) {
+  if (
+    !state.matched.includes(parsed.index) &&
+    !state.selected.includes(parsed.index) &&
+    !isDone(state)
+  ) {
     state.selected.push(parsed.index)
     state.chooser = displayName(interaction)
     state.lastResult = undefined
@@ -197,8 +240,11 @@ export async function handleMemoryButton(interaction: ButtonInteraction): Promis
   }
 
   storeState(parsed.token, state)
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -225,14 +271,20 @@ export const subcommand: Subcommand = {
 
     storeState(token, state)
 
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
     if (interaction.deferred) {
-      await interaction.editReply({ components: components as never, flags: MessageFlags.IsComponentsV2 })
+      await interaction.editReply({
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2
+      })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

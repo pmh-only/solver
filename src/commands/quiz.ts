@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const QUIZ_ANSWER_BUTTON_ID = 'quiz-answer'
 
@@ -55,8 +52,6 @@ interface QuizState {
   correct?: boolean
 }
 
-type QuizComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
-
 function stateKey(token: string): string {
   return `${QUIZ_STATE_KEY}:${token}`
 }
@@ -66,7 +61,12 @@ function storeState(token: string, state: QuizState): void {
 }
 
 function isQuestionIndex(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < QUIZ_QUESTIONS.length
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value < QUIZ_QUESTIONS.length
+  )
 }
 
 function loadState(token: string): QuizState | null {
@@ -117,7 +117,10 @@ function optionList(question: QuizQuestion): string[] {
 }
 
 function statusLines(state: QuizState, question: QuizQuestion): string[] {
-  const lines = [`Question: ${question.question}`, ...optionList(question).map((item) => `- ${item}`)]
+  const lines = [
+    `Question: ${question.question}`,
+    ...optionList(question).map((item) => `- ${item}`)
+  ]
 
   if (!isAnswerIndex(state.lastAnswer)) {
     return [...lines, 'Pick one answer and test your luck.']
@@ -133,7 +136,12 @@ function statusLines(state: QuizState, question: QuizQuestion): string[] {
   ]
 }
 
-function buildAnswerButton(token: string, index: number, answer: string, disabled: boolean): ButtonBuilder {
+function buildAnswerButton(
+  token: string,
+  index: number,
+  answer: string,
+  disabled: boolean
+): ButtonBuilder {
   return new ButtonBuilder()
     .setCustomId(`${QUIZ_ANSWER_BUTTON_ID}:${token}:${index}`)
     .setLabel(answer)
@@ -141,41 +149,56 @@ function buildAnswerButton(token: string, index: number, answer: string, disable
     .setDisabled(disabled)
 }
 
-function buildAnswerRows(token: string, state: QuizState, question: QuizQuestion): ActionRowBuilder<ButtonBuilder>[] {
+function buildAnswerRows(
+  token: string,
+  state: QuizState,
+  question: QuizQuestion
+): ActionRowBuilder<ButtonBuilder>[] {
   const disabled = isAnswerIndex(state.lastAnswer)
 
-  const top = new ActionRowBuilder<ButtonBuilder>()
-    .addComponents(
-      buildAnswerButton(token, 0, question.answers[0], disabled),
-      buildAnswerButton(token, 1, question.answers[1], disabled),
-      buildAnswerButton(token, 2, question.answers[2], disabled)
-    )
+  const top = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    buildAnswerButton(token, 0, question.answers[0], disabled),
+    buildAnswerButton(token, 1, question.answers[1], disabled),
+    buildAnswerButton(token, 2, question.answers[2], disabled)
+  )
 
-  const bottom = new ActionRowBuilder<ButtonBuilder>()
-    .addComponents(
-      buildAnswerButton(token, 3, question.answers[3], disabled)
-    )
+  const bottom = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    buildAnswerButton(token, 3, question.answers[3], disabled)
+  )
 
   return [top, bottom]
 }
 
-function buildComponents(token: string, state: QuizState): QuizComponent[] {
+function buildComponents(token: string, state: QuizState): GamePresentation {
   const question = questionFromState(state)
-  const container = new ContainerBuilder()
-    .setAccentColor(QUIZ_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`# Quiz\n${statusLines(state, question).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
-  return withPubtabButton([container, ...buildAnswerRows(token, state, question)], state.pubtab)
+  const answered = isAnswerIndex(state.lastAnswer)
+  const presentation = createGamePresentation({
+    id: `quiz-${token}`,
+    title: 'Quiz',
+    kicker: answered ? (state.correct ? 'Correct answer' : 'Round complete') : 'Choose one answer',
+    lines: statusLines(state, question),
+    accent: QUIZ_COLOR,
+    footer: state.commandInput,
+    visual: {
+      kind: 'quiz',
+      options: [...question.answers],
+      selected: answered ? state.lastAnswer : undefined,
+      correct: answered ? question.correct : undefined
+    },
+    controls: buildAnswerRows(token, state, question)
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): QuizComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(QUIZ_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('# Quiz\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'quiz-expired',
+    title: 'Quiz',
+    kicker: 'Round unavailable',
+    lines: ['Round expired. Start a new question with `quiz`.'],
+    accent: QUIZ_COLOR
+  })
 }
 
 export function isQuizAnswerButtonId(customId: string): boolean {
@@ -185,8 +208,10 @@ export function isQuizAnswerButtonId(customId: string): boolean {
 export async function handleQuizAnswerButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseAnswerId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -194,8 +219,10 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -207,8 +234,11 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
 
   storeState(parsed.token, state)
 
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -239,18 +269,21 @@ export const subcommand: Subcommand = {
     }
 
     storeState(token, state)
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
 
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

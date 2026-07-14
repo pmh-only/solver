@@ -8,6 +8,7 @@ import {
   scheduleEphemeralReplyDelete,
   text
 } from '../components.js'
+import { createCanvasMedia } from '../canvas-presentation.js'
 
 export const USER_INTERACTION_JSON_COMMAND_NAME = 'User Interaction JSON'
 export const MESSAGE_INTERACTION_JSON_COMMAND_NAME = 'Message Interaction JSON'
@@ -75,10 +76,22 @@ async function replyWithInteractionJson(
   title: string,
   data: unknown
 ) {
-  const pages = buildJsonPages(title, jsonStringify(data))
+  const json = jsonStringify(data)
+  const pages = buildJsonPages(title, json)
   const flags = [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
+  const canvas = createCanvasMedia({
+    id: 'interaction-json',
+    title,
+    kicker: 'Developer inspector',
+    lines: [
+      `${json.length.toLocaleString('en-US')} characters`,
+      `${pages.length} page${pages.length === 1 ? '' : 's'}`
+    ],
+    accent: 0x64748b
+  })
   const firstPayload = {
-    components: [text(pages[0] ?? '')],
+    components: [canvas.gallery, text(pages[0] ?? '')],
+    files: [canvas.file],
     flags
   }
 

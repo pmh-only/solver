@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { CommandInteraction, Subcommand } from '../types.js'
 import { isPubtabContext, type Flags } from '../flags.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const RPS_PICK_BUTTON_ID = 'rps-pick'
 export const RPS_PUBLISH_BUTTON_ID = 'rps-publish'
@@ -50,8 +47,6 @@ interface RpsState {
   picks: RpsPick[]
   lastPc?: PcResult
 }
-
-type RpsComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${RPS_STATE_KEY}:${token}`
@@ -152,7 +147,11 @@ function duelLines(state: RpsState): string[] {
 
 function pickButton(token: string, choice: Choice, disabled: boolean): ButtonBuilder {
   const style =
-    choice === 'rock' ? ButtonStyle.Secondary : choice === 'paper' ? ButtonStyle.Primary : ButtonStyle.Danger
+    choice === 'rock'
+      ? ButtonStyle.Secondary
+      : choice === 'paper'
+        ? ButtonStyle.Primary
+        : ButtonStyle.Danger
 
   return new ButtonBuilder()
     .setCustomId(`${RPS_PICK_BUTTON_ID}:${token}:${choice}`)
@@ -182,28 +181,50 @@ function buildComponents(
   state: RpsState,
   commandInput: string,
   includePublish: boolean
-): RpsComponent[] {
+): GamePresentation {
   const title = state.mode === 'pc' ? 'Rock paper scissors' : 'Rock paper scissors duel'
   const lines = state.mode === 'pc' ? pcLines(state) : duelLines(state)
-  const container = new ContainerBuilder()
-    .setAccentColor(RPS_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## ${title}\n${lines.join('\n')}`))
-    .addSeparatorComponents(
-      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
-    )
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${commandInput}\``))
-
-  const components: RpsComponent[] = [container, buildPickRow(token, state)]
-  if (includePublish) components.push(buildPublishRow(token))
-  return withPubtabButton(components, state.pubtab)
+  const controls = [buildPickRow(token, state)]
+  if (includePublish) controls.push(buildPublishRow(token))
+  const choices: [string, string] | undefined =
+    state.mode === 'pc'
+      ? state.lastPc
+        ? [state.lastPc.playerChoice, state.lastPc.pcChoice]
+        : undefined
+      : state.picks.length >= 2
+        ? [state.picks[0].choice, state.picks[1].choice]
+        : undefined
+  const labels: [string, string] =
+    state.mode === 'pc'
+      ? [state.lastPc?.player ?? 'Player', 'PC']
+      : [state.picks[0]?.name ?? 'Player one', state.picks[1]?.name ?? 'Player two']
+  const presentation = createGamePresentation({
+    id: `rps-${token}`,
+    title,
+    kicker: choices
+      ? 'Throws revealed'
+      : state.mode === 'pc'
+        ? 'Choose your throw'
+        : 'Lock in secretly',
+    lines,
+    accent: RPS_COLOR,
+    footer: commandInput,
+    visual: { kind: 'rps', choices, labels },
+    controls
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): RpsComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(RPS_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('## Rock paper scissors\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'rps-expired',
+    title: 'Rock paper scissors',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new round with `rps`.'],
+    accent: RPS_COLOR,
+    visual: { kind: 'rps' }
+  })
 }
 
 async function sendInitialGame(
@@ -213,14 +234,20 @@ async function sendInitialGame(
   commandInput: string,
   pub: boolean
 ): Promise<void> {
-  const components = buildComponents(token, state, commandInput, !pub)
+  const presentation = buildComponents(token, state, commandInput, !pub)
   if (interaction.deferred) {
-    await interaction.editReply({ components: components as never, flags: MessageFlags.IsComponentsV2 })
+    await interaction.editReply({
+      components: presentation.components as never,
+      files: presentation.files,
+      attachments: [],
+      flags: MessageFlags.IsComponentsV2
+    })
     return
   }
 
   await interaction.reply({
-    components: components as never,
+    components: presentation.components as never,
+    files: presentation.files,
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)
       : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
@@ -235,7 +262,10 @@ function initialMode(restArgs: string, flags: Flags): RpsMode {
 }
 
 export function isRpsButtonId(customId: string): boolean {
-  return customId.startsWith(`${RPS_PICK_BUTTON_ID}:`) || customId.startsWith(`${RPS_PUBLISH_BUTTON_ID}:`)
+  return (
+    customId.startsWith(`${RPS_PICK_BUTTON_ID}:`) ||
+    customId.startsWith(`${RPS_PUBLISH_BUTTON_ID}:`)
+  )
 }
 
 export async function handleRpsButton(interaction: ButtonInteraction): Promise<void> {
@@ -250,8 +280,10 @@ export async function handleRpsButton(interaction: ButtonInteraction): Promise<v
       picks: []
     }
     storeState(token, state)
+    const presentation = buildComponents(token, state, state.commandInput, false)
     await interaction.reply({
-      components: buildComponents(token, state, state.commandInput, false) as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: [MessageFlags.IsComponentsV2]
     })
     return
@@ -259,8 +291,10 @@ export async function handleRpsButton(interaction: ButtonInteraction): Promise<v
 
   const parsed = parsePickId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -268,8 +302,10 @@ export async function handleRpsButton(interaction: ButtonInteraction): Promise<v
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -281,19 +317,29 @@ export async function handleRpsButton(interaction: ButtonInteraction): Promise<v
       playerChoice: parsed.choice,
       pcChoice: randomChoice()
     }
-  } else if (state.picks.length < 2 || state.picks.some((pick) => pick.userId === interaction.user.id)) {
+  } else if (
+    state.picks.length < 2 ||
+    state.picks.some((pick) => pick.userId === interaction.user.id)
+  ) {
     const existing = state.picks.find((pick) => pick.userId === interaction.user.id)
     if (existing) {
       existing.name = displayName(interaction)
       existing.choice = parsed.choice
     } else {
-      state.picks.push({ userId: interaction.user.id, name: displayName(interaction), choice: parsed.choice })
+      state.picks.push({
+        userId: interaction.user.id,
+        name: displayName(interaction),
+        choice: parsed.choice
+      })
     }
   }
 
   storeState(parsed.token, state)
+  const presentation = buildComponents(parsed.token, state, state.commandInput, !state.pub)
   await interaction.update({
-    components: buildComponents(parsed.token, state, state.commandInput, !state.pub) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }

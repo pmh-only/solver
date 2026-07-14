@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { CommandInteraction, Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const TTT_MOVE_BUTTON_ID = 'ttt-move'
 
@@ -34,8 +31,6 @@ const WIN_LINES: [number, number, number][] = [
 type TttSymbol = 'X' | 'O'
 type TttMode = 'pc' | 'duel'
 type TttOutcome = TttSymbol | 'draw'
-type TttComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
-
 interface TttState {
   mode: TttMode
   commandInput: string
@@ -104,7 +99,10 @@ function loadState(token: string): TttState | null {
       xPlayerName: parsed.xPlayerName,
       oPlayerId: typeof parsed.oPlayerId === 'string' ? parsed.oPlayerId : undefined,
       oPlayerName: typeof parsed.oPlayerName === 'string' ? parsed.oPlayerName : undefined,
-      result: parsed.result === 'X' || parsed.result === 'O' || parsed.result === 'draw' ? parsed.result : undefined
+      result:
+        parsed.result === 'X' || parsed.result === 'O' || parsed.result === 'draw'
+          ? parsed.result
+          : undefined
     }
   } catch {
     return null
@@ -138,15 +136,13 @@ function isMove(customId: string): Move | null {
 }
 
 function symbolLabel(symbol: TttSymbol): string {
-  return symbol === 'X' ? '❌' : '⭕'
-}
-
-function boardLine(board: (TttSymbol | null)[]): string {
-  return board.map((symbol, index) => (symbol ? symbolLabel(symbol) : `${index + 1}`)).join(' | ')
+  return symbol
 }
 
 function winnerFromMove(board: (TttSymbol | null)[], symbol: TttSymbol): boolean {
-  return WIN_LINES.some(([a, b, c]) => board[a] === symbol && board[b] === symbol && board[c] === symbol)
+  return WIN_LINES.some(
+    ([a, b, c]) => board[a] === symbol && board[b] === symbol && board[c] === symbol
+  )
 }
 
 function isDraw(board: (TttSymbol | null)[]): boolean {
@@ -173,18 +169,29 @@ function statusText(state: TttState): string {
   return `${current}'s turn (${state.turn}).`
 }
 
-function buildCellButton(token: string, state: TttState, index: number, symbol?: TttSymbol): ButtonBuilder {
+function accessibleBoard(board: (TttSymbol | null)[]): string {
+  const rows = Array.from({ length: 3 }, (_, row) =>
+    board
+      .slice(row * 3, row * 3 + 3)
+      .map((mark, column) => mark ?? `empty ${row * 3 + column + 1}`)
+      .join(', ')
+  )
+  return `Board: ${rows.join(' / ')}`
+}
+
+function buildCellButton(
+  token: string,
+  state: TttState,
+  index: number,
+  symbol?: TttSymbol
+): ButtonBuilder {
   const filled = symbol ?? state.board[index]
 
   return new ButtonBuilder()
     .setCustomId(`${TTT_MOVE_BUTTON_ID}:${token}:${index}`)
-    .setLabel(filled ? symbolLabel(filled) : `${index + 1}`)
+    .setLabel(`${index + 1}`)
     .setStyle(
-      filled
-        ? filled === 'X'
-          ? ButtonStyle.Primary
-          : ButtonStyle.Danger
-        : ButtonStyle.Secondary
+      filled ? (filled === 'X' ? ButtonStyle.Primary : ButtonStyle.Danger) : ButtonStyle.Secondary
     )
     .setDisabled(Boolean(state.result) || Boolean(filled))
 }
@@ -201,29 +208,39 @@ function buildBoardRows(token: string, state: TttState): ActionRowBuilder<Button
   return rows
 }
 
-function buildComponents(token: string, state: TttState): TttComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(TTT_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`# Tic tac toe\n${statusText(state)}`))
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(`
-${boardLine(state.board.slice(0, 3))}
-${boardLine(state.board.slice(3, 6))}
-${boardLine(state.board.slice(6, 9))}`.trim())
-    )
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
-  const rows = buildBoardRows(token, state)
-  return withPubtabButton([container, ...rows], state.pubtab)
+function buildComponents(token: string, state: TttState): GamePresentation {
+  const presentation = createGamePresentation({
+    id: `ttt-${token}`,
+    title: 'Tic tac toe',
+    kicker: state.mode === 'pc' ? 'Player vs PC' : 'Two player duel',
+    lines: [statusText(state), 'Choose a numbered square below to make your move.'],
+    descriptionLines: [
+      statusText(state),
+      accessibleBoard(state.board),
+      'Choose a numbered square below to make your move.'
+    ],
+    accent: TTT_COLOR,
+    footer: state.commandInput,
+    visual: {
+      kind: 'ttt',
+      board: state.board,
+      winner: state.result === 'X' || state.result === 'O' ? state.result : undefined
+    },
+    controls: buildBoardRows(token, state)
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): TttComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(TTT_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('# Tic tac toe\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'ttt-expired',
+    title: 'Tic tac toe',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new game with `ttt`.'],
+    accent: TTT_COLOR,
+    visual: { kind: 'ttt', board: Array(TTT_SIZE).fill(null) }
+  })
 }
 
 function nextRandomMove(board: (TttSymbol | null)[]): number {
@@ -234,14 +251,18 @@ function nextRandomMove(board: (TttSymbol | null)[]): number {
   return open[Math.floor(Math.random() * open.length)] ?? 0
 }
 
-function makeReplyComponents(token: string, state: TttState): TttComponent[] {
+function makeReplyComponents(token: string, state: TttState): GamePresentation {
   return buildComponents(token, state)
 }
 
-function buildErrorContainer(message: string): ContainerBuilder {
-  return new ContainerBuilder()
-    .setAccentColor(TTT_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Tic tac toe\n${message}`))
+function buildErrorContainer(message: string): GamePresentation {
+  return createGamePresentation({
+    id: 'ttt-error',
+    title: 'Tic tac toe',
+    kicker: 'Move blocked',
+    lines: [message],
+    accent: TTT_COLOR
+  })
 }
 
 export function isTttMoveButtonId(customId: string): boolean {
@@ -255,8 +276,10 @@ function playerDisplayName(interaction: CommandInteraction): string {
 export async function handleTttMoveButton(interaction: ButtonInteraction): Promise<void> {
   const move = isMove(interaction.customId)
   if (!move) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -264,8 +287,10 @@ export async function handleTttMoveButton(interaction: ButtonInteraction): Promi
 
   const state = loadState(move.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -274,39 +299,49 @@ export async function handleTttMoveButton(interaction: ButtonInteraction): Promi
   const symbol = symbolForUser(state, interaction)
   if (!symbol) {
     if (state.mode === 'pc') {
+      const error = buildErrorContainer('Only the command user can play in PC mode.')
       await interaction.reply({
-        components: [buildErrorContainer('Only the command user can play in PC mode.') as TttComponent] as never,
+        components: error.components as never,
+        files: error.files,
         flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
       })
       return
     }
 
+    const error = buildErrorContainer('Game has two players already.')
     await interaction.reply({
-      components: [buildErrorContainer('Game has two players already.') as TttComponent] as never,
+      components: error.components as never,
+      files: error.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
   }
 
   if (state.result) {
+    const error = buildErrorContainer('This game is already finished.')
     await interaction.reply({
-      components: [buildErrorContainer('This game is already finished.') as TttComponent] as never,
+      components: error.components as never,
+      files: error.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
   }
 
   if (state.board[move.index] !== null) {
+    const error = buildErrorContainer('That tile is already taken.')
     await interaction.reply({
-      components: [buildErrorContainer('That tile is already taken.') as TttComponent] as never,
+      components: error.components as never,
+      files: error.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
   }
 
   if (symbol !== state.turn) {
+    const error = buildErrorContainer("It's not your turn yet.")
     await interaction.reply({
-      components: [buildErrorContainer("It's not your turn yet.") as TttComponent] as never,
+      components: error.components as never,
+      files: error.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -335,8 +370,11 @@ export async function handleTttMoveButton(interaction: ButtonInteraction): Promi
   }
 
   storeState(move.token, state)
+  const presentation = makeReplyComponents(move.token, state)
   await interaction.update({
-    components: makeReplyComponents(move.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -370,7 +408,10 @@ export const subcommand: Subcommand = {
     pc: { description: 'play against the PC' }
   },
   async execute(interaction, args, flags) {
-    const restArgs = args.replace(/^\S+\s*/, '').trim().toLowerCase()
+    const restArgs = args
+      .replace(/^\S+\s*/, '')
+      .trim()
+      .toLowerCase()
     const pub = flags.has('pub')
     const mode = parseMode(restArgs, flags.has('pc'))
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
@@ -381,18 +422,21 @@ export const subcommand: Subcommand = {
     }
 
     storeState(token, state)
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
 
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

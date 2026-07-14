@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const SLOTS_SPIN_BUTTON_ID = 'slots-spin'
 
@@ -21,6 +18,13 @@ const SLOTS_COLOR = 0xf59e0b
 const SLOTS_STATE_KEY = 'slots'
 const SLOT_SYMBOLS = ['🍒', '🍋', '🍉', '⭐', '🔔'] as const
 const SLOT_REEL_COUNT = 3
+const SLOT_NAMES: Record<SlotSymbol, string> = {
+  '🍒': 'Cherry',
+  '🍋': 'Lemon',
+  '🍉': 'Melon',
+  '⭐': 'Star',
+  '🔔': 'Bell'
+}
 
 type SlotSymbol = (typeof SLOT_SYMBOLS)[number]
 type SlotState = [SlotSymbol, SlotSymbol, SlotSymbol]
@@ -33,8 +37,6 @@ interface SlotsState {
   pulls?: number
   lastPlayer: string
 }
-
-type SlotsComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${SLOTS_STATE_KEY}:${token}`
@@ -68,7 +70,12 @@ function loadState(token: string): SlotsState | null {
       commandInput: parsed.commandInput,
       pub: Boolean(parsed.pub),
       pubtab: Boolean(parsed.pubtab),
-      pulls: Number.isFinite(parsed.pulls) && typeof parsed.pulls === 'number' && Number.isInteger(parsed.pulls) ? parsed.pulls : 0,
+      pulls:
+        Number.isFinite(parsed.pulls) &&
+        typeof parsed.pulls === 'number' &&
+        Number.isInteger(parsed.pulls)
+          ? parsed.pulls
+          : 0,
       lastPlayer: parsed.lastPlayer,
       lastSpin: parseSpin(parsed.lastSpin)
     }
@@ -106,7 +113,7 @@ function outcomeLines(state: SlotsState): string[] {
   const [first, second, third] = state.lastSpin
   return [
     `Pull #${state.pulls ?? 0} by ${state.lastPlayer}`,
-    `🎰 ${first} ${second} ${third}`,
+    `Reels: ${SLOT_NAMES[first]} | ${SLOT_NAMES[second]} | ${SLOT_NAMES[third]}`,
     isJackpot(state.lastSpin) ? 'Jackpot! Triple match.' : 'Not a jackpot this pull.'
   ]
 }
@@ -119,25 +126,33 @@ function buildSpinButton(token: string, disabled: boolean): ButtonBuilder {
     .setDisabled(disabled)
 }
 
-function buildComponents(token: string, state: SlotsState): SlotsComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(SLOTS_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`# Slot machine\n${outcomeLines(state).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
-  return withPubtabButton(
-    [container, new ActionRowBuilder<ButtonBuilder>().addComponents(buildSpinButton(token, false))],
-    state.pubtab
+function buildComponents(token: string, state: SlotsState): GamePresentation {
+  const controls = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    buildSpinButton(token, false)
   )
+  const presentation = createGamePresentation({
+    id: `slots-${token}`,
+    title: 'Slot machine',
+    kicker: state.lastSpin ? `Pull ${state.pulls ?? 0}` : 'Ready to spin',
+    lines: outcomeLines(state),
+    accent: SLOTS_COLOR,
+    footer: state.commandInput,
+    visual: { kind: 'slots', symbols: state.lastSpin },
+    controls: [controls]
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): SlotsComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(SLOTS_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('# Slot machine\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'slots-expired',
+    title: 'Slot machine',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new machine with `slots`.'],
+    accent: SLOTS_COLOR,
+    visual: { kind: 'slots' }
+  })
 }
 
 export function isSlotsSpinButtonId(customId: string): boolean {
@@ -147,8 +162,10 @@ export function isSlotsSpinButtonId(customId: string): boolean {
 export async function handleSlotsSpinButton(interaction: ButtonInteraction): Promise<void> {
   const token = parseSpinId(interaction.customId)
   if (!token) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -156,8 +173,10 @@ export async function handleSlotsSpinButton(interaction: ButtonInteraction): Pro
 
   const state = loadState(token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -169,8 +188,11 @@ export async function handleSlotsSpinButton(interaction: ButtonInteraction): Pro
 
   storeState(token, state)
 
+  const presentation = buildComponents(token, state)
   await interaction.update({
-    components: buildComponents(token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -203,17 +225,20 @@ export const subcommand: Subcommand = {
 
     storeState(token, state)
 
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

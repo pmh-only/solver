@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const BLACKJACK_BUTTON_ID = 'blackjack-action'
 
@@ -39,8 +36,6 @@ interface BlackjackState {
   stood?: boolean
   result?: string
 }
-
-type BlackjackComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${BLACKJACK_STATE_KEY}:${token}`
@@ -116,7 +111,9 @@ function handValue(cards: Card[]): number {
 }
 
 function cardText(cards: Card[], hideSecond = false): string {
-  return cards.map((card, index) => (hideSecond && index === 1 ? '??' : `${card.rank}${card.suit}`)).join(' ')
+  return cards
+    .map((card, index) => (hideSecond && index === 1 ? '??' : `${card.rank}${card.suit}`))
+    .join(' ')
 }
 
 function settle(state: BlackjackState): void {
@@ -162,28 +159,38 @@ function actionButton(token: string, action: BlackjackAction, disabled: boolean)
     .setDisabled(disabled)
 }
 
-function buildComponents(token: string, state: BlackjackState): BlackjackComponent[] {
+function buildComponents(token: string, state: BlackjackState): GamePresentation {
   const over = Boolean(state.result)
-  const container = new ContainerBuilder()
-    .setAccentColor(BLACKJACK_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Blackjack\n${resultLines(state).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     actionButton(token, 'hit', over),
     actionButton(token, 'stand', over)
   )
-
-  return withPubtabButton([container, row], state.pubtab)
+  const presentation = createGamePresentation({
+    id: `blackjack-${token}`,
+    title: 'Blackjack',
+    kicker: over ? 'Hand settled' : 'Your move',
+    lines: resultLines(state),
+    accent: BLACKJACK_COLOR,
+    footer: state.commandInput,
+    visual: {
+      kind: 'blackjack',
+      player: state.player,
+      dealer: state.dealer.map((card, index) => ({ ...card, hidden: !over && index === 1 }))
+    },
+    controls: [row]
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): BlackjackComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(BLACKJACK_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('## Blackjack\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'blackjack-expired',
+    title: 'Blackjack',
+    kicker: 'Hand unavailable',
+    lines: ['Game expired. Deal a new hand with `blackjack`.'],
+    accent: BLACKJACK_COLOR
+  })
 }
 
 export function isBlackjackButtonId(customId: string): boolean {
@@ -193,8 +200,10 @@ export function isBlackjackButtonId(customId: string): boolean {
 export async function handleBlackjackButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseActionId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -202,8 +211,10 @@ export async function handleBlackjackButton(interaction: ButtonInteraction): Pro
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -220,8 +231,11 @@ export async function handleBlackjackButton(interaction: ButtonInteraction): Pro
   }
 
   storeState(parsed.token, state)
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -247,14 +261,20 @@ export const subcommand: Subcommand = {
     if (handValue(state.player) === 21) settle(state)
     storeState(token, state)
 
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
     if (interaction.deferred) {
-      await interaction.editReply({ components: components as never, flags: MessageFlags.IsComponentsV2 })
+      await interaction.editReply({
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2
+      })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

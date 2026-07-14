@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const DICE_GUESS_BUTTON_ID = 'dice-guess'
 
@@ -30,8 +27,6 @@ interface DiceState {
   result?: DiceValue
   chooser: string
 }
-
-type DiceComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${DICE_STATE_KEY}:${token}`
@@ -68,7 +63,7 @@ function loadState(token: string): DiceState | null {
 }
 
 function randomRoll(): DiceValue {
-  return Math.floor(Math.random() * 6) + 1 as DiceValue
+  return (Math.floor(Math.random() * 6) + 1) as DiceValue
 }
 
 function parseRollId(customId: string): { token: string; guess: DiceValue } | null {
@@ -102,13 +97,7 @@ function resultLines(state: DiceState): string[] {
   ]
 }
 
-function buildComponents(token: string, state: DiceState): DiceComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(DICE_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Dice roll\n${resultLines(state).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
+function buildComponents(token: string, state: DiceState): GamePresentation {
   const rowOne = new ActionRowBuilder<ButtonBuilder>().addComponents(
     buildGuessButton(token, 1, Boolean(state.result)),
     buildGuessButton(token, 2, Boolean(state.result)),
@@ -121,15 +110,29 @@ function buildComponents(token: string, state: DiceState): DiceComponent[] {
     buildGuessButton(token, 6, Boolean(state.result))
   )
 
-  return withPubtabButton([container, rowOne, rowTwo], state.pubtab)
+  const presentation = createGamePresentation({
+    id: `dice-${token}`,
+    title: 'Dice roll',
+    kicker: state.result ? 'Roll complete' : 'Choose your number',
+    lines: resultLines(state),
+    accent: DICE_COLOR,
+    footer: state.commandInput,
+    visual: { kind: 'dice', value: state.result },
+    controls: [rowOne, rowTwo]
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): DiceComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(DICE_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('## Dice roll\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'dice-expired',
+    title: 'Dice roll',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new roll with `dice`.'],
+    accent: DICE_COLOR,
+    visual: { kind: 'dice' }
+  })
 }
 
 export function isDiceButtonId(customId: string): boolean {
@@ -139,8 +142,10 @@ export function isDiceButtonId(customId: string): boolean {
 export async function handleDiceButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseRollId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -148,8 +153,10 @@ export async function handleDiceButton(interaction: ButtonInteraction): Promise<
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -161,8 +168,11 @@ export async function handleDiceButton(interaction: ButtonInteraction): Promise<
 
   storeState(parsed.token, state)
 
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -193,17 +203,20 @@ export const subcommand: Subcommand = {
 
     storeState(token, state)
 
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

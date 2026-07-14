@@ -236,12 +236,16 @@ describe('ping — command', () => {
     const firstCalls = await dispatch(commandJSON('ping 127.0.0.1'), subs)
     const firstEdit = getEdit(firstCalls) as { components: unknown[] }
     const publishCalls = await dispatch(buttonJSON(firstEdit.components, PUB_BUTTON_ID), subs)
-    const body = getCallback(publishCalls) as { type: number; data: { components: unknown[] } }
+    const body = getCallback(publishCalls) as { type: number }
+    const published = getEdit(publishCalls) as { components: unknown[] }
 
-    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
-    expect(JSON.stringify(body.data.components)).not.toContain('Retry')
-    expect(JSON.stringify(body.data.components)).not.toContain('Edit parameters')
-    expect(JSON.stringify(body.data.components)).not.toContain(PUB_BUTTON_ID)
+    expect(body.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(JSON.stringify(published.components)).not.toContain('Retry')
+    expect(JSON.stringify(published.components)).not.toContain('Edit parameters')
+    expect(JSON.stringify(published.components)).not.toContain(PUB_BUTTON_ID)
+    expect(JSON.stringify(published.components)).toContain('attachment://')
+    const publishedFile = publishCalls.flatMap((call) => call.files)[0] as { data?: unknown }
+    expect(Buffer.isBuffer(publishedFile?.data)).toBe(true)
   })
 
   it('pins an ephemeral reply so it is not auto-deleted', async () => {

@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  MediaGalleryBuilder,
   MessageFlags,
   SeparatorBuilder,
   SeparatorSpacingSize,
@@ -18,6 +19,7 @@ import type { Subcommand } from '../types.js'
 import type { Flags } from '../flags.js'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { createCanvasMedia } from '../canvas-presentation.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
@@ -71,12 +73,9 @@ const GPT_CONTEXT_KEY = 'gpt-ctx'
 const activeStreams = new Map<string, AbortController>()
 const followUpIds = new Map<string, string[]>()
 
-type AnyRow =
-  | ActionRowBuilder<StringSelectMenuBuilder>
-  | ActionRowBuilder<ButtonBuilder>
+type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
 
 type GptComponent = ContainerBuilder | AnyRow
-
 
 function storeGptContext(token: string, ctx: GptContext) {
   setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify(ctx))
@@ -98,6 +97,10 @@ function tokenFromId(customId: string, baseId: string): string | null {
   return customId.slice(prefix.length)
 }
 
+function gptImageName(token: string) {
+  return `gpt-${token}.png`
+}
+
 function buildGptComponents(
   prompt: string,
   content: string,
@@ -109,14 +112,20 @@ function buildGptComponents(
   verbosity: VerbosityLevel,
   streaming: boolean
 ): GptComponent[] {
-  const displayContent = content
-    ? streaming
-      ? `${content}\n-# ▌`
-      : content
-    : '-# generating...'
+  const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
   const ctr = new ContainerBuilder()
     .setAccentColor(GPT_COLOR)
+    .addMediaGalleryComponents(
+      new MediaGalleryBuilder({
+        items: [
+          {
+            media: { url: `attachment://${gptImageName(token)}` },
+            description: `GPT request: ${prompt}`.slice(0, 1000)
+          }
+        ]
+      })
+    )
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(`**${prompt}**`))
     .addSeparatorComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
@@ -129,9 +138,7 @@ function buildGptComponents(
       .setCustomId(`${GPT_MODEL_SELECT_ID}:${token}`)
       .setPlaceholder(`Model: ${model}`)
       .addOptions(
-        GPT_MODELS.map((m) =>
-          new StringSelectMenuOptionBuilder().setLabel(m.label).setValue(m.id)
-        )
+        GPT_MODELS.map((m) => new StringSelectMenuOptionBuilder().setLabel(m.label).setValue(m.id))
       )
   )
 
@@ -217,8 +224,7 @@ function makeCallbacks(
         components: comps as never,
         flags: MessageFlags.IsComponentsV2
       }),
-    followUp: (comps) =>
-      interaction.followUp({ components: comps as never, flags: followUpFlags }),
+    followUp: (comps) => interaction.followUp({ components: comps as never, flags: followUpFlags }),
     editMessage: (id, comps) =>
       interaction.webhook.editMessage(id, {
         components: comps as never,
@@ -298,9 +304,9 @@ async function runGptStream(
     currentPage++
     currentPageContent = ''
 
-    const msg = (await callbacks.followUp(
-      buildFollowUpComponents('-# generating...', true)
-    )) as { id?: string }
+    const msg = (await callbacks.followUp(buildFollowUpComponents('-# generating...', true))) as {
+      id?: string
+    }
 
     if (msg?.id) {
       const ids = followUpIds.get(token) ?? []
@@ -483,8 +489,7 @@ export const subcommand: Subcommand = {
     const pub = flags.has('pub')
     const modelFlag = flags.get('model')
     const model =
-      typeof modelFlag === 'string' &&
-      GPT_MODELS.some((m) => m.id === modelFlag)
+      typeof modelFlag === 'string' && GPT_MODELS.some((m) => m.id === modelFlag)
         ? (modelFlag as ModelId)
         : DEFAULT_MODEL
 
@@ -501,6 +506,16 @@ export const subcommand: Subcommand = {
 
     await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
 
+    const canvas = createCanvasMedia({
+      id: `gpt-${token}`,
+      fileName: gptImageName(token),
+      title: 'GPT workspace',
+      kicker: 'AI response workspace',
+      lines: [prompt],
+      accent: GPT_COLOR,
+      footer: args
+    })
+
     await interaction.editReply({
       components: buildGptComponents(
         prompt,
@@ -513,6 +528,8 @@ export const subcommand: Subcommand = {
         'normal',
         true
       ) as never,
+      files: [canvas.file],
+      attachments: [],
       flags: MessageFlags.IsComponentsV2
     })
 

@@ -36,6 +36,7 @@ export interface RestCall {
   method: 'POST' | 'PATCH' | 'GET' | 'DELETE'
   route: string
   body: unknown
+  files: unknown[]
 }
 
 /** Raw Discord API interaction object (partial — only fields the handler uses) */
@@ -49,25 +50,35 @@ function makeClient(): { client: Client; calls: RestCall[] } {
 
   ;(client.rest as unknown as Record<string, unknown>).post = async (
     route: unknown,
-    options: { body?: unknown }
+    options: { body?: unknown; files?: unknown[] }
   ) => {
-    calls.push({ method: 'POST', route: String(route), body: options?.body ?? null })
+    calls.push({
+      method: 'POST',
+      route: String(route),
+      body: options?.body ?? null,
+      files: options?.files ?? []
+    })
     return {}
   }
   ;(client.rest as unknown as Record<string, unknown>).patch = async (
     route: unknown,
-    options: { body?: unknown }
+    options: { body?: unknown; files?: unknown[] }
   ) => {
-    calls.push({ method: 'PATCH', route: String(route), body: options?.body ?? null })
+    calls.push({
+      method: 'PATCH',
+      route: String(route),
+      body: options?.body ?? null,
+      files: options?.files ?? []
+    })
     // discord.js editReply() expects a Message-like object back
     return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
   }
   ;(client.rest as unknown as Record<string, unknown>).get = async (route: unknown) => {
-    calls.push({ method: 'GET', route: String(route), body: null })
+    calls.push({ method: 'GET', route: String(route), body: null, files: [] })
     return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
   }
   ;(client.rest as unknown as Record<string, unknown>).delete = async (route: unknown) => {
-    calls.push({ method: 'DELETE', route: String(route), body: null })
+    calls.push({ method: 'DELETE', route: String(route), body: null, files: [] })
     return {}
   }
 
@@ -94,6 +105,24 @@ function resolveCustomId(components: unknown[], baseId: string): string {
   }
 
   return baseId
+}
+
+function attachmentNames(components: unknown[]): string[] {
+  const names = new Set<string>()
+  const visit = (value: unknown) => {
+    if (typeof value === 'string' && value.startsWith('attachment://')) {
+      names.add(value.slice('attachment://'.length))
+      return
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    Object.values(value).forEach(visit)
+  }
+  visit(components)
+  return [...names]
 }
 
 function buildInteraction(client: Client, raw: RawInteraction): Interaction {
@@ -138,13 +167,23 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
 }
 
 function messageJSON(components: unknown[]) {
+  const imageUrl =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   return {
     id: '0',
     type: 0,
     content: '',
     channel_id: '777777777777777777',
     author: { id: '666666666666666666', username: 'testuser', discriminator: '0', avatar: null },
-    attachments: [],
+    attachments: attachmentNames(components).map((filename, index) => ({
+      id: `${index}`,
+      filename,
+      size: 68,
+      url: imageUrl,
+      proxy_url: imageUrl,
+      content_type: 'image/png',
+      description: 'Rendered command card'
+    })),
     embeds: [],
     mentions: [],
     mention_roles: [],

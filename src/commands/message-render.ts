@@ -15,8 +15,7 @@ import {
   type Message,
   type MessageContextMenuCommandInteraction
 } from 'discord.js'
-import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D } from '@napi-rs/canvas'
-import { fileURLToPath } from 'node:url'
+import { createCanvas, loadImage, type SKRSContext2D } from '@napi-rs/canvas'
 import {
   pinButtonRow,
   publishButtonRow,
@@ -25,6 +24,14 @@ import {
   text
 } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import {
+  detectLocale,
+  fontFamilyForText,
+  GG_SANS_FAMILY,
+  setCanvasFont as setFont,
+  wrapCanvasText as wrapText,
+  type LocaleKind
+} from '../canvas.js'
 
 export const MESSAGE_RENDER_COMMAND_NAME = 'Render Message'
 export const MESSAGE_THREAD_START_COMMAND_NAME = 'Start Render Thread'
@@ -45,34 +52,6 @@ const HEADER_LINE_HEIGHT = 20
 const TIMESTAMP_FONT_SIZE = 12
 const MESSAGE_GAP = 12
 const CONTENT_WIDTH = MAX_WIDTH - CONTENT_X - PADDING_X
-
-const GG_SANS_REGULAR = fileURLToPath(
-  new URL('../../assets/fonts/gg-sans-400.woff2', import.meta.url)
-)
-const GG_SANS_MEDIUM = fileURLToPath(
-  new URL('../../assets/fonts/gg-sans-500.woff2', import.meta.url)
-)
-const GG_SANS_BOLD = fileURLToPath(new URL('../../assets/fonts/gg-sans-700.woff2', import.meta.url))
-const NOTO_SANS_CJK_JP = fileURLToPath(
-  new URL('../../assets/fonts/NotoSansCJKjp-Regular.otf', import.meta.url)
-)
-const NOTO_SANS_CJK_KR = fileURLToPath(
-  new URL('../../assets/fonts/NotoSansCJKkr-Regular.otf', import.meta.url)
-)
-const NOTO_SANS_CJK_SC = fileURLToPath(
-  new URL('../../assets/fonts/NotoSansCJKsc-Regular.otf', import.meta.url)
-)
-const NOTO_SANS_CJK_TC = fileURLToPath(
-  new URL('../../assets/fonts/NotoSansCJKtc-Regular.otf', import.meta.url)
-)
-
-const GG_SANS_FAMILY = 'gg sans'
-const KO_FAMILY = 'discord-cjk-ko'
-const JA_FAMILY = 'discord-cjk-ja'
-const ZH_CN_FAMILY = 'discord-cjk-zh-cn'
-const ZH_TW_FAMILY = 'discord-cjk-zh-tw'
-
-type LocaleKind = 'ko' | 'ja' | 'zh-CN' | 'zh-TW' | 'default'
 
 type StoredMessageSnapshot = {
   channelId: string
@@ -100,14 +79,6 @@ type MessageLayout = {
   nameWidth: number
   timestamp: string
 }
-
-GlobalFonts.registerFromPath(GG_SANS_REGULAR, GG_SANS_FAMILY)
-GlobalFonts.registerFromPath(GG_SANS_MEDIUM, GG_SANS_FAMILY)
-GlobalFonts.registerFromPath(GG_SANS_BOLD, GG_SANS_FAMILY)
-GlobalFonts.registerFromPath(NOTO_SANS_CJK_KR, KO_FAMILY)
-GlobalFonts.registerFromPath(NOTO_SANS_CJK_JP, JA_FAMILY)
-GlobalFonts.registerFromPath(NOTO_SANS_CJK_SC, ZH_CN_FAMILY)
-GlobalFonts.registerFromPath(NOTO_SANS_CJK_TC, ZH_TW_FAMILY)
 
 function collectionKey(contextId: string, userId: string) {
   return `message-render-collection:${contextId}:${userId}`
@@ -208,83 +179,6 @@ function clipRoundedRect(
   ctx.arcTo(x, y, x + width, y, radius)
   ctx.closePath()
   ctx.clip()
-}
-
-function wrapText(ctx: SKRSContext2D, value: string, maxWidth: number) {
-  const lines: string[] = []
-  for (const paragraph of value.split(/\r?\n/)) {
-    if (!paragraph.trim()) {
-      lines.push('')
-      continue
-    }
-    let current = ''
-    for (const token of paragraph.match(/\s+|\S+/g) ?? []) {
-      const candidate = `${current}${token}`
-      if (ctx.measureText(candidate).width <= maxWidth || !current) {
-        current = candidate
-        continue
-      }
-      lines.push(current)
-      current = token.trimStart()
-      while (ctx.measureText(current).width > maxWidth && current.length > 1) {
-        const chars = [...current]
-        let splitIndex = chars.length - 1
-        while (
-          splitIndex > 1 &&
-          ctx.measureText(chars.slice(0, splitIndex).join('')).width > maxWidth
-        ) {
-          splitIndex--
-        }
-        lines.push(chars.slice(0, splitIndex).join(''))
-        current = chars.slice(splitIndex).join('')
-      }
-    }
-    if (current) lines.push(current)
-  }
-  return lines.length > 0 ? lines : ['']
-}
-
-function detectLocale(locale: string, text: string): LocaleKind {
-  if (/[\uac00-\ud7af]/u.test(text)) return 'ko'
-  if (/[\u3040-\u30ff]/u.test(text)) return 'ja'
-  if (/[\u3400-\u9fff\uf900-\ufaff]/u.test(text)) {
-    return locale.startsWith('zh-TW') || locale.startsWith('zh-HK') ? 'zh-TW' : 'zh-CN'
-  }
-  if (locale.startsWith('ko')) return 'ko'
-  if (locale.startsWith('ja')) return 'ja'
-  if (locale.startsWith('zh-TW') || locale.startsWith('zh-HK')) return 'zh-TW'
-  if (locale.startsWith('zh')) return 'zh-CN'
-  return 'default'
-}
-
-function fontFamilyForLocale(locale: LocaleKind) {
-  switch (locale) {
-    case 'ko':
-      return KO_FAMILY
-    case 'ja':
-      return JA_FAMILY
-    case 'zh-CN':
-      return ZH_CN_FAMILY
-    case 'zh-TW':
-      return ZH_TW_FAMILY
-    default:
-      return GG_SANS_FAMILY
-  }
-}
-
-function fontFamilyForText(text: string, locale: LocaleKind) {
-  if (/[\uac00-\ud7af]/u.test(text)) return KO_FAMILY
-  if (/[\u3040-\u30ff]/u.test(text)) return JA_FAMILY
-  if (/[\u3400-\u9fff\uf900-\ufaff]/u.test(text)) {
-    if (locale === 'zh-TW') return ZH_TW_FAMILY
-    if (locale === 'zh-CN') return ZH_CN_FAMILY
-    return JA_FAMILY
-  }
-  return fontFamilyForLocale(locale)
-}
-
-function setFont(ctx: SKRSContext2D, weight: 400 | 500 | 700, size: number, family: string) {
-  ctx.font = `${weight} ${size}px "${family}"`
 }
 
 function snapshotFromMessage(message: Message): StoredMessageSnapshot {

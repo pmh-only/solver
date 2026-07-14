@@ -15,6 +15,7 @@ import {
 } from '../components.js'
 import { poll } from './more-poll.js'
 import { getStoredValue, listStoredKeys, setStoredValue } from '../helpers/kv-store.js'
+import { createCanvasMedia } from '../canvas-presentation.js'
 
 const PREVIEW_LIMIT = 120_000
 const FETCH_TIMEOUT_MS = 10_000
@@ -173,7 +174,14 @@ function runRegex(args: string): CommandRunResult {
 
 async function followUpLater(interaction: CommandInteraction, content: string) {
   if ('followUp' in interaction) {
-    await interaction.followUp({ content })
+    const canvas = createCanvasMedia({
+      id: 'scheduled-alert',
+      title: 'Scheduled alert',
+      kicker: 'Solver reminder',
+      lines: [content],
+      accent: 0xf59e0b
+    })
+    await interaction.followUp({ content, files: [canvas.file] })
   }
 }
 

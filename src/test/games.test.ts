@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { InteractionResponseType, MessageFlags } from 'discord.js'
+import { ComponentType, InteractionResponseType, MessageFlags } from 'discord.js'
 import { DICE_GUESS_BUTTON_ID, subcommand as dice } from '../commands/dice.js'
 import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../commands/coin.js'
 import { SLOTS_SPIN_BUTTON_ID, subcommand as slots } from '../commands/slots.js'
@@ -10,7 +10,14 @@ import { QUIZ_ANSWER_BUTTON_ID, subcommand as quiz } from '../commands/quiz.js'
 import { BLACKJACK_BUTTON_ID, subcommand as blackjack } from '../commands/blackjack.js'
 import { MEMORY_TILE_BUTTON_ID, subcommand as memory } from '../commands/memory.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
-import { autocompleteJSON, buttonJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
+import {
+  autocompleteJSON,
+  buttonJSON,
+  commandJSON,
+  dispatch,
+  getCallback,
+  makeSubcommands
+} from './e2e.js'
 
 const subs = makeSubcommands(coin, dice, slots, ttt, hilo, quiz, blackjack, memory)
 const storePath = join(process.cwd(), '.tmp', 'games.test.sqlite')
@@ -56,6 +63,21 @@ function buttonIdByIndex(components: unknown[], base: string, index: number): st
   )
 }
 
+function pngFromCalls(calls: Array<{ files: unknown[] }>): Buffer | null {
+  const file = calls.flatMap((call) => call.files)[0]
+  if (Buffer.isBuffer(file)) return file
+  if (!file || typeof file !== 'object') return null
+  const data = (file as { data?: unknown }).data
+  return Buffer.isBuffer(data) ? data : null
+}
+
+function expectCanvasGallery(components: unknown[], calls: Array<{ files: unknown[] }>) {
+  expect(JSON.stringify(components)).toContain(`"type":${ComponentType.MediaGallery}`)
+  expect(JSON.stringify(components)).toContain('attachment://')
+  const png = pngFromCalls(calls)
+  expect(png?.subarray(1, 4).toString('ascii')).toBe('PNG')
+}
+
 describe('coin — command', () => {
   beforeEach(() => {
     isolateStoredValues(storePath)
@@ -63,7 +85,10 @@ describe('coin — command', () => {
 
   it('starts a private flip game', async () => {
     const calls = await dispatch(commandJSON('coin'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -77,7 +102,10 @@ describe('coin — command', () => {
     const firstCalls = await dispatch(commandJSON('coin'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const coinCalls = await dispatch(buttonJSON(firstBody.data.components, COIN_GUESS_BUTTON_ID, {}), subs)
+    const coinCalls = await dispatch(
+      buttonJSON(firstBody.data.components, COIN_GUESS_BUTTON_ID, {}),
+      subs
+    )
     const body = getCallback(coinCalls) as { type: number; data: { components: unknown[] } }
     const rendered = JSON.stringify(body.data.components)
 
@@ -112,7 +140,10 @@ describe('dice — command', () => {
 
   it('starts a private roll game', async () => {
     const calls = await dispatch(commandJSON('dice'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -126,7 +157,10 @@ describe('dice — command', () => {
     const firstCalls = await dispatch(commandJSON('dice'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const diceCalls = await dispatch(buttonJSON(firstBody.data.components, DICE_GUESS_BUTTON_ID), subs)
+    const diceCalls = await dispatch(
+      buttonJSON(firstBody.data.components, DICE_GUESS_BUTTON_ID),
+      subs
+    )
     const body = getCallback(diceCalls) as { type: number; data: { components: unknown[] } }
     const rendered = JSON.stringify(body.data.components)
 
@@ -161,7 +195,10 @@ describe('slots — command', () => {
 
   it('starts a private slot machine', async () => {
     const calls = await dispatch(commandJSON('slots'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -175,14 +212,18 @@ describe('slots — command', () => {
     const firstCalls = await dispatch(commandJSON('slots'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const spinCalls = await dispatch(buttonJSON(firstBody.data.components, SLOTS_SPIN_BUTTON_ID), subs)
+    const spinCalls = await dispatch(
+      buttonJSON(firstBody.data.components, SLOTS_SPIN_BUTTON_ID),
+      subs
+    )
     const body = getCallback(spinCalls) as { type: number; data: { components: unknown[] } }
     const rendered = JSON.stringify(body.data.components)
 
     expect(body.type).toBe(InteractionResponseType.UpdateMessage)
-    expect(rendered).toContain('🎰')
-    expect(rendered).toContain('🍒')
+    expect(rendered).toContain('Reels: Cherry | Cherry | Cherry')
+    expect(rendered).not.toContain('🍒')
     expect(rendered).toContain('Jackpot')
+    expectCanvasGallery(body.data.components, spinCalls)
 
     vi.restoreAllMocks()
   })
@@ -211,7 +252,10 @@ describe('hilo — command', () => {
 
   it('starts a private prediction game', async () => {
     const calls = await dispatch(commandJSON('hilo'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -220,9 +264,7 @@ describe('hilo — command', () => {
   })
 
   it('reveals if the prediction was right', async () => {
-    vi.spyOn(Math, 'random')
-      .mockReturnValueOnce(0.1)
-      .mockReturnValueOnce(0.9)
+    vi.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValueOnce(0.9)
 
     const firstCalls = await dispatch(commandJSON('hilo'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
@@ -263,7 +305,10 @@ describe('quiz — command', () => {
 
   it('starts a private quiz round', async () => {
     const calls = await dispatch(commandJSON('quiz'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -313,7 +358,10 @@ describe('blackjack — command', () => {
 
   it('starts a private blackjack hand', async () => {
     const calls = await dispatch(commandJSON('blackjack'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -324,7 +372,9 @@ describe('blackjack — command', () => {
   it('settles the hand when standing', async () => {
     const firstCalls = await dispatch(commandJSON('blackjack'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
-    const standButton = collectButtonIds(firstBody.data.components).find((id) => id.endsWith(':stand')) ?? BLACKJACK_BUTTON_ID
+    const standButton =
+      collectButtonIds(firstBody.data.components).find((id) => id.endsWith(':stand')) ??
+      BLACKJACK_BUTTON_ID
 
     const standCalls = await dispatch(buttonJSON(firstBody.data.components, standButton), subs)
     const body = getCallback(standCalls) as { type: number; data: { components: unknown[] } }
@@ -365,7 +415,10 @@ describe('memory — command', () => {
 
   it('starts a private memory board', async () => {
     const calls = await dispatch(commandJSON('memory'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
@@ -384,7 +437,9 @@ describe('memory — command', () => {
 
     expect(body.type).toBe(InteractionResponseType.UpdateMessage)
     expect(rendered).toContain('Pick one more tile.')
-    expect(/🍎|🍇|🍊|🍓|🥝|🍍|🥥|🍑/.test(rendered)).toBe(true)
+    expect(rendered).toMatch(/1: (apple|grape|orange|strawberry|kiwi|pineapple|coconut|peach)/)
+    expect(/🍎|🍇|🍊|🍓|🥝|🍍|🥥|🍑/.test(rendered)).toBe(false)
+    expectCanvasGallery(body.data.components, tileCalls)
   })
 
   it('starts as public when --pub is set', async () => {
@@ -411,15 +466,19 @@ describe('ttt — command', () => {
 
   it('starts in private mode by default', async () => {
     const calls = await dispatch(commandJSON('ttt'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
     expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
     expect(JSON.stringify(body.data.components)).toContain('Tic tac toe')
+    expectCanvasGallery(body.data.components, calls)
   })
 
-  it('handles a turn against PC and shows both marks', async () => {
+  it('renders both PC marks into a refreshed board image', async () => {
     vi.spyOn(Math, 'random').mockReturnValueOnce(0.0)
 
     const firstCalls = await dispatch(commandJSON('ttt --pc'), subs)
@@ -431,8 +490,11 @@ describe('ttt — command', () => {
     const rendered = JSON.stringify(body.data.components)
 
     expect(body.type).toBe(InteractionResponseType.UpdateMessage)
-    expect(rendered).toContain('❌')
-    expect(rendered).toContain('⭕')
+    expect(rendered).not.toContain('❌')
+    expect(rendered).not.toContain('⭕')
+    expect(rendered).toContain('Board: X, O, empty 3')
+    expectCanvasGallery(body.data.components, secondCalls)
+    expect(pngFromCalls(secondCalls)).not.toEqual(pngFromCalls(firstCalls))
 
     vi.restoreAllMocks()
   })
@@ -443,10 +505,16 @@ describe('ttt — command', () => {
 
     const topLeft = buttonIdByIndex(firstBody.data.components, TTT_MOVE_BUTTON_ID, 0)
     const firstMoveCalls = await dispatch(buttonJSON(firstBody.data.components, topLeft), subs)
-    const firstMoveBody = getCallback(firstMoveCalls) as { type: number; data: { components: unknown[] } }
+    const firstMoveBody = getCallback(firstMoveCalls) as {
+      type: number
+      data: { components: unknown[] }
+    }
 
     const selfMoveCalls = await dispatch(
-      buttonJSON(firstMoveBody.data.components, buttonIdByIndex(firstMoveBody.data.components, TTT_MOVE_BUTTON_ID, 1)),
+      buttonJSON(
+        firstMoveBody.data.components,
+        buttonIdByIndex(firstMoveBody.data.components, TTT_MOVE_BUTTON_ID, 1)
+      ),
       subs
     )
     const selfMoveBody = getCallback(selfMoveCalls) as { type: number; data: { flags: number } }
@@ -464,10 +532,14 @@ describe('ttt — command', () => {
       ),
       subs
     )
-    const secondBody = getCallback(secondMoveCalls) as { type: number; data: { components: unknown[] } }
+    const secondBody = getCallback(secondMoveCalls) as {
+      type: number
+      data: { components: unknown[] }
+    }
 
     expect(secondBody.type).toBe(InteractionResponseType.UpdateMessage)
-    expect(JSON.stringify(secondBody.data.components)).toContain('⭕')
+    expect(JSON.stringify(secondBody.data.components)).not.toContain('⭕')
+    expectCanvasGallery(secondBody.data.components, secondMoveCalls)
   })
 
   it('returns ttt in autocomplete', async () => {

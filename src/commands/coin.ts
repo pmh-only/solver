@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const COIN_GUESS_BUTTON_ID = 'coin-guess'
 
@@ -32,8 +29,6 @@ interface CoinState {
   result?: CoinSide
   chooser: string
 }
-
-type CoinComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${COIN_STATE_KEY}:${token}`
@@ -105,27 +100,34 @@ function buildGuessButton(token: string, side: CoinSide, disabled: boolean): But
     .setDisabled(disabled)
 }
 
-function buildComponents(token: string, state: CoinState): CoinComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(COIN_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## Coin flip\n${resultLines(state).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
+function buildComponents(token: string, state: CoinState): GamePresentation {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     buildGuessButton(token, HEADS, Boolean(state.result)),
     buildGuessButton(token, TAILS, Boolean(state.result))
   )
-
-  return withPubtabButton([container, row], state.pubtab)
+  const presentation = createGamePresentation({
+    id: `coin-${token}`,
+    title: 'Coin flip',
+    kicker: state.result ? 'Toss complete' : 'Call the toss',
+    lines: resultLines(state),
+    accent: COIN_COLOR,
+    footer: state.commandInput,
+    visual: { kind: 'coin', side: state.result },
+    controls: [row]
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): CoinComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(COIN_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('## Coin flip\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'coin-expired',
+    title: 'Coin flip',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new toss with `coin`.'],
+    accent: COIN_COLOR,
+    visual: { kind: 'coin' }
+  })
 }
 
 function displayName(interaction: ButtonInteraction): string {
@@ -139,8 +141,10 @@ export function isCoinButtonId(customId: string): boolean {
 export async function handleCoinButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseGuessId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -148,8 +152,10 @@ export async function handleCoinButton(interaction: ButtonInteraction): Promise<
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -161,8 +167,11 @@ export async function handleCoinButton(interaction: ButtonInteraction): Promise<
 
   storeState(parsed.token, state)
 
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -184,17 +193,20 @@ export const subcommand: Subcommand = {
 
     storeState(token, state)
 
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)

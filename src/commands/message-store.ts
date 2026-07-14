@@ -9,6 +9,7 @@ import {
 } from 'discord.js'
 import { pinButtonRow, scheduleEphemeralReplyDelete, text } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { createCanvasMedia } from '../canvas-presentation.js'
 
 export const MESSAGE_STORE_COMMAND_NAME = 'Store Message'
 export const MESSAGE_STORE_MODAL_ID = 'message-store-modal'
@@ -20,15 +21,25 @@ function pendingKey(userId: string) {
   return `${KV_PREFIX}${userId}`
 }
 
-export async function handleMessageStoreCommand(
-  interaction: MessageContextMenuCommandInteraction
-) {
+function storeReply(title: string, message: string, accent: number) {
+  const canvas = createCanvasMedia({
+    id: 'message-store',
+    title,
+    kicker: 'Message store',
+    lines: [message],
+    accent
+  })
+  return {
+    components: [canvas.gallery, text(message), pinButtonRow()],
+    files: [canvas.file],
+    flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
+  }
+}
+
+export async function handleMessageStoreCommand(interaction: MessageContextMenuCommandInteraction) {
   const content = interaction.targetMessage.content
   if (!content.trim()) {
-    const payload = {
-      components: [text('message has no text content'), pinButtonRow()],
-      flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
-    }
+    const payload = storeReply('Nothing to store', 'Message has no text content.', 0xf59e0b)
     await interaction.reply(payload)
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {
@@ -60,10 +71,7 @@ export async function handleMessageStoreCommand(
 export async function handleMessageStoreModal(interaction: ModalSubmitInteraction) {
   const key = interaction.fields.getTextInputValue(MESSAGE_STORE_KEY_INPUT_ID).trim()
   if (!key) {
-    const payload = {
-      components: [text('no key provided'), pinButtonRow()],
-      flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
-    }
+    const payload = storeReply('Key required', 'No key provided.', 0xf59e0b)
     await interaction.reply(payload)
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {
@@ -74,10 +82,7 @@ export async function handleMessageStoreModal(interaction: ModalSubmitInteractio
 
   const content = getStoredValue(pendingKey(interaction.user.id))
   if (!content) {
-    const payload = {
-      components: [text('no pending message found'), pinButtonRow()],
-      flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
-    }
+    const payload = storeReply('Nothing pending', 'No pending message found.', 0xf59e0b)
     await interaction.reply(payload)
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {
@@ -88,10 +93,8 @@ export async function handleMessageStoreModal(interaction: ModalSubmitInteractio
 
   setStoredValue(key, content)
 
-  const payload = {
-    components: [text(`**Stored**\n\`${key}=${content.length > 200 ? content.slice(0, 200) + '...' : content}\``), pinButtonRow()],
-    flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const
-  }
+  const preview = `${key}=${content.length > 200 ? content.slice(0, 200) + '...' : content}`
+  const payload = storeReply('Message stored', `**Stored**\n\`${preview}\``, 0x22c55e)
   await interaction.reply(payload)
   const message = (await interaction.fetchReply()) as { id?: string }
   if (typeof message.id === 'string') {

@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   Collection,
   ComponentType,
   MessageFlags,
@@ -97,32 +98,23 @@ function stripInteractiveRows(components: readonly { toJSON(): unknown }[]): unk
   })
 }
 
-function replaceAttachmentUrls(value: unknown, attachments: Map<string, string>): unknown {
-  if (typeof value === 'string' && value.startsWith('attachment://')) {
-    return attachments.get(value.slice('attachment://'.length)) ?? value
+async function publishedPayload(interaction: ButtonInteraction) {
+  const files = await Promise.all(
+    [...interaction.message.attachments.values()].map(async (attachment) => {
+      if (!attachment.name) throw new Error('attachment has no name')
+      const response = await fetch(attachment.url, { signal: AbortSignal.timeout(5_000) })
+      if (!response.ok) throw new Error(`attachment download failed: ${response.status}`)
+      return new AttachmentBuilder(Buffer.from(await response.arrayBuffer()), {
+        name: attachment.name,
+        description: attachment.description ?? undefined
+      })
+    })
+  )
+
+  return {
+    components: stripInteractiveRows(interaction.message.components),
+    files
   }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => replaceAttachmentUrls(entry, attachments))
-  }
-
-  if (!value || typeof value !== 'object') return value
-
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, replaceAttachmentUrls(entry, attachments)])
-  )
-}
-
-function publishedComponents(interaction: ButtonInteraction): unknown[] {
-  const attachments = new Map(
-    [...interaction.message.attachments.values()]
-      .filter((attachment) => Boolean(attachment.name))
-      .map((attachment) => [attachment.name as string, attachment.url])
-  )
-
-  return stripInteractiveRows(interaction.message.components).map((component) =>
-    replaceAttachmentUrls(component, attachments)
-  )
 }
 
 function hasComponentsV2Payload(components: readonly { toJSON(): unknown }[]) {
@@ -197,6 +189,8 @@ async function runCommandInput(
     if (interaction.deferred) {
       const message = (await interaction.editReply({
         components: reply.components,
+        files: reply.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })) as { id?: string }
       if (typeof message.id === 'string') {
@@ -293,11 +287,21 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         }
 
         if (interaction.customId === PUB_BUTTON_ID) {
-          const components = publishedComponents(interaction)
-          await interaction.reply({
-            components: components as never,
-            flags: [MessageFlags.IsComponentsV2]
-          })
+          await interaction.deferReply()
+          try {
+            const payload = await publishedPayload(interaction)
+            await interaction.editReply({
+              components: payload.components as never,
+              files: payload.files,
+              attachments: [],
+              flags: MessageFlags.IsComponentsV2
+            })
+          } catch {
+            await sendCommandReply(
+              interaction,
+              container('pub', new Map([['pub', true]]), 'could not copy attachment')
+            )
+          }
           return
         }
 
@@ -359,10 +363,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         if (interaction.customId === COMMAND_PRESET_SELECT_ID) {
           const preset = interaction.values[0]
           if (!preset) {
-            await interaction.update({
-              components: container('preset', new Map(), 'no cmd').components,
-              flags: MessageFlags.IsComponentsV2
-            })
+            await sendCommandReply(interaction, container('preset', new Map(), 'no cmd'))
             return
           }
 
@@ -388,28 +389,19 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         if (matchesInteractiveId(interaction.customId, COMMAND_ACTION_SELECT_ID)) {
           const commandInput = extractCommandInputFromMessage(interaction)
           if (!commandInput) {
-            await interaction.update({
-              components: container('help', new Map(), 'no cmd').components,
-              flags: MessageFlags.IsComponentsV2
-            })
+            await sendCommandReply(interaction, container('help', new Map(), 'no cmd'))
             return
           }
 
           const { bare, flags, sub } = resolveCommandInput(commandInput, subcommands)
           if (!sub) {
-            await interaction.update({
-              components: container(bare || 'help', flags, 'no cmd').components,
-              flags: MessageFlags.IsComponentsV2
-            })
+            await sendCommandReply(interaction, container(bare || 'help', flags, 'no cmd'))
             return
           }
 
           const view = interaction.values[0]
           if (view === 'usage' || view === 'examples' || view === 'flags') {
-            await interaction.update({
-              components: commandReferenceReply(sub, bare, flags, view).components,
-              flags: MessageFlags.IsComponentsV2
-            })
+            await sendCommandReply(interaction, commandReferenceReply(sub, bare, flags, view))
             return
           }
         }
@@ -594,6 +586,8 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if ('deferred' in interaction && interaction.deferred) {
         const message = (await interaction.editReply({
           components: reply.components,
+          files: reply.files,
+          attachments: [],
           flags: MessageFlags.IsComponentsV2
         })) as { id?: string }
         if (typeof message.id === 'string') {

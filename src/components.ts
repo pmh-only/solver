@@ -23,6 +23,7 @@ import type { CommandInteraction, CommandRunResult, Subcommand } from './types.j
 import type { Flags } from './flags.js'
 import { isPubtabContext } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { createCanvasMedia } from './canvas-presentation.js'
 
 export const PUB_BUTTON_ID = 'pub'
 export const PUB_CONTENT_BUTTON_ID = 'pub-content'
@@ -218,6 +219,32 @@ function addComponent(container: ContainerBuilder, component: TopLevelComponent)
   }
 }
 
+function collectCanvasText(node: unknown, lines: string[]) {
+  if (!node || typeof node !== 'object') return
+  const value = node as { content?: unknown; components?: unknown[] }
+  if (typeof value.content === 'string') lines.push(...value.content.split(/\r?\n/))
+  if (Array.isArray(value.components)) {
+    for (const component of value.components) collectCanvasText(component, lines)
+  }
+}
+
+function canvasSummary(components: TopLevelComponent[], fallbackTitle: string) {
+  const lines: string[] = []
+  for (const component of components) {
+    collectCanvasText(
+      typeof component === 'string' ? { content: component } : component.toJSON(),
+      lines
+    )
+  }
+
+  const meaningful = lines.map((line) => line.trim()).filter(Boolean)
+  const headingIndex = meaningful.findIndex((line) => /^#{1,6}\s+/.test(line))
+  const titleLine = headingIndex >= 0 ? meaningful[headingIndex] : ''
+  const title = titleLine.replace(/^#{1,6}\s+/, '').trim() || `${fallbackTitle} result`
+  const body = meaningful.filter((_, index) => index !== headingIndex)
+  return { title, lines: body.length > 0 ? body : ['Command completed.'] }
+}
+
 function pinButton() {
   return new ButtonBuilder()
     .setCustomId(PIN_BUTTON_ID)
@@ -375,6 +402,17 @@ function buildContainer(
   const resolved = components.map(resolve)
   const commandInput = options.subcommand ? serializeCommandInput(args, flags) : undefined
   const footer = footerText(args, flags)
+  const color = accentColor(args, options.tone ?? 'default')
+  const name = commandName(args) || 'solver'
+  const summary = canvasSummary(resolved, name)
+  const canvas = createCanvasMedia({
+    id: `command-${name}`,
+    title: summary.title,
+    kicker: `${name} / solver`,
+    lines: summary.lines,
+    accent: color,
+    footer: serializeCommandInput(args, flags)
+  })
   const last = resolved.at(-1)
 
   if (last instanceof TextDisplayBuilder) {
@@ -383,7 +421,9 @@ function buildContainer(
     resolved.push(text(footer))
   }
 
-  const body = new ContainerBuilder().setAccentColor(accentColor(args, options.tone ?? 'default'))
+  const body = new ContainerBuilder().setAccentColor(color)
+  body.addMediaGalleryComponents(canvas.gallery)
+  body.addSeparatorComponents(separator())
   for (const component of resolved) {
     addComponent(body, component)
   }
@@ -395,6 +435,7 @@ function buildContainer(
   return {
     components: responseComponents,
     commandInput,
+    files: [canvas.file],
     flags: pub
       ? ([MessageFlags.IsComponentsV2] as const)
       : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
@@ -673,6 +714,8 @@ export async function sendCommandReply(
   if (interaction.deferred) {
     const message = (await interaction.editReply({
       components: payload.components,
+      files: payload.files,
+      attachments: [],
       flags: MessageFlags.IsComponentsV2
     })) as { id?: string }
     if (typeof message.id === 'string') {
@@ -687,6 +730,8 @@ export async function sendCommandReply(
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     await interaction.update({
       components: payload.components,
+      files: payload.files,
+      attachments: [],
       flags: MessageFlags.IsComponentsV2
     })
     scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags)
@@ -700,6 +745,8 @@ export async function sendCommandReply(
     await interaction.deferUpdate()
     const message = (await interaction.editReply({
       components: payload.components,
+      files: payload.files,
+      attachments: [],
       flags: MessageFlags.IsComponentsV2
     })) as { id?: string }
     const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
@@ -726,10 +773,20 @@ export async function sendPlainTextReply(
   interaction: CommandInteraction,
   payload: PlainTextReplyPayload
 ) {
+  const canvas = createCanvasMedia({
+    id: 'solver-result',
+    title: 'Solver result',
+    kicker: 'solver',
+    lines: payload.content.split(/\r?\n/),
+    accent: 0x5865f2
+  })
+
   if (interaction.deferred) {
     const message = (await interaction.editReply({
       content: payload.content,
-      components: payload.components
+      components: payload.components,
+      files: [canvas.file],
+      attachments: []
     })) as { id?: string }
     if (typeof message.id === 'string') {
       scheduleEphemeralReplyDelete(interaction, message.id, payload.flags ?? 0)
@@ -740,7 +797,9 @@ export async function sendPlainTextReply(
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     await interaction.update({
       content: payload.content,
-      components: payload.components
+      components: payload.components,
+      files: [canvas.file],
+      attachments: []
     })
     scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags ?? 0)
     return
@@ -750,14 +809,16 @@ export async function sendPlainTextReply(
     await interaction.deferUpdate()
     const message = (await interaction.editReply({
       content: payload.content,
-      components: payload.components
+      components: payload.components,
+      files: [canvas.file],
+      attachments: []
     })) as { id?: string }
     const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
     scheduleEphemeralReplyDelete(interaction, messageId, payload.flags ?? 0)
     return
   }
 
-  await interaction.reply(payload)
+  await interaction.reply({ ...payload, files: [canvas.file] })
   if (hasEphemeralFlag(payload.flags ?? 0)) {
     const message = (await interaction.fetchReply()) as { id?: string }
     if (typeof message.id === 'string') {
@@ -782,6 +843,8 @@ export async function runRerunnableCommand(
   const reply = commandContainer(subcommand, args, flags, ...toComponents(result))
   const message = (await interaction.editReply({
     components: reply.components,
+    files: reply.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })) as { id?: string }
 

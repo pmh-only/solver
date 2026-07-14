@@ -2,11 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
-  TextDisplayBuilder,
   type ButtonInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -14,6 +10,7 @@ import type { Subcommand } from '../types.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { withPubtabButton } from '../components.js'
+import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
 
 export const HILO_GUESS_BUTTON_ID = 'hilo-guess'
 
@@ -33,11 +30,10 @@ interface HiloState {
   current: number
   chooser: string
   lastGuess?: HiloDirection
+  previous?: number
   next?: number
   result?: HiloResult
 }
-
-type HiloComponent = ContainerBuilder | ActionRowBuilder<ButtonBuilder>
 
 function stateKey(token: string): string {
   return `${HILO_STATE_KEY}:${token}`
@@ -68,8 +64,13 @@ function loadState(token: string): HiloState | null {
       current: parsed.current,
       chooser: parsed.chooser,
       lastGuess: isDirection(parsed.lastGuess) ? parsed.lastGuess : undefined,
+      previous: isSafeNumber(parsed.previous) ? parsed.previous : undefined,
       next: isSafeNumber(parsed.next) ? parsed.next : undefined,
-      result: isDirection(parsed.result) ? parsed.result : parsed.result === 'same' ? parsed.result : undefined
+      result: isDirection(parsed.result)
+        ? parsed.result
+        : parsed.result === 'same'
+          ? parsed.result
+          : undefined
     }
   } catch {
     return null
@@ -81,7 +82,9 @@ function isDirection(value: unknown): value is HiloDirection {
 }
 
 function isSafeNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= HILO_MIN && value <= HILO_MAX
+  return (
+    typeof value === 'number' && Number.isInteger(value) && value >= HILO_MIN && value <= HILO_MAX
+  )
 }
 
 function parseGuessId(customId: string): { token: string; guess: HiloDirection } | null {
@@ -117,8 +120,8 @@ function resultLines(state: HiloState): string[] {
     state.result === 'same'
       ? 'It landed exactly the same. No one wins this round.'
       : state.result === state.lastGuess
-          ? 'You win.'
-          : 'You lose.'
+        ? 'You win.'
+        : 'You lose.'
 
   return [
     `${state.chooser} guessed ${directionLabel(state.lastGuess)}.`,
@@ -127,35 +130,46 @@ function resultLines(state: HiloState): string[] {
   ]
 }
 
-function buildGuessButton(token: string, direction: HiloDirection, disabled: boolean): ButtonBuilder {
+function buildGuessButton(
+  token: string,
+  direction: HiloDirection,
+  disabled: boolean
+): ButtonBuilder {
   return new ButtonBuilder()
     .setCustomId(`${HILO_GUESS_BUTTON_ID}:${token}:${direction}`)
-    .setLabel(direction === 'higher' ? 'Higher ⬆' : 'Lower ⬇')
+    .setLabel(direction === 'higher' ? 'Higher' : 'Lower')
     .setStyle(direction === 'higher' ? ButtonStyle.Success : ButtonStyle.Primary)
     .setDisabled(disabled)
 }
 
-function buildComponents(token: string, state: HiloState): HiloComponent[] {
-  const container = new ContainerBuilder()
-    .setAccentColor(HILO_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`# High-Low\n${resultLines(state).join('\n')}`))
-    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${state.commandInput}\``))
-
+function buildComponents(token: string, state: HiloState): GamePresentation {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     buildGuessButton(token, 'lower', Boolean(state.result)),
     buildGuessButton(token, 'higher', Boolean(state.result))
   )
-
-  return withPubtabButton([container, row], state.pubtab)
+  const presentation = createGamePresentation({
+    id: `hilo-${token}`,
+    title: 'High-Low',
+    kicker: state.result ? 'Prediction complete' : 'Predict the next number',
+    lines: resultLines(state),
+    accent: HILO_COLOR,
+    footer: state.commandInput,
+    visual: { kind: 'hilo', current: state.current, previous: state.previous },
+    controls: [row]
+  })
+  presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
 }
 
-function buildExpiredComponents(): HiloComponent[] {
-  return [
-    new ContainerBuilder()
-      .setAccentColor(HILO_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent('# High-Low\nGame expired.'))
-  ]
+function buildExpiredComponents(): GamePresentation {
+  return createGamePresentation({
+    id: 'hilo-expired',
+    title: 'High-Low',
+    kicker: 'Game unavailable',
+    lines: ['Game expired. Start a new prediction with `hilo`.'],
+    accent: HILO_COLOR,
+    visual: { kind: 'hilo', current: 50 }
+  })
 }
 
 export function isHiloButtonId(customId: string): boolean {
@@ -165,8 +179,10 @@ export function isHiloButtonId(customId: string): boolean {
 export async function handleHiloGuessButton(interaction: ButtonInteraction): Promise<void> {
   const parsed = parseGuessId(interaction.customId)
   if (!parsed) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
@@ -174,14 +190,17 @@ export async function handleHiloGuessButton(interaction: ButtonInteraction): Pro
 
   const state = loadState(parsed.token)
   if (!state) {
+    const expired = buildExpiredComponents()
     await interaction.reply({
-      components: buildExpiredComponents() as never,
+      components: expired.components as never,
+      files: expired.files,
       flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
     })
     return
   }
 
   const next = randomNumber()
+  state.previous = state.current
   state.lastGuess = parsed.guess
   state.next = next
   state.result = outcome(state.current, next)
@@ -190,8 +209,11 @@ export async function handleHiloGuessButton(interaction: ButtonInteraction): Pro
 
   storeState(parsed.token, state)
 
+  const presentation = buildComponents(parsed.token, state)
   await interaction.update({
-    components: buildComponents(parsed.token, state) as never,
+    components: presentation.components as never,
+    files: presentation.files,
+    attachments: [],
     flags: MessageFlags.IsComponentsV2
   })
 }
@@ -222,18 +244,21 @@ export const subcommand: Subcommand = {
     }
 
     storeState(token, state)
-    const components = buildComponents(token, state)
+    const presentation = buildComponents(token, state)
 
     if (interaction.deferred) {
       await interaction.editReply({
-        components: components as never,
+        components: presentation.components as never,
+        files: presentation.files,
+        attachments: [],
         flags: MessageFlags.IsComponentsV2
       })
       return
     }
 
     await interaction.reply({
-      components: components as never,
+      components: presentation.components as never,
+      files: presentation.files,
       flags: state.pub
         ? ([MessageFlags.IsComponentsV2] as const)
         : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
