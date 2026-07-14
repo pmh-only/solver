@@ -448,7 +448,12 @@ function drawRps(ctx: SKRSContext2D, visual: Extract<CardVisual, { kind: 'rps' }
     ctx.textAlign = 'center'
     ctx.fillStyle = '#f8fafc'
     setCanvasFont(ctx, 700, 92, GG_SANS_FAMILY)
-    drawCanvasText(ctx, choice ? choiceEmoji[choice as keyof typeof choiceEmoji] : '?', x + 160, y + 107)
+    drawCanvasText(
+      ctx,
+      choice ? choiceEmoji[choice as keyof typeof choiceEmoji] : '?',
+      x + 160,
+      y + 107
+    )
   })
   ctx.textAlign = 'left'
 }
@@ -512,7 +517,10 @@ function drawBlackjack(
   visual: Extract<CardVisual, { kind: 'blackjack' }>,
   y: number
 ) {
-  const drawHand = (cards: Array<{ rank: string; suit: string; hidden?: boolean }>, rowY: number) => {
+  const drawHand = (
+    cards: Array<{ rank: string; suit: string; hidden?: boolean }>,
+    rowY: number
+  ) => {
     const visible = cards.slice(0, 7)
     const handWidth = visible.length * 92 + Math.max(0, visible.length - 1) * 9
     const startX = (920 - handWidth) / 2

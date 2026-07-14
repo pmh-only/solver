@@ -64,7 +64,9 @@ export const subcommand: Subcommand = {
         subcommand,
         args,
         flags,
-        summarySection('Stored values', [`${keys.length} key${keys.length === 1 ? '' : 's'} found`]),
+        summarySection('Stored values', [
+          `${keys.length} key${keys.length === 1 ? '' : 's'} found`
+        ]),
         separator(),
         text(`${header}${lines.join('\n')}`)
       )

@@ -1,16 +1,7 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
-import {
-  POLL_BUTTON_ID,
-  hash,
-  json,
-  jwt,
-  poll,
-  quote,
-  short,
-  time
-} from '../commands/more.js'
+import { POLL_BUTTON_ID, hash, json, jwt, poll, quote, short, time } from '../commands/more.js'
 import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { buttonJSON, commandJSON, dispatch, getCallback, getEdit, makeSubcommands } from './e2e.js'
@@ -85,7 +76,10 @@ describe('more — utility commands', () => {
 
   it('creates a button poll and records a vote', async () => {
     const firstCalls = await dispatch(commandJSON('poll Lunch? | ramen | sushi --pub'), subs)
-    const firstBody = getCallback(firstCalls) as { type: number; data: { components: unknown[]; flags: number } }
+    const firstBody = getCallback(firstCalls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(firstBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(firstBody.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()

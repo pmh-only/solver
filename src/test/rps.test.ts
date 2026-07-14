@@ -1,13 +1,16 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
-import {
-  RPS_PICK_BUTTON_ID,
-  RPS_PUBLISH_BUTTON_ID,
-  subcommand as rps
-} from '../commands/rps.js'
+import { RPS_PICK_BUTTON_ID, RPS_PUBLISH_BUTTON_ID, subcommand as rps } from '../commands/rps.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
-import { autocompleteJSON, buttonJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
+import {
+  autocompleteJSON,
+  buttonJSON,
+  commandJSON,
+  dispatch,
+  getCallback,
+  makeSubcommands
+} from './e2e.js'
 
 const subs = makeSubcommands(rps)
 const storePath = join(process.cwd(), '.tmp', 'rps.test.sqlite')
@@ -29,7 +32,10 @@ describe('rps — command', () => {
 
   it('starts a private game against the PC', async () => {
     const calls = await dispatch(commandJSON('rps'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
@@ -42,7 +48,10 @@ describe('rps — command', () => {
     const firstCalls = await dispatch(commandJSON('rps'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const pickCalls = await dispatch(buttonJSON(firstBody.data.components, RPS_PICK_BUTTON_ID), subs)
+    const pickCalls = await dispatch(
+      buttonJSON(firstBody.data.components, RPS_PICK_BUTTON_ID),
+      subs
+    )
     const body = getCallback(pickCalls) as { type: number; data: { components: unknown[] } }
     const rendered = JSON.stringify(body.data.components)
 
@@ -53,7 +62,10 @@ describe('rps — command', () => {
 
   it('starts a public duel when --pub is set', async () => {
     const calls = await dispatch(commandJSON('rps --pub'), subs)
-    const body = getCallback(calls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
     const rendered = JSON.stringify(body.data.components)
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
@@ -67,7 +79,10 @@ describe('rps — command', () => {
     const firstCalls = await dispatch(commandJSON('rps --pub'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const firstPickCalls = await dispatch(buttonJSON(firstBody.data.components, RPS_PICK_BUTTON_ID), subs)
+    const firstPickCalls = await dispatch(
+      buttonJSON(firstBody.data.components, RPS_PICK_BUTTON_ID),
+      subs
+    )
     const firstPickBody = getCallback(firstPickCalls) as { data: { components: unknown[] } }
 
     expect(JSON.stringify(firstPickBody.data.components)).toContain('locked in a choice')
@@ -96,7 +111,10 @@ describe('rps — command', () => {
       buttonJSON(firstBody.data.components, RPS_PUBLISH_BUTTON_ID),
       subs
     )
-    const body = getCallback(publishCalls) as { type: number; data: { components: unknown[]; flags: number } }
+    const body = getCallback(publishCalls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
 
     expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
     expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()

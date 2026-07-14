@@ -168,10 +168,7 @@ describe('pubtab — command', () => {
     expect(JSON.stringify(editBody.components)).not.toContain('run js')
     expect(findButtonByLabel(editBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
 
-    const returnCalls = await dispatch(
-      buttonJSON(editBody.components, PUBTAB_BUTTON_ID),
-      subs
-    )
+    const returnCalls = await dispatch(buttonJSON(editBody.components, PUBTAB_BUTTON_ID), subs)
     const returnBody = getCallback(returnCalls) as { type: number; data: { content: string } }
 
     expect(returnBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
@@ -240,10 +237,7 @@ describe('pubtab — command', () => {
 
     expect(findButtonByLabel(runBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
 
-    const pickCalls = await dispatch(
-      buttonJSON(runBody.components, RPS_PICK_BUTTON_ID),
-      subs
-    )
+    const pickCalls = await dispatch(buttonJSON(runBody.components, RPS_PICK_BUTTON_ID), subs)
     const pickBody = getCallback(pickCalls) as { data: { components: unknown[] } }
 
     expect(findButtonByLabel(pickBody.data.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)

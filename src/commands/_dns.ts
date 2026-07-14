@@ -88,7 +88,7 @@ function formatIpv6(data: Buffer): string {
 
 function parseTxt(data: Buffer): string {
   const parts: string[] = []
-  for (let offset = 0; offset < data.length; ) {
+  for (let offset = 0; offset < data.length;) {
     const len = data[offset]
     offset += 1
     parts.push(data.subarray(offset, offset + len).toString('utf8'))
@@ -119,7 +119,7 @@ function svcParamName(key: number): string {
 function parseSvcParamValue(key: number, value: Buffer): string {
   if (key === 1) {
     const items: string[] = []
-    for (let offset = 0; offset < value.length; ) {
+    for (let offset = 0; offset < value.length;) {
       const len = value[offset]
       offset += 1
       items.push(value.subarray(offset, offset + len).toString('utf8'))

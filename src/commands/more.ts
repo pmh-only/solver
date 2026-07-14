@@ -127,7 +127,11 @@ async function runJson(args: string): Promise<CommandRunResult> {
   const input = restArgs(args)
   if (!input) throw new Error('no json')
   const parsed = JSON.parse(input) as unknown
-  return [summarySection('JSON', ['valid JSON']), separator(), codeBlock('Pretty', JSON.stringify(parsed, null, 2), 'json')]
+  return [
+    summarySection('JSON', ['valid JSON']),
+    separator(),
+    codeBlock('Pretty', JSON.stringify(parsed, null, 2), 'json')
+  ]
 }
 
 async function runJwt(args: string): Promise<CommandRunResult> {
@@ -136,7 +140,12 @@ async function runJwt(args: string): Promise<CommandRunResult> {
   if (parts.length < 2) throw new Error('bad jwt')
   const header = JSON.stringify(JSON.parse(parseJwtPart(parts[0] ?? '')) as unknown, null, 2)
   const payload = JSON.stringify(JSON.parse(parseJwtPart(parts[1] ?? '')) as unknown, null, 2)
-  return [summarySection('JWT', ['decoded without verification']), separator(), codeBlock('Header', header, 'json'), codeBlock('Payload', payload, 'json')]
+  return [
+    summarySection('JWT', ['decoded without verification']),
+    separator(),
+    codeBlock('Header', header, 'json'),
+    codeBlock('Payload', payload, 'json')
+  ]
 }
 
 async function runHash(args: string, flags: Flags): Promise<CommandRunResult> {
@@ -145,7 +154,11 @@ async function runHash(args: string, flags: Flags): Promise<CommandRunResult> {
   const alg = typeof flags.get('alg') === 'string' ? String(flags.get('alg')) : 'sha256'
   if (!['sha256', 'sha512', 'md5'].includes(alg)) throw new Error('bad alg')
   const digest = createHash(alg).update(input).digest('hex')
-  return [summarySection('Hash', [`-# alg: ${alg}`, `-# bytes: ${Buffer.byteLength(input)}`]), separator(), codeBlock('Digest', digest)]
+  return [
+    summarySection('Hash', [`-# alg: ${alg}`, `-# bytes: ${Buffer.byteLength(input)}`]),
+    separator(),
+    codeBlock('Digest', digest)
+  ]
 }
 
 function runTime(args: string): CommandRunResult {
@@ -167,7 +180,10 @@ function runRegex(args: string): CommandRunResult {
   return [
     summarySection('Regex', [`${matches.length} match${matches.length === 1 ? '' : 'es'}`]),
     separator(),
-    codeBlock('Matches', matches.map((match, index) => `${index + 1}. ${match[0]}`).join('\n') || 'none')
+    codeBlock(
+      'Matches',
+      matches.map((match, index) => `${index + 1}. ${match[0]}`).join('\n') || 'none'
+    )
   ]
 }
 
@@ -200,15 +216,24 @@ async function openAiOcr(imageUrl: string): Promise<string> {
         {
           role: 'user',
           content: [
-            { type: 'input_text', text: 'Extract all visible text from this image. Return only the text.' },
+            {
+              type: 'input_text',
+              text: 'Extract all visible text from this image. Return only the text.'
+            },
             { type: 'input_image', image_url: imageUrl }
           ]
         }
       ]
     })
   })
-  const payload = (await response.json()) as { output_text?: unknown; error?: { message?: unknown } }
-  if (!response.ok) throw new Error(typeof payload.error?.message === 'string' ? payload.error.message : 'ocr failed')
+  const payload = (await response.json()) as {
+    output_text?: unknown
+    error?: { message?: unknown }
+  }
+  if (!response.ok)
+    throw new Error(
+      typeof payload.error?.message === 'string' ? payload.error.message : 'ocr failed'
+    )
   if (typeof payload.output_text !== 'string') throw new Error('ocr returned no text')
   return payload.output_text
 }
@@ -234,7 +259,10 @@ async function tlsSummary(target: string): Promise<string[]> {
     const socket = tls.connect({ host, port, servername: host, timeout: FETCH_TIMEOUT_MS }, () => {
       const cert = socket.getPeerCertificate()
       socket.end()
-      resolve([`-# tls subject: ${cert.subject?.CN ?? host}`, `-# tls valid to: ${cert.valid_to ?? 'unknown'}`])
+      resolve([
+        `-# tls subject: ${cert.subject?.CN ?? host}`,
+        `-# tls valid to: ${cert.valid_to ?? 'unknown'}`
+      ])
     })
     socket.once('timeout', () => {
       socket.destroy()
@@ -248,7 +276,9 @@ async function runTrace(args: string): Promise<CommandRunResult> {
   const target = restArgs(args)
   if (!target) throw new Error('no host')
   const url = new URL(ensureUrl(target))
-  const addresses = await lookup(url.hostname, { all: true }).catch((error: Error) => [{ address: error.message, family: 0 }])
+  const addresses = await lookup(url.hostname, { all: true }).catch((error: Error) => [
+    { address: error.message, family: 0 }
+  ])
   const redirects = await traceRedirects(target).catch((error: Error) => [`http: ${error.message}`])
   const tlsLines = url.protocol === 'https:' ? await tlsSummary(target) : []
   return [
@@ -261,7 +291,14 @@ async function runTrace(args: string): Promise<CommandRunResult> {
   ]
 }
 
-function simpleRerunnable(name: string, description: string, usage: string, examples: string[], run: (args: string, flags: Flags) => Promise<CommandRunResult> | CommandRunResult, flagsDef?: Subcommand['flags']): Subcommand {
+function simpleRerunnable(
+  name: string,
+  description: string,
+  usage: string,
+  examples: string[],
+  run: (args: string, flags: Flags) => Promise<CommandRunResult> | CommandRunResult,
+  flagsDef?: Subcommand['flags']
+): Subcommand {
   const subcommand: Subcommand = {
     name,
     description,
@@ -274,42 +311,75 @@ function simpleRerunnable(name: string, description: string, usage: string, exam
     async execute(interaction, args, flags) {
       try {
         if (!restArgs(args) && !['time'].includes(name)) throw new Error(usage)
-        await runRerunnableCommand(interaction, subcommand, args, flags, async () => subcommand.run!(args, flags))
+        await runRerunnableCommand(interaction, subcommand, args, flags, async () =>
+          subcommand.run!(args, flags)
+        )
       } catch (error) {
-        await sendCommandReply(interaction, commandReferenceReply(subcommand, args, flags, 'usage', error instanceof Error ? error.message : 'err'))
+        await sendCommandReply(
+          interaction,
+          commandReferenceReply(
+            subcommand,
+            args,
+            flags,
+            'usage',
+            error instanceof Error ? error.message : 'err'
+          )
+        )
       }
     }
   }
   return subcommand
 }
 
-export const headers = simpleRerunnable('headers', 'show http headers', 'headers <url> [--pub]', ['headers example.com'], async (args) => {
-  const result = await readSummary(restArgs(args), 'HEAD')
-  return [
-    summarySection(`Headers ${result.url}`, [`-# status: ${result.status} ${result.statusText}`, `-# final: ${result.finalUrl}`], { label: 'Open URL', url: result.finalUrl }),
-    separator(),
-    codeBlock('Headers', result.headers.map(([key, value]) => `${key}: ${value}`).join('\n'))
-  ]
-})
+export const headers = simpleRerunnable(
+  'headers',
+  'show http headers',
+  'headers <url> [--pub]',
+  ['headers example.com'],
+  async (args) => {
+    const result = await readSummary(restArgs(args), 'HEAD')
+    return [
+      summarySection(
+        `Headers ${result.url}`,
+        [`-# status: ${result.status} ${result.statusText}`, `-# final: ${result.finalUrl}`],
+        { label: 'Open URL', url: result.finalUrl }
+      ),
+      separator(),
+      codeBlock('Headers', result.headers.map(([key, value]) => `${key}: ${value}`).join('\n'))
+    ]
+  }
+)
 
-export const httpdiff = simpleRerunnable('httpdiff', 'compare two urls', 'httpdiff <url-a> <url-b> [--pub]', ['httpdiff example.com example.org'], async (args) => {
-  const [left, right] = splitArgs(restArgs(args))
-  if (!left || !right) throw new Error('need two urls')
-  const [a, b] = await Promise.all([readSummary(left), readSummary(right)])
-  return [
-    summarySection('HTTP diff', [`-# ${a.url}`, `-# ${b.url}`]),
-    separator(),
-    keyValueBlock('Comparison', [
-      ['status', `${a.status} vs ${b.status}`],
-      ['type', `${a.contentType} vs ${b.contentType}`],
-      ['bytes', `${a.bytes} vs ${b.bytes}`],
-      ['sha256', `${a.hash.slice(0, 16)} vs ${b.hash.slice(0, 16)}`],
-      ['same body', a.hash === b.hash]
-    ])
-  ]
-})
+export const httpdiff = simpleRerunnable(
+  'httpdiff',
+  'compare two urls',
+  'httpdiff <url-a> <url-b> [--pub]',
+  ['httpdiff example.com example.org'],
+  async (args) => {
+    const [left, right] = splitArgs(restArgs(args))
+    if (!left || !right) throw new Error('need two urls')
+    const [a, b] = await Promise.all([readSummary(left), readSummary(right)])
+    return [
+      summarySection('HTTP diff', [`-# ${a.url}`, `-# ${b.url}`]),
+      separator(),
+      keyValueBlock('Comparison', [
+        ['status', `${a.status} vs ${b.status}`],
+        ['type', `${a.contentType} vs ${b.contentType}`],
+        ['bytes', `${a.bytes} vs ${b.bytes}`],
+        ['sha256', `${a.hash.slice(0, 16)} vs ${b.hash.slice(0, 16)}`],
+        ['same body', a.hash === b.hash]
+      ])
+    ]
+  }
+)
 
-export const trace = simpleRerunnable('trace', 'dns http tls trace', 'trace <host> [--pub]', ['trace example.com'], runTrace)
+export const trace = simpleRerunnable(
+  'trace',
+  'dns http tls trace',
+  'trace <host> [--pub]',
+  ['trace example.com'],
+  runTrace
+)
 
 export const qr: Subcommand = {
   name: 'qr',
@@ -319,11 +389,22 @@ export const qr: Subcommand = {
   async execute(interaction, args, flags) {
     const value = restArgs(args)
     if (!value) {
-      await sendCommandReply(interaction, commandReferenceReply(qr, args, flags, 'usage', 'no text'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(qr, args, flags, 'usage', 'no text')
+      )
       return
     }
     const url = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(value)}`
-    await sendCommandReply(interaction, commandContainer(qr, args, flags, summarySection('QR code', [`-# ${truncate(value, 120)}`], { label: 'Open QR', url })))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        qr,
+        args,
+        flags,
+        summarySection('QR code', [`-# ${truncate(value, 120)}`], { label: 'Open QR', url })
+      )
+    )
   }
 }
 
@@ -335,7 +416,10 @@ export const short: Subcommand = {
   async execute(interaction, args, flags) {
     const parts = splitArgs(restArgs(args))
     if (parts.length === 0) {
-      await sendCommandReply(interaction, commandReferenceReply(short, args, flags, 'usage', 'no args'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(short, args, flags, 'usage', 'no args')
+      )
       return
     }
     const first = parts[0] ?? ''
@@ -343,11 +427,33 @@ export const short: Subcommand = {
       const url = ensureUrl(first)
       const slug = (parts[1] ?? stableSlug(url)).replace(/[^a-z0-9_-]/gi, '').slice(0, 40)
       setStoredValue(`${SHORT_PREFIX}${slug}`, url)
-      await sendCommandReply(interaction, commandContainer(short, args, flags, summarySection('Shortcut saved', [`-# slug: ${slug}`, `-# note: local bot shortcut, not a public redirect`], { label: 'Open URL', url })))
+      await sendCommandReply(
+        interaction,
+        commandContainer(
+          short,
+          args,
+          flags,
+          summarySection(
+            'Shortcut saved',
+            [`-# slug: ${slug}`, `-# note: local bot shortcut, not a public redirect`],
+            { label: 'Open URL', url }
+          )
+        )
+      )
       return
     }
     const url = getStoredValue(`${SHORT_PREFIX}${first}`)
-    await sendCommandReply(interaction, commandContainer(short, args, flags, url ? summarySection(`Shortcut ${first}`, [`-# ${url}`], { label: 'Open URL', url }) : summarySection('Shortcut missing', [`-# no ${first}`])))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        short,
+        args,
+        flags,
+        url
+          ? summarySection(`Shortcut ${first}`, [`-# ${url}`], { label: 'Open URL', url })
+          : summarySection('Shortcut missing', [`-# no ${first}`])
+      )
+    )
   }
 }
 
@@ -360,11 +466,26 @@ export const remind: Subcommand = {
     const shifted = firstToken(restArgs(args))
     const ms = parseDuration(shifted.token)
     if (!ms || !shifted.rest) {
-      await sendCommandReply(interaction, commandReferenceReply(remind, args, flags, 'usage', 'bad reminder'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(remind, args, flags, 'usage', 'bad reminder')
+      )
       return
     }
     const id = scheduleLater(interaction, ms, `Reminder: ${shifted.rest}`)
-    await sendCommandReply(interaction, commandContainer(remind, args, flags, summarySection('Reminder scheduled', [`-# id: ${id}`, `-# in: ${formatDuration(ms)}`, '-# in-memory only; restart clears it'])))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        remind,
+        args,
+        flags,
+        summarySection('Reminder scheduled', [
+          `-# id: ${id}`,
+          `-# in: ${formatDuration(ms)}`,
+          '-# in-memory only; restart clears it'
+        ])
+      )
+    )
   }
 }
 
@@ -377,12 +498,28 @@ export const timer: Subcommand = {
     const shifted = firstToken(restArgs(args))
     const ms = parseDuration(shifted.token)
     if (!ms) {
-      await sendCommandReply(interaction, commandReferenceReply(timer, args, flags, 'usage', 'bad timer'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(timer, args, flags, 'usage', 'bad timer')
+      )
       return
     }
     const label = shifted.rest || 'timer'
     const id = scheduleLater(interaction, ms, `Timer done: ${label}`)
-    await sendCommandReply(interaction, commandContainer(timer, args, flags, summarySection('Timer started', [`-# id: ${id}`, `-# ${label}`, `-# in: ${formatDuration(ms)}`, '-# in-memory only; restart clears it'])))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        timer,
+        args,
+        flags,
+        summarySection('Timer started', [
+          `-# id: ${id}`,
+          `-# ${label}`,
+          `-# in: ${formatDuration(ms)}`,
+          '-# in-memory only; restart clears it'
+        ])
+      )
+    )
   }
 }
 
@@ -395,34 +532,101 @@ export const quote: Subcommand = {
     const input = restArgs(args)
     const shifted = firstToken(input)
     if (!shifted.token) {
-      await sendCommandReply(interaction, commandReferenceReply(quote, args, flags, 'usage', 'no key'))
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(quote, args, flags, 'usage', 'no key')
+      )
       return
     }
     if (shifted.token === 'list') {
-      const keys = listStoredKeys().filter((key) => key.startsWith(QUOTE_PREFIX)).map((key) => key.slice(QUOTE_PREFIX.length))
-      await sendCommandReply(interaction, commandContainer(quote, args, flags, summarySection('Quotes', keys.length ? keys.map((key) => `-# ${key}`) : ['-# none'])))
+      const keys = listStoredKeys()
+        .filter((key) => key.startsWith(QUOTE_PREFIX))
+        .map((key) => key.slice(QUOTE_PREFIX.length))
+      await sendCommandReply(
+        interaction,
+        commandContainer(
+          quote,
+          args,
+          flags,
+          summarySection('Quotes', keys.length ? keys.map((key) => `-# ${key}`) : ['-# none'])
+        )
+      )
       return
     }
     if (shifted.rest) {
       setStoredValue(`${QUOTE_PREFIX}${shifted.token}`, shifted.rest)
-      await sendCommandReply(interaction, commandContainer(quote, args, flags, summarySection('Quote saved', [`-# ${shifted.token}`])))
+      await sendCommandReply(
+        interaction,
+        commandContainer(quote, args, flags, summarySection('Quote saved', [`-# ${shifted.token}`]))
+      )
       return
     }
     const value = getStoredValue(`${QUOTE_PREFIX}${shifted.token}`)
-    await sendCommandReply(interaction, commandContainer(quote, args, flags, value ? codeBlock(`Quote ${shifted.token}`, value, 'txt') : summarySection('Quote missing', [`-# no ${shifted.token}`])))
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        quote,
+        args,
+        flags,
+        value
+          ? codeBlock(`Quote ${shifted.token}`, value, 'txt')
+          : summarySection('Quote missing', [`-# no ${shifted.token}`])
+      )
+    )
   }
 }
 
-export const ocr = simpleRerunnable('ocr', 'extract image text', 'ocr <image-url> [--pub]', ['ocr https://example.com/image.png'], async (args) => {
-  const result = await openAiOcr(ensureUrl(restArgs(args)))
-  return [summarySection('OCR', ['text extracted via OpenAI vision']), separator(), codeBlock('Text', truncate(result, 3500), 'txt')]
-})
+export const ocr = simpleRerunnable(
+  'ocr',
+  'extract image text',
+  'ocr <image-url> [--pub]',
+  ['ocr https://example.com/image.png'],
+  async (args) => {
+    const result = await openAiOcr(ensureUrl(restArgs(args)))
+    return [
+      summarySection('OCR', ['text extracted via OpenAI vision']),
+      separator(),
+      codeBlock('Text', truncate(result, 3500), 'txt')
+    ]
+  }
+)
 
-export const json = simpleRerunnable('json', 'format json', 'json <json> [--pub]', ['json {"ok":true}'], runJson)
-export const jwt = simpleRerunnable('jwt', 'decode jwt', 'jwt <token> [--pub]', ['jwt eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjMifQ.'], runJwt)
-export const hash = simpleRerunnable('hash', 'hash text', 'hash <text> [--alg sha256|sha512|md5] [--pub]', ['hash hello', 'hash hello --alg sha512'], runHash, { alg: { description: 'hash algorithm', value: 'string' } })
-export const time = simpleRerunnable('time', 'show time', 'time [date] [--pub]', ['time', 'time 2026-05-14T10:00:00+09:00'], async (args) => runTime(args))
-export const regex = simpleRerunnable('regex', 'test regex', 'regex <pattern> | <text> [--pub]', ['regex \\d+ | abc 123 def 456'], async (args) => runRegex(args))
+export const json = simpleRerunnable(
+  'json',
+  'format json',
+  'json <json> [--pub]',
+  ['json {"ok":true}'],
+  runJson
+)
+export const jwt = simpleRerunnable(
+  'jwt',
+  'decode jwt',
+  'jwt <token> [--pub]',
+  ['jwt eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjMifQ.'],
+  runJwt
+)
+export const hash = simpleRerunnable(
+  'hash',
+  'hash text',
+  'hash <text> [--alg sha256|sha512|md5] [--pub]',
+  ['hash hello', 'hash hello --alg sha512'],
+  runHash,
+  { alg: { description: 'hash algorithm', value: 'string' } }
+)
+export const time = simpleRerunnable(
+  'time',
+  'show time',
+  'time [date] [--pub]',
+  ['time', 'time 2026-05-14T10:00:00+09:00'],
+  async (args) => runTime(args)
+)
+export const regex = simpleRerunnable(
+  'regex',
+  'test regex',
+  'regex <pattern> | <text> [--pub]',
+  ['regex \\d+ | abc 123 def 456'],
+  async (args) => runRegex(args)
+)
 
 export const extraSubcommands = [
   httpdiff,
