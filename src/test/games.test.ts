@@ -6,7 +6,7 @@ import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../commands/coin.js'
 import { SLOTS_SPIN_BUTTON_ID, subcommand as slots } from '../commands/slots.js'
 import { TTT_MOVE_BUTTON_ID, subcommand as ttt } from '../commands/ttt.js'
 import { HILO_GUESS_BUTTON_ID, subcommand as hilo } from '../commands/hilo.js'
-import { QUIZ_ANSWER_BUTTON_ID, subcommand as quiz } from '../commands/quiz.js'
+import { QUIZ_ANSWER_BUTTON_ID, QUIZ_NEXT_BUTTON_ID, subcommand as quiz } from '../commands/quiz.js'
 import { BLACKJACK_BUTTON_ID, subcommand as blackjack } from '../commands/blackjack.js'
 import { MEMORY_TILE_BUTTON_ID, subcommand as memory } from '../commands/memory.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
@@ -304,7 +304,7 @@ describe('quiz — command', () => {
     isolateStoredValues(storePath)
   })
 
-  it('starts a private quiz round', async () => {
+  it('starts a private five-round quiz session', async () => {
     const calls = await dispatch(commandJSON('quiz'), subs)
     const body = getCallback(calls) as {
       type: number
@@ -315,6 +315,7 @@ describe('quiz — command', () => {
     expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
     expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
     expect(JSON.stringify(body.data.components)).toContain('Quiz')
+    expect(JSON.stringify(body.data.components)).toContain('Round **1/5**')
   })
 
   it('reveals whether the selected answer is correct', async () => {
@@ -323,7 +324,7 @@ describe('quiz — command', () => {
     const firstCalls = await dispatch(commandJSON('quiz'), subs)
     const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
 
-    const correctButton = buttonIdByIndex(firstBody.data.components, QUIZ_ANSWER_BUTTON_ID, 2)
+    const correctButton = buttonIdByIndex(firstBody.data.components, QUIZ_ANSWER_BUTTON_ID, 1)
     const quizCalls = await dispatch(buttonJSON(firstBody.data.components, correctButton), subs)
     const body = getCallback(quizCalls) as { type: number; data: { components: unknown[] } }
     const rendered = JSON.stringify(body.data.components)
@@ -331,8 +332,120 @@ describe('quiz — command', () => {
     expect(body.type).toBe(InteractionResponseType.UpdateMessage)
     expect(rendered).toContain('Correct answer:')
     expect(rendered).toContain('Correct!')
+    expect(rendered).toContain('Score **1**')
+    expect(rendered).toContain(QUIZ_NEXT_BUTTON_ID)
 
     vi.restoreAllMocks()
+  })
+
+  it('advances without repeating the previous question', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const firstRendered = JSON.stringify(firstBody.data.components)
+    const answerButton = buttonIdByIndex(firstBody.data.components, QUIZ_ANSWER_BUTTON_ID, 1)
+    const answerCalls = await dispatch(buttonJSON(firstBody.data.components, answerButton), subs)
+    const answerBody = getCallback(answerCalls) as { data: { components: unknown[] } }
+
+    const nextCalls = await dispatch(
+      buttonJSON(answerBody.data.components, QUIZ_NEXT_BUTTON_ID),
+      subs
+    )
+    const body = getCallback(nextCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Round **2/5**')
+    expect(rendered).toContain('Category: Science')
+    expect(rendered).not.toBe(firstRendered)
+    expect(rendered).not.toContain('Which planet is known as the Red Planet?')
+
+    vi.restoreAllMocks()
+  })
+
+  it('does not score duplicate answer interactions twice', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('quiz'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const correctButton = buttonIdByIndex(firstBody.data.components, QUIZ_ANSWER_BUTTON_ID, 1)
+
+    await dispatch(buttonJSON(firstBody.data.components, correctButton), subs)
+    const duplicateCalls = await dispatch(
+      buttonJSON(firstBody.data.components, correctButton),
+      subs
+    )
+    const body = getCallback(duplicateCalls) as { data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(rendered).toContain('Score **1**')
+    expect(rendered).not.toContain('Score **2**')
+
+    vi.restoreAllMocks()
+  })
+
+  it('rejects an answer button from an earlier round', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    const firstComponents = (getCallback(firstCalls) as { data: { components: unknown[] } }).data
+      .components
+    const staleAnswer = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+    const answerCalls = await dispatch(buttonJSON(firstComponents, staleAnswer), subs)
+    const answeredComponents = (getCallback(answerCalls) as { data: { components: unknown[] } })
+      .data.components
+    const nextCalls = await dispatch(buttonJSON(answeredComponents, QUIZ_NEXT_BUTTON_ID), subs)
+    const secondComponents = (getCallback(nextCalls) as { data: { components: unknown[] } }).data
+      .components
+
+    const staleCalls = await dispatch(buttonJSON(secondComponents, staleAnswer), subs)
+    const staleBody = getCallback(staleCalls) as { type: number; data: { flags: number } }
+    expect(staleBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(staleBody.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+
+    const currentAnswer = buttonIdByIndex(secondComponents, QUIZ_ANSWER_BUTTON_ID, 2)
+    const currentCalls = await dispatch(buttonJSON(secondComponents, currentAnswer), subs)
+    const rendered = JSON.stringify(
+      (getCallback(currentCalls) as { data: { components: unknown[] } }).data.components
+    )
+    expect(rendered).toContain('Score **2**')
+
+    vi.restoreAllMocks()
+  })
+
+  it('finishes after five questions and reports the best streak', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    let components = (getCallback(firstCalls) as { data: { components: unknown[] } }).data
+      .components
+    const correctAnswers = [1, 2, 1, 1, 2]
+
+    for (let round = 0; round < correctAnswers.length; round++) {
+      const answerId = buttonIdByIndex(components, QUIZ_ANSWER_BUTTON_ID, correctAnswers[round]!)
+      const answerCalls = await dispatch(buttonJSON(components, answerId), subs)
+      components = (getCallback(answerCalls) as { data: { components: unknown[] } }).data.components
+
+      if (round < correctAnswers.length - 1) {
+        const nextCalls = await dispatch(buttonJSON(components, QUIZ_NEXT_BUTTON_ID), subs)
+        components = (getCallback(nextCalls) as { data: { components: unknown[] } }).data.components
+      }
+    }
+
+    const rendered = JSON.stringify(components)
+    expect(rendered).toContain('Session complete: **5/5** correct, best streak **5**.')
+    expect(rendered).not.toContain(QUIZ_NEXT_BUTTON_ID)
+
+    vi.restoreAllMocks()
+  })
+
+  it('rejects an unknown category', async () => {
+    const calls = await dispatch(commandJSON('quiz --category sports'), subs)
+    const body = getCallback(calls) as { data: { components: unknown[]; flags: number } }
+
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('category must be one of')
   })
 
   it('starts as public when --pub is set', async () => {

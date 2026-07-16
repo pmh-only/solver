@@ -9,6 +9,7 @@ let database: DatabaseSync | null = null
 
 const INTERNAL_KEY_PREFIXES = [
   '__chess-state:',
+  '__quiz-state:',
   'command-input:',
   'constrained-command:',
   'gpt-ctx:',
