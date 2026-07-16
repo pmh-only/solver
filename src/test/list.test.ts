@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { join } from 'node:path'
 import { subcommand as list } from '../commands/list.js'
-import { clearStoredValues, setStoredValue } from '../helpers/kv-store.js'
+import {
+  clearStoredValues,
+  releaseStoredLease,
+  setStoredValue,
+  tryAcquireStoredLease
+} from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
 
@@ -41,6 +46,7 @@ describe('list — command', () => {
     setStoredValue('alpha', '1')
     setStoredValue('command-input:token', 'list')
     setStoredValue('__chess-state:token', '{}')
+    setStoredValue('__quiz-generation:session:token', '{}')
     setStoredValue('__quiz-state:token', '{}')
     setStoredValue('constrained-command:token', '{"command":"ping","args":"1.1.1.1"}')
     setStoredValue('gpt-ctx:token', '{"prompt":"hi"}')
@@ -58,6 +64,7 @@ describe('list — command', () => {
     expect(json).toContain('1 key found')
     expect(json).not.toContain('command-input:token')
     expect(json).not.toContain('__chess-state:token')
+    expect(json).not.toContain('__quiz-generation:session:token')
     expect(json).not.toContain('__quiz-state:token')
     expect(json).not.toContain('constrained-command:token')
     expect(json).not.toContain('gpt-ctx:token')
@@ -83,6 +90,18 @@ describe('list — command', () => {
     const calls = await dispatch(commandJSON('list'), subs)
 
     expect(JSON.stringify(getCallback(calls))).toContain('chess:opening')
+  })
+
+  it('keeps a stored lease exclusive until its owner releases it', () => {
+    const key = '__quiz-generation:session:test'
+    expect(tryAcquireStoredLease(key, 'owner-1', 30_000, 1_000)).toBe(true)
+    expect(tryAcquireStoredLease(key, 'owner-2', 30_000, 1_001)).toBe(false)
+
+    releaseStoredLease(key, 'owner-2')
+    expect(tryAcquireStoredLease(key, 'owner-2', 30_000, 1_002)).toBe(false)
+
+    releaseStoredLease(key, 'owner-1')
+    expect(tryAcquireStoredLease(key, 'owner-2', 30_000, 1_003)).toBe(true)
   })
 
   it('replies publicly when --pub is set', async () => {

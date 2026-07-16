@@ -11,157 +11,37 @@ import {
   deleteStoredValue,
   getStoredValue,
   listStoredKeys,
-  setStoredValue
+  releaseStoredLease,
+  setStoredValue,
+  tryAcquireStoredLease
 } from '../helpers/kv-store.js'
 import { isPubtabContext } from '../flags.js'
 import { commandReferenceReply, sendCommandReply, withPubtabButton } from '../components.js'
 import { createGamePresentation, type GamePresentation } from '../canvas-presentation.js'
+import {
+  generateQuizQuestion,
+  QUIZ_CATEGORIES,
+  type QuizCategory,
+  type QuizQuestion
+} from './quiz-runtime.js'
 
 export const QUIZ_ANSWER_BUTTON_ID = 'quiz-answer'
 export const QUIZ_NEXT_BUTTON_ID = 'quiz-next'
 
 const QUIZ_STATE_KEY = '__quiz-state'
 const QUIZ_STATE_TTL_MS = 60 * 60 * 1000
+const QUIZ_GENERATION_LEASE_TTL_MS = 30_000
 const QUIZ_ROUNDS = 5
-const QUIZ_CATEGORIES = ['mixed', 'science', 'history', 'technology'] as const
-
-type QuizCategory = (typeof QUIZ_CATEGORIES)[number]
-
-interface QuizQuestion {
-  question: string
-  answers: readonly [string, string, string, string]
-  correct: number
-  category: Exclude<QuizCategory, 'mixed'>
-}
-
-const QUIZ_QUESTIONS: readonly QuizQuestion[] = [
-  {
-    question: 'Which planet is known as the Red Planet?',
-    answers: ['Earth', 'Mars', 'Venus', 'Jupiter'],
-    correct: 1,
-    category: 'science'
-  },
-  {
-    question: 'What gas do plants absorb from the atmosphere?',
-    answers: ['Oxygen', 'Hydrogen', 'Carbon dioxide', 'Helium'],
-    correct: 2,
-    category: 'science'
-  },
-  {
-    question: 'What is the chemical symbol for gold?',
-    answers: ['Ag', 'Au', 'Gd', 'Go'],
-    correct: 1,
-    category: 'science'
-  },
-  {
-    question: 'How many bones are in the adult human body?',
-    answers: ['186', '206', '226', '246'],
-    correct: 1,
-    category: 'science'
-  },
-  {
-    question: 'Which force keeps planets in orbit around the Sun?',
-    answers: ['Friction', 'Magnetism', 'Gravity', 'Buoyancy'],
-    correct: 2,
-    category: 'science'
-  },
-  {
-    question: 'What is the largest organ in the human body?',
-    answers: ['Heart', 'Liver', 'Lungs', 'Skin'],
-    correct: 3,
-    category: 'science'
-  },
-  {
-    question: 'Which ancient civilization built Machu Picchu?',
-    answers: ['Aztec', 'Inca', 'Maya', 'Roman'],
-    correct: 1,
-    category: 'history'
-  },
-  {
-    question: 'In which year did World War II end?',
-    answers: ['1943', '1944', '1945', '1946'],
-    correct: 2,
-    category: 'history'
-  },
-  {
-    question: 'Who was the first person to walk on the Moon?',
-    answers: ['Buzz Aldrin', 'Yuri Gagarin', 'Neil Armstrong', 'John Glenn'],
-    correct: 2,
-    category: 'history'
-  },
-  {
-    question: 'The Magna Carta was sealed in which country?',
-    answers: ['England', 'France', 'Italy', 'Spain'],
-    correct: 0,
-    category: 'history'
-  },
-  {
-    question: 'Which city was buried by Mount Vesuvius in 79 CE?',
-    answers: ['Athens', 'Pompeii', 'Sparta', 'Carthage'],
-    correct: 1,
-    category: 'history'
-  },
-  {
-    question: 'Which empire used roads called the Royal Road?',
-    answers: ['Persian', 'Ottoman', 'Mughal', 'Byzantine'],
-    correct: 0,
-    category: 'history'
-  },
-  {
-    question: 'What does CPU stand for?',
-    answers: [
-      'Central Processing Unit',
-      'Computer Personal Utility',
-      'Core Program User',
-      'Central Power Unit'
-    ],
-    correct: 0,
-    category: 'technology'
-  },
-  {
-    question: 'Which language is primarily used to style web pages?',
-    answers: ['HTML', 'CSS', 'SQL', 'Python'],
-    correct: 1,
-    category: 'technology'
-  },
-  {
-    question: 'What does HTTP stand for?',
-    answers: [
-      'Hypertext Transfer Protocol',
-      'High Transfer Text Process',
-      'Hosted Terminal Transport Program',
-      'Hyperlink Text Transfer Package'
-    ],
-    correct: 0,
-    category: 'technology'
-  },
-  {
-    question: 'Which number system uses only 0 and 1?',
-    answers: ['Decimal', 'Hexadecimal', 'Binary', 'Octal'],
-    correct: 2,
-    category: 'technology'
-  },
-  {
-    question: 'What kind of database organizes data into tables?',
-    answers: ['Relational', 'Graphical', 'Documentary', 'Sequential'],
-    correct: 0,
-    category: 'technology'
-  },
-  {
-    question: 'Which protocol securely connects to a remote shell?',
-    answers: ['FTP', 'SMTP', 'SSH', 'DNS'],
-    correct: 2,
-    category: 'technology'
-  }
-] as const
+const activeGenerations = new Set<string>()
 
 interface QuizState {
   commandInput: string
   pub: boolean
   pubtab: boolean
   category: QuizCategory
-  questionIndex: number
-  questionIndices: number[]
+  locale: string
+  question: QuizQuestion
+  previousQuestions: string[]
   chooser: string
   score: number
   streak: number
@@ -180,17 +60,44 @@ function storeState(token: string, state: QuizState): void {
   setStoredValue(stateKey(token), JSON.stringify(state))
 }
 
-function isQuestionIndex(value: unknown): value is number {
+function isCategory(value: unknown): value is QuizCategory {
+  return QUIZ_CATEGORIES.some((category) => category === value)
+}
+
+function isQuestion(value: unknown): value is QuizQuestion {
+  if (!value || typeof value !== 'object') return false
+  const question = value as Partial<QuizQuestion>
   return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value < QUIZ_QUESTIONS.length
+    typeof question.question === 'string' &&
+    question.question.trim().length > 0 &&
+    question.question.length <= 200 &&
+    Array.isArray(question.answers) &&
+    question.answers.length === 4 &&
+    question.answers.every(
+      (answer) => typeof answer === 'string' && answer.trim().length > 0 && answer.length <= 80
+    ) &&
+    new Set(question.answers.map((answer) => answer.trim().toLocaleLowerCase('en-US'))).size ===
+      4 &&
+    isAnswerIndex(question.correct) &&
+    (question.category === 'science' ||
+      question.category === 'history' ||
+      question.category === 'technology')
   )
 }
 
-function isCategory(value: unknown): value is QuizCategory {
-  return QUIZ_CATEGORIES.some((category) => category === value)
+function normalizeQuestion(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US')
+}
+
+function escapeMarkdown(value: string): string {
+  return value.replace(/([\\`*_[\]])/g, '\\$1').replaceAll('@', '@\u200b')
+}
+
+function safeFooter(value: string): string {
+  return value
+    .replace(/[\r\n]+/g, ' ')
+    .replaceAll('`', "'")
+    .replaceAll('@', '@\u200b')
 }
 
 function isSessionCount(value: unknown): value is number {
@@ -203,17 +110,36 @@ function loadState(token: string): QuizState | null {
 
   try {
     const parsed = JSON.parse(stored) as Partial<QuizState>
-    if (typeof parsed.commandInput !== 'string' || !parsed.commandInput) return null
-    if (typeof parsed.chooser !== 'string' || !parsed.chooser) return null
-    if (!isQuestionIndex(parsed.questionIndex)) return null
-    if (!isCategory(parsed.category)) return null
-    if (!Array.isArray(parsed.questionIndices)) return null
-    if (parsed.questionIndices.length < 1 || parsed.questionIndices.length > QUIZ_ROUNDS)
+    if (
+      typeof parsed.commandInput !== 'string' ||
+      !parsed.commandInput ||
+      parsed.commandInput.length > 500
+    ) {
       return null
-    if (!parsed.questionIndices.every(isQuestionIndex)) return null
-    if (new Set(parsed.questionIndices).size !== parsed.questionIndices.length) return null
-    if (parsed.questionIndices.at(-1) !== parsed.questionIndex) return null
-    const answeredRounds = parsed.questionIndices.length - (parsed.lastAnswer === undefined ? 1 : 0)
+    }
+    if (typeof parsed.chooser !== 'string' || !parsed.chooser || parsed.chooser.length > 100) {
+      return null
+    }
+    if (typeof parsed.pub !== 'boolean' || typeof parsed.pubtab !== 'boolean') return null
+    if (!isCategory(parsed.category)) return null
+    if (typeof parsed.locale !== 'string' || !parsed.locale || parsed.locale.length > 32)
+      return null
+    if (!isQuestion(parsed.question)) return null
+    if (!Array.isArray(parsed.previousQuestions)) return null
+    if (parsed.previousQuestions.length < 1 || parsed.previousQuestions.length > QUIZ_ROUNDS)
+      return null
+    if (
+      !parsed.previousQuestions.every(
+        (question) => typeof question === 'string' && question.length > 0 && question.length <= 200
+      )
+    ) {
+      return null
+    }
+    const normalizedQuestions = parsed.previousQuestions.map(normalizeQuestion)
+    if (new Set(normalizedQuestions).size !== normalizedQuestions.length) return null
+    if (normalizedQuestions.at(-1) !== normalizeQuestion(parsed.question.question)) return null
+    const answeredRounds =
+      parsed.previousQuestions.length - (parsed.lastAnswer === undefined ? 1 : 0)
     if (!isSessionCount(parsed.score) || parsed.score > answeredRounds) return null
     if (!isSessionCount(parsed.streak) || !isSessionCount(parsed.bestStreak)) return null
     if (parsed.streak > parsed.score || parsed.bestStreak < parsed.streak) return null
@@ -228,26 +154,24 @@ function loadState(token: string): QuizState | null {
     if ((parsed.lastAnswer === undefined) !== (parsed.correct === undefined)) return null
     if (
       parsed.lastAnswer !== undefined &&
-      parsed.correct !== (parsed.lastAnswer === QUIZ_QUESTIONS[parsed.questionIndex]?.correct)
+      parsed.correct !== (parsed.lastAnswer === parsed.question.correct)
     ) {
       return null
     }
     if (parsed.correct === true && parsed.streak === 0) return null
     if (parsed.correct === false && parsed.streak !== 0) return null
-    if (
-      parsed.category !== 'mixed' &&
-      parsed.questionIndices.some((index) => QUIZ_QUESTIONS[index]?.category !== parsed.category)
-    ) {
+    if (parsed.category !== 'mixed' && parsed.question.category !== parsed.category) {
       return null
     }
 
     return {
       commandInput: parsed.commandInput,
-      pub: Boolean(parsed.pub),
-      pubtab: Boolean(parsed.pubtab),
+      pub: parsed.pub,
+      pubtab: parsed.pubtab,
       category: parsed.category,
-      questionIndex: parsed.questionIndex,
-      questionIndices: parsed.questionIndices,
+      locale: parsed.locale,
+      question: parsed.question,
+      previousQuestions: parsed.previousQuestions,
       chooser: parsed.chooser,
       score: parsed.score,
       streak: parsed.streak,
@@ -259,10 +183,6 @@ function loadState(token: string): QuizState | null {
   } catch {
     return null
   }
-}
-
-function questionFromState(state: QuizState): QuizQuestion {
-  return QUIZ_QUESTIONS[state.questionIndex] ?? QUIZ_QUESTIONS[0]
 }
 
 function isAnswerIndex(value: unknown): value is number {
@@ -308,24 +228,15 @@ function cleanupExpiredStates(): void {
   }
 }
 
-function randomQuestionIndex(category: QuizCategory, excluded: readonly number[] = []): number {
-  const available = QUIZ_QUESTIONS.flatMap((question, index) =>
-    (category === 'mixed' || question.category === category) && !excluded.includes(index)
-      ? [index]
-      : []
-  )
-  return available[Math.floor(Math.random() * available.length)] ?? 0
-}
-
 function optionList(question: QuizQuestion): string[] {
-  return question.answers.map((answer, index) => `${index + 1}) ${answer}`)
+  return question.answers.map((answer, index) => `${index + 1}) ${escapeMarkdown(answer)}`)
 }
 
 function statusLines(state: QuizState, question: QuizQuestion): string[] {
   const lines = [
-    `Round **${state.questionIndices.length}/${QUIZ_ROUNDS}** | Score **${state.score}** | Streak **${state.streak}**`,
+    `Round **${state.previousQuestions.length}/${QUIZ_ROUNDS}** | Score **${state.score}** | Streak **${state.streak}**`,
     `Category: ${question.category[0].toUpperCase()}${question.category.slice(1)}`,
-    `Question: ${question.question}`,
+    `Question: ${escapeMarkdown(question.question)}`,
     ...optionList(question).map((item) => `- ${item}`)
   ]
 
@@ -337,10 +248,10 @@ function statusLines(state: QuizState, question: QuizQuestion): string[] {
   const picked = question.answers[state.lastAnswer] ?? 'unknown'
   return [
     ...lines,
-    `${state.chooser} chose "${picked}".`,
-    `Correct answer: ${question.answers[question.correct]}.`,
+    `${escapeMarkdown(state.chooser)} chose "${escapeMarkdown(picked)}".`,
+    `Correct answer: ${escapeMarkdown(question.answers[question.correct])}.`,
     result,
-    state.questionIndices.length === QUIZ_ROUNDS
+    state.previousQuestions.length === QUIZ_ROUNDS
       ? `Session complete: **${state.score}/${QUIZ_ROUNDS}** correct, best streak **${state.bestStreak}**.`
       : 'Continue when you are ready.'
   ]
@@ -363,7 +274,7 @@ function buildAnswerButton(
     : ButtonStyle.Primary
 
   return new ButtonBuilder()
-    .setCustomId(`${QUIZ_ANSWER_BUTTON_ID}:${token}:${state.questionIndices.length}:${index}`)
+    .setCustomId(`${QUIZ_ANSWER_BUTTON_ID}:${token}:${state.previousQuestions.length}:${index}`)
     .setLabel(answer)
     .setStyle(style)
     .setDisabled(answered)
@@ -384,34 +295,41 @@ function buildAnswerRows(
     buildAnswerButton(token, 3, question.answers[3], state, question)
   )
 
-  if (!isAnswerIndex(state.lastAnswer) || state.questionIndices.length === QUIZ_ROUNDS) {
+  if (!isAnswerIndex(state.lastAnswer) || state.previousQuestions.length === QUIZ_ROUNDS) {
     return [top, bottom]
   }
 
   const next = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${QUIZ_NEXT_BUTTON_ID}:${token}:${state.questionIndices.length}`)
+      .setCustomId(`${QUIZ_NEXT_BUTTON_ID}:${token}:${state.previousQuestions.length}`)
       .setLabel('Next question')
       .setStyle(ButtonStyle.Primary)
   )
   return [top, bottom, next]
 }
 
-function buildComponents(token: string, state: QuizState): GamePresentation {
-  const question = questionFromState(state)
+function buildComponents(
+  token: string,
+  state: QuizState,
+  generationError?: string
+): GamePresentation {
+  const question = state.question
   const answered = isAnswerIndex(state.lastAnswer)
   const presentation = createGamePresentation({
     id: `quiz-${token}`,
     title: 'Quiz',
     kicker: answered
-      ? state.questionIndices.length === QUIZ_ROUNDS
+      ? state.previousQuestions.length === QUIZ_ROUNDS
         ? 'Session complete'
         : state.correct
           ? 'Correct answer'
           : 'Round complete'
-      : `Question ${state.questionIndices.length} of ${QUIZ_ROUNDS}`,
-    lines: statusLines(state, question),
-    footer: state.commandInput,
+      : `Question ${state.previousQuestions.length} of ${QUIZ_ROUNDS}`,
+    lines: [
+      ...statusLines(state, question),
+      ...(generationError ? [`Generation error: ${generationError}`] : [])
+    ],
+    footer: safeFooter(state.commandInput),
     visual: {
       kind: 'quiz',
       optionCount: question.answers.length,
@@ -421,6 +339,21 @@ function buildComponents(token: string, state: QuizState): GamePresentation {
     controls: buildAnswerRows(token, state, question)
   })
   presentation.components = withPubtabButton(presentation.components, state.pubtab)
+  return presentation
+}
+
+function buildGenerationUnavailableComponents(
+  commandInput: string,
+  pubtab: boolean
+): GamePresentation {
+  const presentation = createGamePresentation({
+    id: 'quiz-generation-unavailable',
+    title: 'Quiz',
+    kicker: 'Question unavailable',
+    lines: ['GPT could not generate a question. Try `quiz` again in a moment.'],
+    footer: safeFooter(commandInput)
+  })
+  presentation.components = withPubtabButton(presentation.components, pubtab)
   return presentation
 }
 
@@ -447,9 +380,9 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
     const state = base === QUIZ_NEXT_BUTTON_ID && token && !extra ? loadState(token) : null
     if (
       !state ||
-      round !== state.questionIndices.length ||
+      round !== state.previousQuestions.length ||
       !isAnswerIndex(state.lastAnswer) ||
-      state.questionIndices.length >= QUIZ_ROUNDS
+      state.previousQuestions.length >= QUIZ_ROUNDS
     ) {
       const expired = buildExpiredComponents()
       await interaction.reply({
@@ -460,19 +393,116 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
       return
     }
 
-    state.questionIndex = randomQuestionIndex(state.category, state.questionIndices)
-    state.questionIndices.push(state.questionIndex)
-    state.lastAnswer = undefined
-    state.correct = undefined
-    storeState(token, state)
+    if (activeGenerations.has(token)) {
+      const presentation = buildComponents(token, state, 'A question is already being generated.')
+      await interaction.reply({
+        components: presentation.components as never,
+        files: presentation.files,
+        flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
+      })
+      return
+    }
 
-    const presentation = buildComponents(token, state)
-    await interaction.update({
-      components: presentation.components as never,
-      files: presentation.files,
-      attachments: [],
-      flags: MessageFlags.IsComponentsV2
-    })
+    const leaseKey = `__quiz-generation:session:${token}`
+    const leaseOwner = randomUUID()
+    let leaseAcquired = false
+    try {
+      leaseAcquired = tryAcquireStoredLease(leaseKey, leaseOwner, QUIZ_GENERATION_LEASE_TTL_MS)
+    } catch {
+      // Treat database contention like another active generator so the interaction is answered.
+    }
+    if (!leaseAcquired) {
+      const presentation = buildComponents(token, state, 'A question is already being generated.')
+      await interaction.reply({
+        components: presentation.components as never,
+        files: presentation.files,
+        flags: [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
+      })
+      return
+    }
+
+    activeGenerations.add(token)
+    try {
+      await interaction.deferUpdate()
+      let question: QuizQuestion
+      try {
+        question = await generateQuizQuestion({
+          category: state.category,
+          locale: state.locale,
+          previousQuestions: state.previousQuestions,
+          userId: interaction.user.id
+        })
+      } catch {
+        const current = loadState(token) ?? state
+        const presentation = buildComponents(
+          token,
+          current,
+          'Could not create the next question. Use Next question to retry.'
+        )
+        await interaction.editReply({
+          components: presentation.components as never,
+          files: presentation.files,
+          attachments: [],
+          flags: MessageFlags.IsComponentsV2
+        })
+        return
+      }
+
+      const current = loadState(token)
+      if (
+        !current ||
+        round !== current.previousQuestions.length ||
+        !isAnswerIndex(current.lastAnswer)
+      ) {
+        const expired = buildExpiredComponents()
+        await interaction.editReply({
+          components: expired.components as never,
+          files: expired.files,
+          attachments: [],
+          flags: MessageFlags.IsComponentsV2
+        })
+        return
+      }
+
+      const advanced: QuizState = {
+        ...current,
+        question,
+        previousQuestions: [...current.previousQuestions, question.question],
+        lastAnswer: undefined,
+        correct: undefined
+      }
+      storeState(token, advanced)
+
+      const presentation = buildComponents(token, advanced)
+      try {
+        await interaction.editReply({
+          components: presentation.components as never,
+          files: presentation.files,
+          attachments: [],
+          flags: MessageFlags.IsComponentsV2
+        })
+      } catch {
+        storeState(token, state)
+        const retry = buildComponents(
+          token,
+          state,
+          'Could not display the next question. Use Next question to retry.'
+        )
+        await interaction.editReply({
+          components: retry.components as never,
+          files: retry.files,
+          attachments: [],
+          flags: MessageFlags.IsComponentsV2
+        })
+      }
+    } finally {
+      activeGenerations.delete(token)
+      try {
+        releaseStoredLease(leaseKey, leaseOwner)
+      } catch {
+        // The short lease expires by itself if the database remains busy.
+      }
+    }
     return
   }
 
@@ -488,7 +518,7 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
   }
 
   const state = loadState(parsed.token)
-  if (!state || parsed.round !== state.questionIndices.length) {
+  if (!state || parsed.round !== state.previousQuestions.length) {
     const expired = buildExpiredComponents()
     await interaction.reply({
       components: expired.components as never,
@@ -510,7 +540,7 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
   }
 
   state.lastAnswer = parsed.answer
-  state.correct = parsed.answer === QUIZ_QUESTIONS[state.questionIndex]?.correct
+  state.correct = parsed.answer === state.question.correct
   if (state.correct) {
     state.score++
     state.streak++
@@ -533,7 +563,7 @@ export async function handleQuizAnswerButton(interaction: ButtonInteraction): Pr
 
 export const subcommand: Subcommand = {
   name: 'quiz',
-  description: 'five-question quiz challenge',
+  description: 'AI-generated five-question quiz challenge',
   usage: 'quiz [--category mixed|science|history|technology] [--pub]',
   examples: ['quiz', 'quiz --category science', 'quiz --category technology --pub'],
   pubtab: { label: 'Quiz', args: '' },
@@ -551,6 +581,13 @@ export const subcommand: Subcommand = {
 
   async execute(interaction, args, flags) {
     cleanupExpiredStates()
+    if (args.length > 500) {
+      await sendCommandReply(
+        interaction,
+        commandReferenceReply(subcommand, args.slice(0, 500), flags, 'usage', 'command is too long')
+      )
+      return
+    }
     const categoryFlag = flags.get('category')
     const category = categoryFlag === undefined ? 'mixed' : String(categoryFlag).toLowerCase()
     if (!isCategory(category)) {
@@ -568,15 +605,40 @@ export const subcommand: Subcommand = {
     }
 
     const token = randomUUID().replace(/-/g, '').slice(0, 16)
-    const questionIndex = randomQuestionIndex(category)
+    const pub = flags.has('pub')
+    const pubtab = isPubtabContext(flags)
+    if (!interaction.deferred) {
+      await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
+    }
+
+    let question: QuizQuestion
+    try {
+      question = await generateQuizQuestion({
+        category,
+        locale: interaction.locale || 'en-US',
+        previousQuestions: [],
+        userId: interaction.user.id
+      })
+    } catch {
+      const unavailable = buildGenerationUnavailableComponents(args, pubtab)
+      await interaction.editReply({
+        components: unavailable.components as never,
+        files: unavailable.files,
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2
+      })
+      return
+    }
+
     const state: QuizState = {
       commandInput: args,
-      pub: flags.has('pub'),
-      pubtab: isPubtabContext(flags),
+      pub,
+      pubtab,
       category,
+      locale: interaction.locale || 'en-US',
+      question,
+      previousQuestions: [question.question],
       chooser: interaction.user.globalName ?? interaction.user.username,
-      questionIndex,
-      questionIndices: [questionIndex],
       score: 0,
       streak: 0,
       bestStreak: 0,
@@ -586,22 +648,11 @@ export const subcommand: Subcommand = {
     storeState(token, state)
     const presentation = buildComponents(token, state)
 
-    if (interaction.deferred) {
-      await interaction.editReply({
-        components: presentation.components as never,
-        files: presentation.files,
-        attachments: [],
-        flags: MessageFlags.IsComponentsV2
-      })
-      return
-    }
-
-    await interaction.reply({
+    await interaction.editReply({
       components: presentation.components as never,
       files: presentation.files,
-      flags: state.pub
-        ? ([MessageFlags.IsComponentsV2] as const)
-        : ([MessageFlags.IsComponentsV2, MessageFlags.Ephemeral] as const)
+      attachments: [],
+      flags: MessageFlags.IsComponentsV2
     })
   }
 }
