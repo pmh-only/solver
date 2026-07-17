@@ -20,6 +20,7 @@ import {
   Client,
   Collection,
   MessageContextMenuCommandInteraction,
+  PrimaryEntryPointCommandInteraction,
   StringSelectMenuInteraction,
   UserContextMenuCommandInteraction
 } from 'discord.js'
@@ -167,6 +168,13 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
     ) => Interaction
     return new Ctor(client, raw)
   }
+  if (type === 2 && (raw.data as { type?: number } | undefined)?.type === 4) {
+    const Ctor = PrimaryEntryPointCommandInteraction as unknown as new (
+      client: Client,
+      data: unknown
+    ) => Interaction
+    return new Ctor(client, raw)
+  }
   const Ctor = ChatInputCommandInteraction as unknown as new (
     client: Client,
     data: unknown
@@ -174,7 +182,7 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
   return new Ctor(client, raw)
 }
 
-function messageJSON(components: unknown[]) {
+function messageJSON(components: unknown[], flags = 0) {
   const imageUrl =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   return {
@@ -199,7 +207,7 @@ function messageJSON(components: unknown[]) {
     tts: false,
     timestamp: '2026-04-07T00:00:00.000Z',
     edited_timestamp: null,
-    flags: 0,
+    flags,
     components
   }
 }
@@ -232,6 +240,19 @@ export function commandJSON(
     locale: 'en-US',
     entitlements: [],
     authorizing_integration_owners: {},
+    ...overrides
+  }
+}
+
+export function primaryEntryPointJSON(overrides: Partial<RawInteraction> = {}): RawInteraction {
+  return {
+    ...commandJSON('', {
+      data: {
+        id: '888888888888888899',
+        name: 'Launch',
+        type: 4
+      }
+    }),
     ...overrides
   }
 }
@@ -419,7 +440,8 @@ export function messageContextJSON(
 export function buttonJSON(
   components: unknown[],
   customId = RETRY_BUTTON_ID,
-  overrides: Partial<RawInteraction> = {}
+  overrides: Partial<RawInteraction> = {},
+  sourceMessageFlags = 0
 ): RawInteraction {
   return {
     id: '1000000000000000001',
@@ -430,7 +452,7 @@ export function buttonJSON(
       custom_id: resolveCustomId(components, customId)
     },
     channel_id: '777777777777777777',
-    message: messageJSON(components),
+    message: messageJSON(components, sourceMessageFlags),
     user: {
       id: '666666666666666666',
       username: 'testuser',
@@ -451,7 +473,8 @@ export function selectJSON(
   components: unknown[],
   customId: string,
   value: string,
-  overrides: Partial<RawInteraction> = {}
+  overrides: Partial<RawInteraction> = {},
+  sourceMessageFlags = 0
 ): RawInteraction {
   return {
     id: '1000000000000000005',
@@ -463,7 +486,7 @@ export function selectJSON(
       values: [value]
     },
     channel_id: '777777777777777777',
-    message: messageJSON(components),
+    message: messageJSON(components, sourceMessageFlags),
     user: {
       id: '666666666666666666',
       username: 'testuser',

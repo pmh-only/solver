@@ -3,6 +3,7 @@ import { gzip as gzipCallback } from 'node:zlib'
 import { AttachmentBuilder, FileBuilder } from 'discord.js'
 import type { Flags } from '../flags.js'
 import type { Subcommand } from '../types.js'
+import { isAdminUser } from '../authorization.js'
 import {
   deferCommandResponse,
   privateContainer,
@@ -28,12 +29,8 @@ const MAX_ATTACHMENT_BYTES = 7_500_000
 const MAX_COMPRESSION_INPUT_BYTES = 20_000_000
 const gzip = promisify(gzipCallback)
 
-function usageUserIds(value = process.env.OPENAI_USAGE_USER_IDS): Set<string> {
-  return new Set((value ?? '').split(/[\s,]+/).filter(Boolean))
-}
-
 export function isUsageUserAllowed(userId: string, value?: string): boolean {
-  return usageUserIds(value).has(userId)
+  return isAdminUser(userId, value)
 }
 
 function parseDays(flags: Flags): number | string {

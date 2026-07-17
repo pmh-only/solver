@@ -142,30 +142,24 @@ function sampleReport(): OpenAIUsageReport {
 
 afterEach(() => {
   delete process.env.OPENAI_ADMIN_KEY
-  delete process.env.OPENAI_USAGE_USER_IDS
+  delete process.env.ADMIN_USER_IDS
   vi.restoreAllMocks()
 })
 
 describe('usage — command', () => {
-  it('requires an explicit Discord user allowlist and never exposes publish controls', async () => {
+  it('ignores users outside the shared admin allowlist', async () => {
     process.env.OPENAI_ADMIN_KEY = 'admin-key'
-    process.env.OPENAI_USAGE_USER_IDS = '111111111111111111'
+    process.env.ADMIN_USER_IDS = '111111111111111111'
     const fetchSpy = vi.spyOn(usageRuntime, 'fetchOpenAIUsageReport')
 
     const calls = await dispatch(commandJSON('usage --pub'), subs)
-    const body = getCallback(calls) as { type: number; data: { flags: number } }
-    const serialized = JSON.stringify(body)
-
-    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
-    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
-    expect(serialized).toContain('not configured for this Discord user')
-    expect(serialized).not.toContain('Publish')
+    expect(getCallback(calls)).toBeNull()
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   it('validates the requested day range before making an API request', async () => {
     process.env.OPENAI_ADMIN_KEY = 'admin-key'
-    process.env.OPENAI_USAGE_USER_IDS = USER_ID
+    process.env.ADMIN_USER_IDS = USER_ID
     const fetchSpy = vi.spyOn(usageRuntime, 'fetchOpenAIUsageReport')
 
     const calls = await dispatch(commandJSON('usage --days 32'), subs)
@@ -179,7 +173,7 @@ describe('usage — command', () => {
 
   it('returns every project, a detailed summary, and full report attachments privately', async () => {
     process.env.OPENAI_ADMIN_KEY = 'admin-key'
-    process.env.OPENAI_USAGE_USER_IDS = `123, ${USER_ID}`
+    process.env.ADMIN_USER_IDS = `123456789012345678, ${USER_ID}`
     const fetchSpy = vi
       .spyOn(usageRuntime, 'fetchOpenAIUsageReport')
       .mockResolvedValue(sampleReport())
@@ -205,8 +199,9 @@ describe('usage — command', () => {
 
 describe('usage — authorization', () => {
   it('accepts comma- and whitespace-separated user IDs', () => {
-    expect(isUsageUserAllowed('222', '111,222 333')).toBe(true)
-    expect(isUsageUserAllowed('444', '111,222 333')).toBe(false)
+    const allowed = '111111111111111111,222222222222222222 333333333333333333'
+    expect(isUsageUserAllowed('222222222222222222', allowed)).toBe(true)
+    expect(isUsageUserAllowed('444444444444444444', allowed)).toBe(false)
   })
 })
 

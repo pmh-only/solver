@@ -34,7 +34,7 @@ export const applicationCommands = [
     name: ACTIVITY_ENTRY_COMMAND_NAME,
     description: 'Launch the Hello World Activity',
     type: ApplicationCommandType.PrimaryEntryPoint,
-    handler: EntryPointCommandHandlerType.DiscordLaunchActivity,
+    handler: EntryPointCommandHandlerType.AppHandler,
     integration_types: [0, 1],
     contexts: [0, 1, 2]
   },
@@ -81,3 +81,15 @@ export const applicationCommands = [
     contexts: [0, 1, 2]
   }
 ]
+
+export function areApplicationCommandsCurrent(
+  existing: Array<{ name: string; type: number; handler?: number | null }>
+): boolean {
+  return applicationCommands.every((command) => {
+    const registered = existing.find(
+      (candidate) => candidate.name === command.name && candidate.type === command.type
+    )
+    if (!registered) return false
+    return !('handler' in command) || registered.handler === command.handler
+  })
+}

@@ -93,6 +93,7 @@ import {
   isChessSelectId
 } from './commands/chess.js'
 import { handleActivityLaunchButton, isActivityLaunchButtonId } from './commands/activity.js'
+import { isAdminUser } from './authorization.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -129,6 +130,52 @@ function hasComponentsV2Payload(components: readonly { toJSON(): unknown }[]) {
     const json = component.toJSON() as { type?: number }
     return json.type !== ComponentType.ActionRow
   })
+}
+
+function hasPublicSourceMessage(interaction: Interaction): boolean {
+  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    return !interaction.message.flags.has(MessageFlags.Ephemeral)
+  }
+  if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
+    return !interaction.message.flags.has(MessageFlags.Ephemeral)
+  }
+  return false
+}
+
+function isPubtabInteraction(
+  interaction: Interaction,
+  subcommands: Collection<string, Subcommand>
+): boolean {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'c') {
+    return (
+      resolveCommandInput(interaction.options.getString('_', true), subcommands).subName ===
+      'pubtab'
+    )
+  }
+  if (interaction.isButton() && interaction.customId === PUBTAB_BUTTON_ID) return true
+  if (
+    (interaction.isButton() && matchesInteractiveId(interaction.customId, COMMAND_RUN_BUTTON_ID)) ||
+    (interaction.isModalSubmit() && interaction.customId.startsWith(`${COMMAND_RUN_MODAL_ID}:`))
+  ) {
+    try {
+      const template = loadConstrainedCommandTemplate(interaction.customId)
+      return Boolean(template && subcommands.get(template.command)?.pubtab)
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+function isInteractionAllowed(
+  interaction: Interaction,
+  subcommands: Collection<string, Subcommand>
+): boolean {
+  return (
+    isAdminUser(interaction.user.id) ||
+    hasPublicSourceMessage(interaction) ||
+    isPubtabInteraction(interaction, subcommands)
+  )
 }
 
 function resolveCommandInput(rawInput: string, subcommands: Collection<string, Subcommand>) {
@@ -218,6 +265,16 @@ async function runCommandInput(
 export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     try {
+      if (!isInteractionAllowed(interaction, subcommands)) {
+        if (interaction.isAutocomplete()) await interaction.respond([])
+        return
+      }
+
+      if (interaction.isPrimaryEntryPointCommand()) {
+        await interaction.launchActivity()
+        return
+      }
+
       if (interaction.isButton()) {
         if (isActivityLaunchButtonId(interaction.customId)) {
           await handleActivityLaunchButton(interaction)

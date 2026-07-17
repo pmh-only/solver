@@ -12,9 +12,14 @@ import {
   commandJSON,
   dispatch,
   getCallback,
-  makeSubcommands
+  makeSubcommands,
+  primaryEntryPointJSON
 } from './e2e.js'
-import { ACTIVITY_ENTRY_COMMAND_NAME, applicationCommands } from '../application-commands.js'
+import {
+  ACTIVITY_ENTRY_COMMAND_NAME,
+  applicationCommands,
+  areApplicationCommandsCurrent
+} from '../application-commands.js'
 
 const subs = makeSubcommands(activity)
 
@@ -24,9 +29,37 @@ describe('activity command', () => {
       expect.objectContaining({
         name: ACTIVITY_ENTRY_COMMAND_NAME,
         type: ApplicationCommandType.PrimaryEntryPoint,
-        handler: EntryPointCommandHandlerType.DiscordLaunchActivity
+        handler: EntryPointCommandHandlerType.AppHandler
       })
     )
+  })
+
+  it('redeploys an existing Discord-managed Entry Point as app-handled', () => {
+    const existing = applicationCommands.map((command) => ({
+      name: command.name,
+      type: command.type ?? ApplicationCommandType.ChatInput,
+      ...('handler' in command
+        ? { handler: EntryPointCommandHandlerType.DiscordLaunchActivity }
+        : {})
+    }))
+
+    expect(areApplicationCommandsCurrent(existing)).toBe(false)
+    expect(
+      areApplicationCommandsCurrent(
+        applicationCommands.map((command) => ({
+          name: command.name,
+          type: command.type ?? ApplicationCommandType.ChatInput,
+          ...('handler' in command ? { handler: command.handler } : {})
+        }))
+      )
+    ).toBe(true)
+  })
+
+  it('launches the Activity from the Primary Entry Point', async () => {
+    const calls = await dispatch(primaryEntryPointJSON(), subs)
+    const body = getCallback(calls) as { type: number }
+
+    expect(body.type).toBe(InteractionResponseType.LaunchActivity)
   })
 
   it('creates a private Activity launch button', async () => {

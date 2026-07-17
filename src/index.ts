@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { Client, Collection, Events, GatewayIntentBits, REST, Routes } from 'discord.js'
 import type { Subcommand } from './types.js'
-import { applicationCommands } from './application-commands.js'
+import { applicationCommands, areApplicationCommandsCurrent } from './application-commands.js'
 import { createHandler } from './handler.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
@@ -34,6 +34,7 @@ import { subcommand as chess } from './commands/chess.js'
 import { subcommand as activity } from './commands/activity.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeActivityServer, startActivityServer } from './activity-server.js'
+import { requireAdminUserIds } from './authorization.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
@@ -78,15 +79,10 @@ async function ensureDeployed(clientId: string, token: string) {
   const existing = (await rest.get(Routes.applicationCommands(clientId))) as Array<{
     name: string
     type: number
+    handler?: number | null
   }>
 
-  const allPresent = applicationCommands.every((command) =>
-    existing.some(
-      (registered) => registered.name === command.name && registered.type === command.type
-    )
-  )
-
-  if (allPresent) {
+  if (areApplicationCommandsCurrent(existing)) {
     console.log('skip')
     return
   }
@@ -103,6 +99,7 @@ const clientId = process.env.DISCORD_CLIENT_ID
 
 if (!token) throw new Error('no token')
 if (!clientId) throw new Error('no client id')
+requireAdminUserIds()
 
 await ensureDeployed(clientId, token)
 

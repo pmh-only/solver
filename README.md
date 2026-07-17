@@ -17,3 +17,9 @@ deployed. `/c activity --pub` creates a shared launch button in the current chan
 
 The example only renders `Hello, World!` and does not request Discord user data, so it does not
 need Activity OAuth or the Embedded App SDK yet.
+
+## Interaction Access
+
+Set `ADMIN_USER_IDS` to a comma- or whitespace-separated list of Discord user IDs. Private
+commands, context menus, modals, and autocomplete are restricted to those users. Components on
+public messages and commands launched through the constrained Pubtab remain available to everyone.
