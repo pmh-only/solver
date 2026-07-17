@@ -1,7 +1,11 @@
 import 'dotenv/config'
 import { Client, Collection, Events, GatewayIntentBits, REST, Routes } from 'discord.js'
 import type { Subcommand } from './types.js'
-import { applicationCommands, areApplicationCommandsCurrent } from './application-commands.js'
+import { areApplicationCommandsCurrent } from './application-commands.js'
+import {
+  replaceApplicationCommands,
+  type RegisteredApplicationCommand
+} from './application-command-deployment.js'
 import { createHandler } from './handler.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
@@ -74,10 +78,9 @@ for (const sub of [...commands, createPubtabSubcommand(commands)]) {
 
 async function ensureDeployed(clientId: string, token: string) {
   const rest = new REST().setToken(token)
-  const existing = (await rest.get(Routes.applicationCommands(clientId))) as Array<{
-    name: string
-    type: number
-  }>
+  const existing = (await rest.get(
+    Routes.applicationCommands(clientId)
+  )) as RegisteredApplicationCommand[]
 
   if (areApplicationCommandsCurrent(existing)) {
     console.log('skip')
@@ -85,9 +88,7 @@ async function ensureDeployed(clientId: string, token: string) {
   }
 
   console.log('deploying...')
-  await rest.put(Routes.applicationCommands(clientId), {
-    body: applicationCommands
-  })
+  await replaceApplicationCommands(rest, clientId, existing)
   console.log('done')
 }
 
