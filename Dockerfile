@@ -29,4 +29,5 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node assets ./assets
 RUN mkdir -p data && chown node:node data
 USER node
+EXPOSE 3000
 CMD ["node", "dist/index.js"]

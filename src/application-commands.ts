@@ -1,4 +1,8 @@
-import { ApplicationCommandType, SlashCommandBuilder } from 'discord.js'
+import {
+  ApplicationCommandType,
+  EntryPointCommandHandlerType,
+  SlashCommandBuilder
+} from 'discord.js'
 import { USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
   MESSAGE_INTERACTION_JSON_COMMAND_NAME,
@@ -18,9 +22,19 @@ export const solverCommand = new SlashCommandBuilder()
     option.setName('_').setDescription('sub').setRequired(true).setAutocomplete(true)
   )
 
+export const ACTIVITY_ENTRY_COMMAND_NAME = 'Launch'
+
 export const applicationCommands = [
   {
     ...solverCommand.toJSON(),
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  },
+  {
+    name: ACTIVITY_ENTRY_COMMAND_NAME,
+    description: 'Launch the Hello World Activity',
+    type: ApplicationCommandType.PrimaryEntryPoint,
+    handler: EntryPointCommandHandlerType.DiscordLaunchActivity,
     integration_types: [0, 1],
     contexts: [0, 1, 2]
   },

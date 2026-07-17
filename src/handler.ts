@@ -92,6 +92,7 @@ import {
   isChessButtonId,
   isChessSelectId
 } from './commands/chess.js'
+import { handleActivityLaunchButton, isActivityLaunchButtonId } from './commands/activity.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -218,6 +219,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
   return async (interaction: Interaction): Promise<void> => {
     try {
       if (interaction.isButton()) {
+        if (isActivityLaunchButtonId(interaction.customId)) {
+          await handleActivityLaunchButton(interaction)
+          return
+        }
+
         if (interaction.customId === PUBTAB_BUTTON_ID) {
           const pubtab = subcommands.get('pubtab')
           if (!pubtab) {

@@ -31,7 +31,9 @@ import { subcommand as blackjack } from './commands/blackjack.js'
 import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
+import { subcommand as activity } from './commands/activity.js'
 import { extraSubcommands } from './commands/more.js'
+import { closeActivityServer, startActivityServer } from './activity-server.js'
 
 const subcommands = new Collection<string, Subcommand>()
 
@@ -58,6 +60,7 @@ const commands = [
   memory,
   usage,
   chess,
+  activity,
   coin,
   dice,
   rps,
@@ -113,4 +116,35 @@ client.once(Events.ClientReady, (c) => {
 
 client.on(Events.InteractionCreate, createHandler(subcommands))
 
-client.login(token)
+const activityServer = await startActivityServer()
+const address = activityServer.address()
+console.log(
+  `activity server: ${typeof address === 'object' && address ? `${address.address}:${address.port}` : String(address)}`
+)
+
+let shuttingDown = false
+async function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`shutdown: ${signal}`)
+  client.destroy()
+  await closeActivityServer(activityServer)
+}
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    void shutdown(signal)
+      .then(() => process.exit(0))
+      .catch((error) => {
+        console.error(error)
+        process.exit(1)
+      })
+  })
+}
+
+try {
+  await client.login(token)
+} catch (error) {
+  await closeActivityServer(activityServer)
+  throw error
+}
