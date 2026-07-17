@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { adminUserIds, isAdminUser, requireAdminUserIds } from '../authorization.js'
-import { ACTIVITY_LAUNCH_BUTTON_ID, subcommand as activity } from '../commands/activity.js'
+import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../commands/coin.js'
 import { createPubtabSubcommand } from '../commands/pubtab.js'
 import { COMMAND_RUN_BUTTON_ID, COMMAND_RUN_INPUT_ID } from '../components.js'
 import type { Subcommand } from '../types.js'
@@ -13,8 +13,7 @@ import {
   getCallback,
   getEdit,
   makeSubcommands,
-  modalJSON,
-  primaryEntryPointJSON
+  modalJSON
 } from './e2e.js'
 
 const ADMIN_ID = '666666666666666666'
@@ -46,7 +45,7 @@ const safeCommand: Subcommand = {
 }
 
 const pubtab = createPubtabSubcommand([safeCommand])
-const subs = makeSubcommands(safeCommand, pubtab, activity)
+const subs = makeSubcommands(safeCommand, pubtab, coin)
 
 beforeEach(() => {
   process.env.ADMIN_USER_IDS = `${ADMIN_ID}, ${SECOND_ADMIN_ID}`
@@ -105,31 +104,31 @@ describe('interaction authorization', () => {
   })
 
   it('allows anyone to use controls attached to public messages', async () => {
-    const firstCalls = await dispatch(commandJSON('activity --pub'), subs)
+    const firstCalls = await dispatch(commandJSON('coin --pub'), subs)
     const components = (getCallback(firstCalls) as { data: { components: unknown[] } }).data
       .components
 
     const calls = await dispatch(
-      buttonJSON(components, ACTIVITY_LAUNCH_BUTTON_ID, {
+      buttonJSON(components, COIN_GUESS_BUTTON_ID, {
         user: user('555555555555555555')
       }),
       subs
     )
 
     expect((getCallback(calls) as { type: number }).type).toBe(
-      InteractionResponseType.LaunchActivity
+      InteractionResponseType.UpdateMessage
     )
   })
 
   it('blocks other users from controls attached to private messages', async () => {
-    const firstCalls = await dispatch(commandJSON('activity'), subs)
+    const firstCalls = await dispatch(commandJSON('coin'), subs)
     const components = (getCallback(firstCalls) as { data: { components: unknown[] } }).data
       .components
 
     const calls = await dispatch(
       buttonJSON(
         components,
-        ACTIVITY_LAUNCH_BUTTON_ID,
+        COIN_GUESS_BUTTON_ID,
         { user: user('555555555555555555') },
         MessageFlags.Ephemeral
       ),
@@ -177,18 +176,5 @@ describe('interaction authorization', () => {
     )
 
     expect(calls).toEqual([])
-  })
-
-  it('applies the admin gate to the Activity Primary Entry Point', async () => {
-    const blocked = await dispatch(
-      primaryEntryPointJSON({ user: user('555555555555555555') }),
-      subs
-    )
-    const allowed = await dispatch(primaryEntryPointJSON(), subs)
-
-    expect(blocked).toEqual([])
-    expect((getCallback(allowed) as { type: number }).type).toBe(
-      InteractionResponseType.LaunchActivity
-    )
   })
 })

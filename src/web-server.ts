@@ -3,13 +3,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
 
-const ACTIVITY_HTML = `<!doctype html>
+const HOME_HTML = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <title>Hello World Activity</title>
+    <title>Hello World</title>
     <style>
       :root {
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -56,7 +56,7 @@ const ACTIVITY_HTML = `<!doctype html>
   </head>
   <body>
     <main>
-      <p>Discord Activity</p>
+      <p>Solver Web Server</p>
       <h1>Hello, World!</h1>
     </main>
   </body>
@@ -75,14 +75,14 @@ function send(
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
     'Content-Security-Policy':
-      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors https://discord.com https://*.discord.com",
+      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff'
   })
   response.end(headOnly ? undefined : body)
 }
 
-export function handleActivityRequest(request: IncomingMessage, response: ServerResponse): void {
+export function handleWebRequest(request: IncomingMessage, response: ServerResponse): void {
   const method = request.method ?? 'GET'
   if (method !== 'GET' && method !== 'HEAD') {
     response.setHeader('Allow', 'GET, HEAD')
@@ -92,13 +92,13 @@ export function handleActivityRequest(request: IncomingMessage, response: Server
 
   let pathname: string
   try {
-    pathname = new URL(request.url ?? '/', 'http://activity.local').pathname
+    pathname = new URL(request.url ?? '/', 'http://web.local').pathname
   } catch {
     send(response, 400, 'text/plain; charset=utf-8', 'Bad Request\n', method === 'HEAD')
     return
   }
   if (pathname === '/') {
-    send(response, 200, 'text/html; charset=utf-8', ACTIVITY_HTML, method === 'HEAD')
+    send(response, 200, 'text/html; charset=utf-8', HOME_HTML, method === 'HEAD')
     return
   }
   if (pathname === '/healthz') {
@@ -108,8 +108,8 @@ export function handleActivityRequest(request: IncomingMessage, response: Server
   send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', method === 'HEAD')
 }
 
-export function createActivityServer(): Server {
-  const server = createServer(handleActivityRequest)
+export function createWebServer(): Server {
+  const server = createServer(handleWebRequest)
   server.requestTimeout = 10_000
   server.headersTimeout = 10_000
   server.keepAliveTimeout = 5_000
@@ -127,15 +127,15 @@ function parsePort(value: string | undefined): number {
   return port
 }
 
-export async function startActivityServer(
+export async function startWebServer(
   options: {
     host?: string
     port?: number
   } = {}
 ): Promise<Server> {
-  const host = options.host ?? process.env.ACTIVITY_HOST ?? DEFAULT_HOST
+  const host = options.host ?? process.env.WEB_HOST ?? DEFAULT_HOST
   const port = options.port ?? parsePort(process.env.PORT)
-  const server = createActivityServer()
+  const server = createWebServer()
 
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
@@ -154,7 +154,7 @@ export async function startActivityServer(
   return server
 }
 
-export async function closeActivityServer(server: Server): Promise<void> {
+export async function closeWebServer(server: Server): Promise<void> {
   if (!server.listening) return
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()))

@@ -4,7 +4,7 @@ import {
   MESSAGE_INTERACTION_JSON_COMMAND_NAME,
   USER_INTERACTION_JSON_COMMAND_NAME
 } from '../commands/interaction-json.js'
-import { applicationCommands } from '../application-commands.js'
+import { applicationCommands, areApplicationCommandsCurrent } from '../application-commands.js'
 import {
   dispatch,
   getCallback,
@@ -30,6 +30,21 @@ describe('interaction json commands', () => {
           command.type === ApplicationCommandType.Message
       )
     ).toBe(true)
+  })
+
+  it('redeploys when stale application commands need to be removed', () => {
+    const current = applicationCommands.map((command) => ({
+      name: command.name,
+      type: command.type ?? ApplicationCommandType.ChatInput
+    }))
+
+    expect(areApplicationCommandsCurrent(current)).toBe(true)
+    expect(
+      areApplicationCommandsCurrent([
+        ...current,
+        { name: 'obsolete', type: ApplicationCommandType.ChatInput }
+      ])
+    ).toBe(false)
   })
 
   it('renders full user interaction json', async () => {

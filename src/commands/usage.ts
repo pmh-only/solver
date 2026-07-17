@@ -50,7 +50,7 @@ function markdown(value: string): string {
   return value.replace(/([\\`*_[\]])/g, '\\$1')
 }
 
-function activity(summary: ProjectUsageSummary): number {
+function usageWeight(summary: ProjectUsageSummary): number {
   return (
     Object.values(summary.costs).reduce((total, value) => total + value, 0) * 1_000_000 +
     summary.completionRequests +
@@ -79,7 +79,7 @@ function compactProject(summary: ProjectUsageSummary): string {
 
 function projectPreview(summaries: ProjectUsageSummary[]): string {
   const sorted = [...summaries].sort(
-    (left, right) => activity(right) - activity(left) || left.name.localeCompare(right.name)
+    (left, right) => usageWeight(right) - usageWeight(left) || left.name.localeCompare(right.name)
   )
   const lines = ['**Projects**']
   let included = 0

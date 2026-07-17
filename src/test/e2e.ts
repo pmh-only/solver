@@ -20,7 +20,6 @@ import {
   Client,
   Collection,
   MessageContextMenuCommandInteraction,
-  PrimaryEntryPointCommandInteraction,
   StringSelectMenuInteraction,
   UserContextMenuCommandInteraction
 } from 'discord.js'
@@ -168,13 +167,6 @@ function buildInteraction(client: Client, raw: RawInteraction): Interaction {
     ) => Interaction
     return new Ctor(client, raw)
   }
-  if (type === 2 && (raw.data as { type?: number } | undefined)?.type === 4) {
-    const Ctor = PrimaryEntryPointCommandInteraction as unknown as new (
-      client: Client,
-      data: unknown
-    ) => Interaction
-    return new Ctor(client, raw)
-  }
   const Ctor = ChatInputCommandInteraction as unknown as new (
     client: Client,
     data: unknown
@@ -240,19 +232,6 @@ export function commandJSON(
     locale: 'en-US',
     entitlements: [],
     authorizing_integration_owners: {},
-    ...overrides
-  }
-}
-
-export function primaryEntryPointJSON(overrides: Partial<RawInteraction> = {}): RawInteraction {
-  return {
-    ...commandJSON('', {
-      data: {
-        id: '888888888888888899',
-        name: 'Launch',
-        type: 4
-      }
-    }),
     ...overrides
   }
 }

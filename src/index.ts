@@ -31,9 +31,8 @@ import { subcommand as blackjack } from './commands/blackjack.js'
 import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
-import { subcommand as activity } from './commands/activity.js'
 import { extraSubcommands } from './commands/more.js'
-import { closeActivityServer, startActivityServer } from './activity-server.js'
+import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
 
 const subcommands = new Collection<string, Subcommand>()
@@ -61,7 +60,6 @@ const commands = [
   memory,
   usage,
   chess,
-  activity,
   coin,
   dice,
   rps,
@@ -79,7 +77,6 @@ async function ensureDeployed(clientId: string, token: string) {
   const existing = (await rest.get(Routes.applicationCommands(clientId))) as Array<{
     name: string
     type: number
-    handler?: number | null
   }>
 
   if (areApplicationCommandsCurrent(existing)) {
@@ -113,10 +110,10 @@ client.once(Events.ClientReady, (c) => {
 
 client.on(Events.InteractionCreate, createHandler(subcommands))
 
-const activityServer = await startActivityServer()
-const address = activityServer.address()
+const webServer = await startWebServer()
+const address = webServer.address()
 console.log(
-  `activity server: ${typeof address === 'object' && address ? `${address.address}:${address.port}` : String(address)}`
+  `web server: ${typeof address === 'object' && address ? `${address.address}:${address.port}` : String(address)}`
 )
 
 let shuttingDown = false
@@ -125,7 +122,7 @@ async function shutdown(signal: string) {
   shuttingDown = true
   console.log(`shutdown: ${signal}`)
   client.destroy()
-  await closeActivityServer(activityServer)
+  await closeWebServer(webServer)
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -142,6 +139,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 try {
   await client.login(token)
 } catch (error) {
-  await closeActivityServer(activityServer)
+  await closeWebServer(webServer)
   throw error
 }

@@ -1,24 +1,24 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { closeActivityServer, startActivityServer } from '../activity-server.js'
+import { closeWebServer, startWebServer } from '../web-server.js'
 
 let server: Server | undefined
 
 afterEach(async () => {
   if (!server) return
-  await closeActivityServer(server)
+  await closeWebServer(server)
   server = undefined
 })
 
 async function startServer(): Promise<string> {
-  server = await startActivityServer({ host: '127.0.0.1', port: 0 })
+  server = await startWebServer({ host: '127.0.0.1', port: 0 })
   const address = server.address() as AddressInfo
   return `http://127.0.0.1:${address.port}`
 }
 
-describe('Activity web server', () => {
-  it('serves the responsive Hello World Activity page', async () => {
+describe('web server', () => {
+  it('serves the responsive Hello World page', async () => {
     const origin = await startServer()
     const response = await fetch(`${origin}/`)
     const html = await response.text()
@@ -56,9 +56,7 @@ describe('Activity web server', () => {
     const previousPort = process.env.PORT
     process.env.PORT = 'not-a-port'
     try {
-      await expect(startActivityServer()).rejects.toThrow(
-        'PORT must be an integer between 1 and 65535'
-      )
+      await expect(startWebServer()).rejects.toThrow('PORT must be an integer between 1 and 65535')
     } finally {
       if (previousPort === undefined) delete process.env.PORT
       else process.env.PORT = previousPort
