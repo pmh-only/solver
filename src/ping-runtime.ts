@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { createHmac, createCipheriv, randomBytes } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { createSocket } from 'node:dgram'
 import { isIP } from 'node:net'
 
@@ -71,6 +72,39 @@ function summarize(
   return { type, count, ms, error, note }
 }
 
+export function parseIcmpTimes(output: string): number[] {
+  return [...output.matchAll(/time([=<])([\d.]+)\s*ms/g)].map((match) => {
+    const value = Number.parseFloat(match[2])
+    return match[1] === '<' ? value / 2 : value
+  })
+}
+
+function icmpProbe(host: string, count: number): Promise<{ ms: number[]; error?: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      'ping',
+      ['-n', '-c', String(count), '-W', String(Math.ceil(TIMEOUT_MS / 1000)), '--', host],
+      {
+        env: { ...process.env, LC_ALL: 'C' },
+        timeout: (count - 1) * 1000 + TIMEOUT_MS + 1000
+      },
+      (error, stdout) => {
+        const ms = parseIcmpTimes(stdout)
+        if (!error || ms.length > 0) {
+          resolve({ ms, error: error?.message })
+          return
+        }
+
+        const message =
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+            ? 'icmp helper unavailable'
+            : error.message
+        resolve({ ms, error: message })
+      }
+    )
+  })
+}
+
 function requestOnce(url: URL, insecureTls = false): Promise<number> {
   const requestImpl = url.protocol === 'https:' ? httpsRequest : httpRequest
 
@@ -80,6 +114,8 @@ function requestOnce(url: URL, insecureTls = false): Promise<number> {
       url,
       {
         method: 'GET',
+        agent: false,
+        headers: { connection: 'close' },
         timeout: TIMEOUT_MS,
         rejectUnauthorized: insecureTls ? false : undefined,
         servername: isIP(url.hostname) ? undefined : url.hostname
@@ -273,14 +309,18 @@ async function runProbe(
   count: number,
   once: () => Promise<number>
 ): Promise<{ ms: number[]; error?: string }> {
-  const settled = await Promise.allSettled(Array.from({ length: count }, once))
-  const ms = settled
-    .filter((result): result is PromiseFulfilledResult<number> => result.status === 'fulfilled')
-    .map((result) => result.value)
-  const rejected = settled.find(
-    (result): result is PromiseRejectedResult => result.status === 'rejected'
-  )
-  return { ms, error: rejected?.reason instanceof Error ? rejected.reason.message : 'err' }
+  const ms: number[] = []
+  let error: string | undefined
+
+  for (let index = 0; index < count; index++) {
+    try {
+      ms.push(await once())
+    } catch (reason) {
+      error ??= reason instanceof Error ? reason.message : 'err'
+    }
+  }
+
+  return { ms, error }
 }
 
 export async function probePingTarget(request: PingProbeRequest): Promise<PingReport> {
@@ -297,7 +337,8 @@ export async function probePingTarget(request: PingProbeRequest): Promise<PingRe
 
   for (const type of request.types) {
     if (type === 'icmp') {
-      summaries.push(summarize(type, request.count, [], undefined, 'no icmp'))
+      const result = await icmpProbe(target.hostname, request.count)
+      summaries.push(summarize(type, request.count, result.ms, result.error))
       continue
     }
 
