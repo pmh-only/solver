@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@hyunbinseo/holidays-kr':
+        specifier: 5.2027.1
+        version: 5.2027.1
       '@napi-rs/canvas':
         specifier: ^0.1.97
         version: 0.1.97
@@ -255,6 +258,10 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@hyunbinseo/holidays-kr@5.2027.1':
+    resolution: {integrity: sha512-oKgJSH3SRCa0J+Mf/0LgN+QefHPIYpy3zArKLWLH6jHYTf6KMOPjIhIyEShl1i++JkfHMzOLyVtDGZD+Q1zQYA==}
+    engines: {node: '>=18'}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1439,6 +1446,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.27.7':
     optional: true
+
+  '@hyunbinseo/holidays-kr@5.2027.1': {}
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
