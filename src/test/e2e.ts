@@ -239,23 +239,14 @@ export function commandJSON(
 /** Minimal raw JSON for the dedicated /a command. */
 export function agentCommandJSON(
   prompt: string,
-  options: { model?: string; public?: boolean } = {},
   overrides: Partial<RawInteraction> = {}
 ): RawInteraction {
-  const commandOptions: Array<{ name: string; value: string | boolean; type: number }> = [
-    { name: 'prompt', value: prompt, type: 3 }
-  ]
-  if (options.model) commandOptions.push({ name: 'model', value: options.model, type: 3 })
-  if (options.public !== undefined) {
-    commandOptions.push({ name: 'public', value: options.public, type: 5 })
-  }
-
   return commandJSON('', {
     data: {
       id: '888888888888888887',
       name: 'a',
       type: 1,
-      options: commandOptions
+      options: [{ name: 'prompt', value: prompt, type: 3 }]
     },
     ...overrides
   })

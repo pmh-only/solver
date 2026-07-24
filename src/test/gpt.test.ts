@@ -45,36 +45,26 @@ afterEach(() => {
 })
 
 describe('/a', () => {
-  it('is registered as a dedicated command with prompt, model, and public options', () => {
+  it('is registered as a dedicated command with only a prompt option', () => {
     const command = agentCommand.toJSON()
 
     expect(command.name).toBe('a')
-    expect(command.options?.map((option) => option.name)).toEqual(['prompt', 'model', 'public'])
+    expect(command.options?.map((option) => option.name)).toEqual(['prompt'])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
   })
 
-  it('defers then edits with generated content', async () => {
+  it('always responds publicly without a footer', async () => {
     const calls = await dispatch(agentCommandJSON('explain recursion'), subs)
     const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeTruthy()
+    expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeFalsy()
     const edit = getEdit(calls)
     expect(edit).not.toBeNull()
     expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('`/a explain recursion`')
     expect(modelMock).toHaveBeenCalledWith(
       expect.objectContaining({ api: 'responses', apiKey: 'test-key', modelId: 'gpt-5.4' })
     )
-  })
-
-  it('uses the selected model and defers publicly', async () => {
-    const calls = await dispatch(
-      agentCommandJSON('hello', { model: 'gpt-5.4-mini', public: true }),
-      subs
-    )
-    const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
-    expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
-    expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeFalsy()
-    expect(modelMock).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'gpt-5.4-mini' }))
   })
 
   it('edits reply when no API key', async () => {

@@ -59,7 +59,6 @@ type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 
 interface GptContext {
   prompt: string
-  args: string
   pub: boolean
   model: ModelId
   effort: EffortLevel
@@ -97,7 +96,6 @@ function tokenFromId(customId: string, baseId: string): string | null {
 function buildGptComponents(
   prompt: string,
   content: string,
-  args: string,
   pub: boolean,
   token: string,
   model: string,
@@ -113,7 +111,6 @@ function buildGptComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
     )
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(displayContent))
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`-# \`${args}\``))
 
   const modelRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
@@ -227,7 +224,6 @@ async function runGptStream(
       buildGptComponents(
         ctx.prompt,
         'no OPENAI_API_KEY',
-        ctx.args,
         ctx.pub,
         token,
         ctx.model,
@@ -261,7 +257,6 @@ async function runGptStream(
         buildGptComponents(
           ctx.prompt,
           content,
-          ctx.args,
           ctx.pub,
           token,
           ctx.model,
@@ -360,7 +355,6 @@ async function runGptStream(
       buildGptComponents(
         ctx.prompt,
         `error: ${errMsg}`,
-        ctx.args,
         ctx.pub,
         token,
         ctx.model,
@@ -409,7 +403,6 @@ async function handleGptSelect(
     buildGptComponents(
       updatedCtx.prompt,
       '',
-      updatedCtx.args,
       updatedCtx.pub,
       token,
       updatedCtx.model,
@@ -450,16 +443,11 @@ export function isGptSelectId(customId: string): boolean {
 
 export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const prompt = interaction.options.getString('prompt', true).trim()
-  const modelOption = interaction.options.getString('model')
-  const model = GPT_MODELS.some((candidate) => candidate.id === modelOption)
-    ? (modelOption as ModelId)
-    : DEFAULT_MODEL
-  const pub = interaction.options.getBoolean('public') ?? false
-  const args = `/${AGENT_COMMAND_NAME} ${prompt}`
+  const model = DEFAULT_MODEL
+  const pub = true
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt,
-    args,
     pub,
     model,
     effort: 'medium',
@@ -467,13 +455,12 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   }
   storeGptContext(token, ctx)
 
-  await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
+  await interaction.deferReply()
 
   await interaction.editReply({
     components: buildGptComponents(
       prompt,
       '',
-      args,
       pub,
       token,
       model,

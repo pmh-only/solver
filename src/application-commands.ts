@@ -10,7 +10,7 @@ import {
   MESSAGE_THREAD_START_COMMAND_NAME
 } from './commands/message-render.js'
 import { MESSAGE_STORE_COMMAND_NAME } from './commands/message-store.js'
-import { AGENT_COMMAND_NAME, GPT_MODELS } from './commands/gpt.js'
+import { AGENT_COMMAND_NAME } from './commands/gpt.js'
 
 export const solverCommand = new SlashCommandBuilder()
   .setName('c')
@@ -24,15 +24,6 @@ export const agentCommand = new SlashCommandBuilder()
   .setDescription('ask an AI agent')
   .addStringOption((option) =>
     option.setName('prompt').setDescription('what to ask').setRequired(true)
-  )
-  .addStringOption((option) =>
-    option
-      .setName('model')
-      .setDescription('OpenAI model to use')
-      .addChoices(...GPT_MODELS.map((model) => ({ name: model.label, value: model.id })))
-  )
-  .addBooleanOption((option) =>
-    option.setName('public').setDescription('show the response publicly')
   )
 
 export const applicationCommands = [
