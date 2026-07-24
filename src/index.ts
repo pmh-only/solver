@@ -22,7 +22,6 @@ import { subcommand as sh } from './commands/sh.js'
 import { subcommand as mail } from './commands/mail.js'
 import { subcommand as list } from './commands/list.js'
 import { createPubtabSubcommand } from './commands/pubtab.js'
-import { subcommand as gpt } from './commands/gpt.js'
 import { subcommand as crawl } from './commands/crawl.js'
 import { subcommand as coin } from './commands/coin.js'
 import { subcommand as dice } from './commands/dice.js'
@@ -57,7 +56,6 @@ const commands = [
   run,
   sh,
   mail,
-  gpt,
   crawl,
   hilo,
   quiz,

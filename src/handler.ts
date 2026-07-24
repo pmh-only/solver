@@ -72,6 +72,8 @@ import {
   GPT_EFFORT_SELECT_ID,
   GPT_MODEL_SELECT_ID,
   GPT_VERBOSITY_SELECT_ID,
+  AGENT_COMMAND_NAME,
+  handleAgentCommand,
   handleGptEffortSelect,
   handleGptModelSelect,
   handleGptVerbositySelect
@@ -637,6 +639,10 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (!interaction.isChatInputCommand()) return
+      if (interaction.commandName === AGENT_COMMAND_NAME) {
+        await handleAgentCommand(interaction)
+        return
+      }
       if (interaction.commandName !== 'c') return
 
       await runCommandInput(interaction, subcommands, interaction.options.getString('_', true))

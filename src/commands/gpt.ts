@@ -10,24 +10,23 @@ import {
   StringSelectMenuOptionBuilder,
   TextDisplayBuilder
 } from 'discord.js'
-import type { StringSelectMenuInteraction } from 'discord.js'
-import OpenAI from 'openai'
-import type { EasyInputMessage } from 'openai/resources/responses/responses.js'
+import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
+import { Agent } from '@strands-agents/sdk'
+import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { randomUUID } from 'node:crypto'
-import type { Subcommand } from '../types.js'
-import type { Flags } from '../flags.js'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
 export const GPT_VERBOSITY_SELECT_ID = 'gpt-verbosity'
+export const AGENT_COMMAND_NAME = 'a'
 
 const GPT_COLOR = 0x10a37f
 const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
 
-const GPT_MODELS = [
+export const GPT_MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4' },
   { id: 'gpt-5.4-pro', label: 'GPT-5.4 pro' },
   { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
@@ -252,8 +251,6 @@ async function runGptStream(
   const controller = new AbortController()
   activeStreams.set(token, controller)
 
-  const openai = new OpenAI({ apiKey })
-
   let currentPage = 1
   let currentPageContent = ''
   let lastEditTime = 0
@@ -306,26 +303,31 @@ async function runGptStream(
           ? 'Be thorough and comprehensive. Explain in detail.'
           : null
 
-    const input: string | EasyInputMessage[] = systemInstruction
-      ? [
-          { role: 'system' as const, content: systemInstruction },
-          { role: 'user' as const, content: ctx.prompt }
-        ]
-      : ctx.prompt
+    const model = new OpenAIModel({
+      api: 'responses',
+      modelId: ctx.model,
+      apiKey,
+      maxTokens: 4096,
+      ...(ctx.effort !== 'none' ? { params: { reasoning: { effort: ctx.effort } } } : {})
+    })
+    const agent = new Agent({
+      model,
+      systemPrompt: systemInstruction ?? undefined,
+      printer: false
+    })
 
-    const streamParams: Parameters<typeof openai.responses.stream>[0] = {
-      model: ctx.model,
-      input,
-      ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort } } : {})
-    }
-
-    const stream = openai.responses.stream(streamParams, { signal: controller.signal })
-
-    for await (const event of stream) {
+    for await (const event of agent.stream(ctx.prompt, {
+      cancelSignal: controller.signal,
+      limits: { turns: 1, outputTokens: 4096 }
+    })) {
       if (controller.signal.aborted) break
 
-      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-        currentPageContent += event.delta
+      if (
+        event.type === 'modelStreamUpdateEvent' &&
+        event.event.type === 'modelContentBlockDeltaEvent' &&
+        event.event.delta.type === 'textDelta'
+      ) {
+        currentPageContent += event.event.delta.text
 
         if (currentPageContent.length > PAGE_LIMIT) {
           const overflow = currentPageContent.slice(PAGE_LIMIT)
@@ -446,65 +448,42 @@ export function isGptSelectId(customId: string): boolean {
   )
 }
 
-export const subcommand: Subcommand = {
-  name: 'gpt',
-  description: 'ask gpt',
-  usage: 'gpt <prompt> [--model <model>] [--pub]',
-  examples: [
-    'gpt what is 2+2',
-    'gpt explain recursion',
-    'gpt write a haiku about code --pub',
-    'gpt translate hello to japanese'
-  ],
+export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const prompt = interaction.options.getString('prompt', true).trim()
+  const modelOption = interaction.options.getString('model')
+  const model = GPT_MODELS.some((candidate) => candidate.id === modelOption)
+    ? (modelOption as ModelId)
+    : DEFAULT_MODEL
+  const pub = interaction.options.getBoolean('public') ?? false
+  const args = `/${AGENT_COMMAND_NAME} ${prompt}`
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  const ctx: GptContext = {
+    prompt,
+    args,
+    pub,
+    model,
+    effort: 'medium',
+    verbosity: 'normal'
+  }
+  storeGptContext(token, ctx)
 
-  flags: {
-    model: { description: 'model to use', value: 'string', alias: 'm' }
-  },
+  await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
 
-  async execute(interaction, args, flags: Flags) {
-    const prompt = args.replace(/^\S+\s*/, '').trim()
-
-    if (!prompt) {
-      await interaction.reply(container(args, flags, 'usage: gpt <prompt>'))
-      return
-    }
-
-    const pub = flags.has('pub')
-    const modelFlag = flags.get('model')
-    const model =
-      typeof modelFlag === 'string' && GPT_MODELS.some((m) => m.id === modelFlag)
-        ? (modelFlag as ModelId)
-        : DEFAULT_MODEL
-
-    const token = randomUUID().replace(/-/g, '').slice(0, 16)
-    const ctx: GptContext = {
+  await interaction.editReply({
+    components: buildGptComponents(
       prompt,
+      '',
       args,
       pub,
+      token,
       model,
-      effort: 'medium',
-      verbosity: 'normal'
-    }
-    storeGptContext(token, ctx)
+      'medium',
+      'normal',
+      true
+    ) as never,
+    flags: MessageFlags.IsComponentsV2
+  })
 
-    await interaction.deferReply({ flags: pub ? undefined : MessageFlags.Ephemeral })
-
-    await interaction.editReply({
-      components: buildGptComponents(
-        prompt,
-        '',
-        args,
-        pub,
-        token,
-        model,
-        'medium',
-        'normal',
-        true
-      ) as never,
-      flags: MessageFlags.IsComponentsV2
-    })
-
-    const callbacks = makeCallbacks(interaction, pub)
-    await runGptStream(callbacks, ctx, token)
-  }
+  const callbacks = makeCallbacks(interaction, pub)
+  await runGptStream(callbacks, ctx, token)
 }
