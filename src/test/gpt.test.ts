@@ -34,6 +34,16 @@ vi.mock('@strands-agents/sdk', () => ({
           event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } }
         }
       }
+      yield {
+        type: 'agentResultEvent',
+        result: {
+          metrics: {
+            latestAgentInvocation: {
+              usage: { inputTokens: 1234, outputTokens: 56, totalTokens: 1290 }
+            }
+          }
+        }
+      }
     }
   }
 }))
@@ -55,9 +65,23 @@ describe('/a', () => {
     const command = agentCommand.toJSON()
 
     expect(command.name).toBe('a')
-    expect(command.options?.map((option) => option.name)).toEqual(['prompt', 'session'])
+    expect(command.options?.map((option) => option.name)).toEqual([
+      'prompt',
+      'session',
+      'model',
+      'effort',
+      'tokens'
+    ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({ name: 'session', required: false })
+    expect(command.options?.[2]).toMatchObject({ name: 'model', required: false })
+    expect(command.options?.[3]).toMatchObject({ name: 'effort', required: false })
+    expect(command.options?.[4]).toMatchObject({
+      name: 'tokens',
+      required: false,
+      min_value: 256,
+      max_value: 16384
+    })
   })
 
   it('always responds publicly with the selected session in the footer', async () => {
@@ -69,9 +93,44 @@ describe('/a', () => {
     expect(edit).not.toBeNull()
     expect(JSON.stringify(calls)).toContain('hello world')
     expect(JSON.stringify(calls)).toContain('Session: default')
+    expect(JSON.stringify(calls)).toContain('Tokens used: 1,234 in / 56 out / 1,290 total')
+    expect(JSON.stringify(calls)).toContain(
+      'Model: gpt-5.4 | Reasoning effort: medium | Token limit: 4,096'
+    )
     expect(JSON.stringify(calls)).not.toContain('`/a explain recursion`')
     expect(modelMock).toHaveBeenCalledWith(
       expect.objectContaining({ api: 'responses', apiKey: 'test-key', modelId: 'gpt-5.4' })
+    )
+  })
+
+  it('persists model, reasoning effort, and token limit per session', async () => {
+    const configured = await dispatch(
+      agentCommandJSON('configure', {}, 'work', {
+        model: 'gpt-5.4-mini',
+        effort: 'high',
+        tokens: 2048
+      }),
+      subs
+    )
+    const continued = await dispatch(agentCommandJSON('continue', {}, 'work'), subs)
+    const otherSession = await dispatch(agentCommandJSON('separate', {}, 'other'), subs)
+
+    expect(JSON.stringify(configured)).toContain(
+      'Model: gpt-5.4-mini | Reasoning effort: high | Token limit: 2,048'
+    )
+    expect(JSON.stringify(continued)).toContain(
+      'Model: gpt-5.4-mini | Reasoning effort: high | Token limit: 2,048'
+    )
+    expect(JSON.stringify(otherSession)).toContain(
+      'Model: gpt-5.4 | Reasoning effort: medium | Token limit: 4,096'
+    )
+    expect(modelMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        modelId: 'gpt-5.4-mini',
+        maxTokens: 2048,
+        params: { reasoning: { effort: 'high' } }
+      })
     )
   })
 

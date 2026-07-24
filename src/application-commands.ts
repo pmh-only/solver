@@ -10,7 +10,7 @@ import {
   MESSAGE_THREAD_START_COMMAND_NAME
 } from './commands/message-render.js'
 import { MESSAGE_STORE_COMMAND_NAME } from './commands/message-store.js'
-import { AGENT_COMMAND_NAME } from './commands/gpt.js'
+import { AGENT_COMMAND_NAME, GPT_EFFORT_OPTIONS, GPT_MODELS } from './commands/gpt.js'
 
 export const solverCommand = new SlashCommandBuilder()
   .setName('c')
@@ -27,6 +27,25 @@ export const agentCommand = new SlashCommandBuilder()
   )
   .addStringOption((option) =>
     option.setName('session').setDescription('conversation session').setMaxLength(100)
+  )
+  .addStringOption((option) =>
+    option
+      .setName('model')
+      .setDescription('model for this session')
+      .addChoices(...GPT_MODELS.map(({ id, label }) => ({ name: label, value: id })))
+  )
+  .addStringOption((option) =>
+    option
+      .setName('effort')
+      .setDescription('reasoning effort for this session')
+      .addChoices(...GPT_EFFORT_OPTIONS.map(({ id, label }) => ({ name: label, value: id })))
+  )
+  .addIntegerOption((option) =>
+    option
+      .setName('tokens')
+      .setDescription('maximum output tokens for this session')
+      .setMinValue(256)
+      .setMaxValue(16384)
   )
 
 export const applicationCommands = [

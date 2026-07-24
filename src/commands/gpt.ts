@@ -13,6 +13,7 @@ import {
 } from 'discord.js'
 import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
 import { Agent, type MessageData } from '@strands-agents/sdk'
+import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { randomUUID } from 'node:crypto'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
@@ -26,6 +27,7 @@ export const AGENT_COMMAND_NAME = 'a'
 const GPT_COLOR = 0x10a37f
 const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
+const DEFAULT_MAX_TOKENS = 4096
 
 export const GPT_MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4' },
@@ -39,7 +41,7 @@ export const GPT_MODELS = [
 
 const DEFAULT_MODEL = 'gpt-5.4'
 
-const EFFORT_OPTIONS = [
+export const GPT_EFFORT_OPTIONS = [
   { id: 'none', label: 'None' },
   { id: 'minimal', label: 'Minimal' },
   { id: 'low', label: 'Low' },
@@ -55,7 +57,7 @@ const VERBOSITY_OPTIONS = [
 ] as const
 
 type ModelId = (typeof GPT_MODELS)[number]['id']
-type EffortLevel = (typeof EFFORT_OPTIONS)[number]['id']
+type EffortLevel = (typeof GPT_EFFORT_OPTIONS)[number]['id']
 type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 
 interface GptContext {
@@ -63,6 +65,7 @@ interface GptContext {
   pub: boolean
   model: ModelId
   effort: EffortLevel
+  maxTokens: number
   verbosity: VerbosityLevel
   userId: string
   sessionName: string
@@ -74,9 +77,16 @@ interface ConversationTurn {
   content: string
 }
 
+interface GptSessionSettings {
+  model: ModelId
+  effort: EffortLevel
+  maxTokens: number
+}
+
 const GPT_CONTEXT_KEY = 'gpt-ctx'
 const GPT_SESSION_KEY = 'gpt-session'
 const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
+const GPT_SETTINGS_KEY = 'gpt-settings'
 const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
 const followUpIds = new Map<string, string[]>()
@@ -110,6 +120,48 @@ function selectedSessionKey(userId: string): string {
 
 function sessionKey(userId: string, sessionName: string): string {
   return `${GPT_SESSION_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function settingsKey(userId: string, sessionName: string): string {
+  return `${GPT_SETTINGS_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function loadSessionSettings(userId: string, sessionName: string): GptSessionSettings {
+  const defaults: GptSessionSettings = {
+    model: DEFAULT_MODEL,
+    effort: 'medium',
+    maxTokens: DEFAULT_MAX_TOKENS
+  }
+  const stored = getStoredValue(settingsKey(userId, sessionName))
+  if (!stored) return defaults
+
+  try {
+    const settings = JSON.parse(stored) as Partial<GptSessionSettings>
+    const model = settings.model
+    const effort = settings.effort
+    return {
+      model: model && GPT_MODELS.some(({ id }) => id === model) ? model : defaults.model,
+      effort:
+        effort && GPT_EFFORT_OPTIONS.some(({ id }) => id === effort) ? effort : defaults.effort,
+      maxTokens:
+        Number.isInteger(settings.maxTokens) &&
+        settings.maxTokens !== undefined &&
+        settings.maxTokens >= 256 &&
+        settings.maxTokens <= 16384
+          ? settings.maxTokens
+          : defaults.maxTokens
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function storeSessionSettings(
+  userId: string,
+  sessionName: string,
+  settings: GptSessionSettings
+): void {
+  setStoredValue(settingsKey(userId, sessionName), JSON.stringify(settings))
 }
 
 function loadConversation(userId: string, sessionName: string): ConversationTurn[] {
@@ -176,6 +228,13 @@ function footerSessionName(sessionName: string): string {
   return escapeMarkdown(sessionName.replace(/\s+/g, ' '))
 }
 
+function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usage?: Usage): string {
+  const tokens = usage
+    ? `${usage.inputTokens.toLocaleString('en-US')} in / ${usage.outputTokens.toLocaleString('en-US')} out / ${usage.totalTokens.toLocaleString('en-US')} total`
+    : 'unavailable'
+  return `-# Tokens used: ${tokens} | Model: ${model} | Reasoning effort: ${effort} | Token limit: ${maxTokens.toLocaleString('en-US')}`
+}
+
 function tokenFromId(customId: string, baseId: string): string | null {
   const prefix = `${baseId}:`
   if (!customId.startsWith(prefix)) return null
@@ -190,8 +249,11 @@ function buildGptComponents(
   token: string,
   model: string,
   effort: EffortLevel,
+  maxTokens: number,
   verbosity: VerbosityLevel,
-  streaming: boolean
+  streaming: boolean,
+  usage?: Usage,
+  showStats = false
 ): GptComponent[] {
   const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
@@ -207,6 +269,12 @@ function buildGptComponents(
     .addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`-# Session: ${footerSessionName(sessionName)}`)
     )
+
+  if (showStats) {
+    ctr.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(usageFooter(model, effort, maxTokens, usage))
+    )
+  }
 
   const modelRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
@@ -237,7 +305,7 @@ function buildGptComponents(
           .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
           .setPlaceholder(`Effort: ${effort}`)
           .addOptions(
-            EFFORT_OPTIONS.map((e) =>
+            GPT_EFFORT_OPTIONS.map((e) =>
               new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
             )
           )
@@ -258,14 +326,25 @@ function buildGptComponents(
   return components
 }
 
-function buildFollowUpComponents(content: string, streaming: boolean): GptComponent[] {
+function buildFollowUpComponents(
+  content: string,
+  streaming: boolean,
+  stats?: string
+): GptComponent[] {
   const displayContent = streaming ? `${content}\n-# ▌` : content
+  const ctr = new ContainerBuilder()
+    .setAccentColor(GPT_COLOR)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(displayContent))
 
-  return [
-    new ContainerBuilder()
-      .setAccentColor(GPT_COLOR)
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent(displayContent))
-  ]
+  if (stats) {
+    ctr
+      .addSeparatorComponents(
+        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(false)
+      )
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(stats))
+  }
+
+  return [ctr]
 }
 
 interface StreamCallbacks {
@@ -325,8 +404,11 @@ async function runGptStream(
         token,
         ctx.model,
         ctx.effort,
+        ctx.maxTokens,
         ctx.verbosity,
-        false
+        false,
+        undefined,
+        true
       )
     )
     return
@@ -348,8 +430,9 @@ async function runGptStream(
   let currentPageContent = ''
   let responseContent = ''
   let lastEditTime = 0
+  let usage: Usage | undefined
 
-  const editCurrentPage = async (content: string, streaming: boolean) => {
+  const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
     if (currentPage === 1) {
       await callbacks.editMain(
         buildGptComponents(
@@ -360,15 +443,25 @@ async function runGptStream(
           token,
           ctx.model,
           ctx.effort,
+          ctx.maxTokens,
           ctx.verbosity,
-          streaming
+          streaming,
+          complete ? usage : undefined,
+          complete
         )
       )
     } else {
       const pageIds = followUpIds.get(token) ?? []
       const pageId = pageIds[currentPage - 2]
       if (pageId) {
-        await callbacks.editMessage(pageId, buildFollowUpComponents(content, streaming))
+        await callbacks.editMessage(
+          pageId,
+          buildFollowUpComponents(
+            content,
+            streaming,
+            complete ? usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage) : undefined
+          )
+        )
       }
     }
   }
@@ -401,7 +494,7 @@ async function runGptStream(
       api: 'responses',
       modelId: ctx.model,
       apiKey,
-      maxTokens: 4096,
+      maxTokens: ctx.maxTokens,
       ...(ctx.effort !== 'none' ? { params: { reasoning: { effort: ctx.effort } } } : {})
     })
     const agent = new Agent({
@@ -413,7 +506,7 @@ async function runGptStream(
 
     for await (const event of agent.stream(ctx.prompt, {
       cancelSignal: controller.signal,
-      limits: { turns: 1, outputTokens: 4096 }
+      limits: { turns: 1, outputTokens: ctx.maxTokens }
     })) {
       if (controller.signal.aborted) break
 
@@ -438,11 +531,14 @@ async function runGptStream(
           lastEditTime = now
         }
       }
+      if (event.type === 'agentResultEvent') {
+        usage = event.result.metrics?.latestAgentInvocation?.usage
+      }
     }
 
     if (!controller.signal.aborted) {
       const response = responseContent || '(no response)'
-      await editCurrentPage(currentPageContent || response, false)
+      await editCurrentPage(currentPageContent || response, false, true)
       storeConversation(ctx, response)
     }
   } catch (error) {
@@ -463,8 +559,11 @@ async function runGptStream(
         token,
         ctx.model,
         ctx.effort,
+        ctx.maxTokens,
         ctx.verbosity,
-        false
+        false,
+        undefined,
+        true
       )
     )
   } finally {
@@ -512,6 +611,7 @@ async function handleGptSelect(
       token,
       updatedCtx.model,
       updatedCtx.effort,
+      updatedCtx.maxTokens,
       updatedCtx.verbosity,
       true
     )
@@ -560,14 +660,24 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   setStoredValue(selectedSessionKey(interaction.user.id), sessionName)
   loadConversation(interaction.user.id, sessionName)
 
-  const model = DEFAULT_MODEL
+  const storedSettings = loadSessionSettings(interaction.user.id, sessionName)
+  const requestedModel = interaction.options.getString('model') as ModelId | null
+  const requestedEffort = interaction.options.getString('effort') as EffortLevel | null
+  const requestedMaxTokens = interaction.options.getInteger('tokens')
+  const settings: GptSessionSettings = {
+    model: requestedModel ?? storedSettings.model,
+    effort: requestedEffort ?? storedSettings.effort,
+    maxTokens: requestedMaxTokens ?? storedSettings.maxTokens
+  }
+  storeSessionSettings(interaction.user.id, sessionName, settings)
   const pub = true
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt,
     pub,
-    model,
-    effort: 'medium',
+    model: settings.model,
+    effort: settings.effort,
+    maxTokens: settings.maxTokens,
     verbosity: 'normal',
     userId: interaction.user.id,
     sessionName,
@@ -583,8 +693,9 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
       sessionName,
       pub,
       token,
-      model,
-      'medium',
+      settings.model,
+      settings.effort,
+      settings.maxTokens,
       'normal',
       true
     ) as never,

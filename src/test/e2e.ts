@@ -240,7 +240,8 @@ export function commandJSON(
 export function agentCommandJSON(
   prompt: string,
   overrides: Partial<RawInteraction> = {},
-  session?: string
+  session?: string,
+  settings: { model?: string; effort?: string; tokens?: number } = {}
 ): RawInteraction {
   return commandJSON('', {
     data: {
@@ -249,7 +250,10 @@ export function agentCommandJSON(
       type: 1,
       options: [
         { name: 'prompt', value: prompt, type: 3 },
-        ...(session ? [{ name: 'session', value: session, type: 3 }] : [])
+        ...(session ? [{ name: 'session', value: session, type: 3 }] : []),
+        ...(settings.model ? [{ name: 'model', value: settings.model, type: 3 }] : []),
+        ...(settings.effort ? [{ name: 'effort', value: settings.effort, type: 3 }] : []),
+        ...(settings.tokens ? [{ name: 'tokens', value: settings.tokens, type: 4 }] : [])
       ]
     },
     ...overrides

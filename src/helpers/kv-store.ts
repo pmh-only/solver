@@ -14,6 +14,7 @@ const INTERNAL_KEY_PREFIXES = [
   'command-input:',
   'constrained-command:',
   'gpt-ctx:',
+  'gpt-settings:',
   'gpt-session:',
   'gpt-session-selected:',
   'message-input:',
