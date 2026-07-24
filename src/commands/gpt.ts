@@ -12,10 +12,12 @@ import {
   TextDisplayBuilder
 } from 'discord.js'
 import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
-import { Agent, type MessageData } from '@strands-agents/sdk'
+import { Agent, McpClient, type MessageData } from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
@@ -28,6 +30,9 @@ const GPT_COLOR = 0x10a37f
 const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
 const DEFAULT_MAX_TOKENS = 4096
+const SPOTIFY_MCP_PATH = fileURLToPath(
+  new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
+)
 
 export const GPT_MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4' },
@@ -431,6 +436,7 @@ async function runGptStream(
   let responseContent = ''
   let lastEditTime = 0
   let usage: Usage | undefined
+  let spotifyMcp: McpClient | undefined
 
   const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
     if (currentPage === 1) {
@@ -497,16 +503,26 @@ async function runGptStream(
       maxTokens: ctx.maxTokens,
       ...(ctx.effort !== 'none' ? { params: { reasoning: { effort: ctx.effort } } } : {})
     })
+    if (process.env.SPOTIFY_CLIENT_ID) {
+      spotifyMcp = new McpClient({
+        applicationName: 'solver /a',
+        transport: new StdioClientTransport({
+          command: process.execPath,
+          args: [SPOTIFY_MCP_PATH]
+        })
+      })
+    }
     const agent = new Agent({
       model,
       messages: agentMessages(ctx.history),
       systemPrompt: systemInstruction ?? undefined,
+      tools: spotifyMcp ? [spotifyMcp] : undefined,
       printer: false
     })
 
     for await (const event of agent.stream(ctx.prompt, {
       cancelSignal: controller.signal,
-      limits: { turns: 1, outputTokens: ctx.maxTokens }
+      limits: { turns: 8, outputTokens: ctx.maxTokens }
     })) {
       if (controller.signal.aborted) break
 
@@ -567,6 +583,7 @@ async function runGptStream(
       )
     )
   } finally {
+    await spotifyMcp?.disconnect().catch(() => {})
     activeStreams.delete(token)
   }
 }

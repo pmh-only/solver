@@ -11,7 +11,23 @@ import {
   makeSubcommands
 } from './e2e.js'
 
-const { agentMock, modelMock } = vi.hoisted(() => ({ agentMock: vi.fn(), modelMock: vi.fn() }))
+const { agentMock, disconnectMock, mcpClientMock, modelMock, streamMock, transportMock } =
+  vi.hoisted(() => ({
+    agentMock: vi.fn(),
+    disconnectMock: vi.fn().mockResolvedValue(undefined),
+    mcpClientMock: vi.fn(),
+    modelMock: vi.fn(),
+    streamMock: vi.fn(),
+    transportMock: vi.fn()
+  }))
+
+vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+  StdioClientTransport: class MockStdioClientTransport {
+    constructor(options: unknown) {
+      transportMock(options)
+    }
+  }
+}))
 
 vi.mock('@strands-agents/sdk/models/openai', () => ({
   OpenAIModel: class MockOpenAIModel {
@@ -22,12 +38,20 @@ vi.mock('@strands-agents/sdk/models/openai', () => ({
 }))
 
 vi.mock('@strands-agents/sdk', () => ({
+  McpClient: class MockMcpClient {
+    disconnect = disconnectMock
+
+    constructor(options: unknown) {
+      mcpClientMock(options)
+    }
+  },
   Agent: class MockAgent {
     constructor(options: unknown) {
       agentMock(options)
     }
 
-    async *stream() {
+    async *stream(prompt: string, options: unknown) {
+      streamMock(prompt, options)
       for (const text of ['hello', ' world']) {
         yield {
           type: 'modelStreamUpdateEvent',
@@ -57,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.OPENAI_API_KEY
+  delete process.env.SPOTIFY_CLIENT_ID
   vi.clearAllMocks()
 })
 
@@ -101,6 +126,26 @@ describe('/a', () => {
     expect(modelMock).toHaveBeenCalledWith(
       expect.objectContaining({ api: 'responses', apiKey: 'test-key', modelId: 'gpt-5.4' })
     )
+    expect(streamMock).toHaveBeenCalledWith(
+      'explain recursion',
+      expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
+    )
+  })
+
+  it('gives the agent Spotify MCP tools when Spotify is configured', async () => {
+    process.env.SPOTIFY_CLIENT_ID = 'spotify-client-id'
+
+    await dispatch(agentCommandJSON('play my discovery mix'), subs)
+
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [expect.stringMatching(/node_modules\/spotify-mcp\/dist\/index\.js$/)]
+    })
+    expect(mcpClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ applicationName: 'solver /a' })
+    )
+    expect(agentMock).toHaveBeenCalledWith(expect.objectContaining({ tools: [expect.anything()] }))
+    expect(disconnectMock).toHaveBeenCalledOnce()
   })
 
   it('persists model, reasoning effort, and token limit per session', async () => {
