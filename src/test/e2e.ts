@@ -239,14 +239,18 @@ export function commandJSON(
 /** Minimal raw JSON for the dedicated /a command. */
 export function agentCommandJSON(
   prompt: string,
-  overrides: Partial<RawInteraction> = {}
+  overrides: Partial<RawInteraction> = {},
+  session?: string
 ): RawInteraction {
   return commandJSON('', {
     data: {
       id: '888888888888888887',
       name: 'a',
       type: 1,
-      options: [{ name: 'prompt', value: prompt, type: 3 }]
+      options: [
+        { name: 'prompt', value: prompt, type: 3 },
+        ...(session ? [{ name: 'session', value: session, type: 3 }] : [])
+      ]
     },
     ...overrides
   })

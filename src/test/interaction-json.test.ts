@@ -34,7 +34,7 @@ describe('interaction json commands', () => {
 
   it('redeploys when stale application commands need to be removed', () => {
     const current = applicationCommands.map((command) => ({
-      name: command.name,
+      ...command,
       type: command.type ?? ApplicationCommandType.ChatInput
     }))
 
@@ -45,6 +45,24 @@ describe('interaction json commands', () => {
         { name: 'obsolete', type: ApplicationCommandType.ChatInput }
       ])
     ).toBe(false)
+  })
+
+  it('redeploys legacy /a and /c command formats', () => {
+    const current = applicationCommands.map((command) => ({
+      ...command,
+      type: command.type ?? ApplicationCommandType.ChatInput
+    }))
+    const legacyAgent = current.map((command) =>
+      command.name === 'a' && 'options' in command
+        ? { ...command, options: command.options?.slice(0, 1) }
+        : command
+    )
+    const legacySolver = current.map((command) =>
+      command.name === 'c' ? { ...command, options: [] } : command
+    )
+
+    expect(areApplicationCommandsCurrent(legacyAgent)).toBe(false)
+    expect(areApplicationCommandsCurrent(legacySolver)).toBe(false)
   })
 
   it('renders full user interaction json', async () => {

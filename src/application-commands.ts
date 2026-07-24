@@ -25,6 +25,9 @@ export const agentCommand = new SlashCommandBuilder()
   .addStringOption((option) =>
     option.setName('prompt').setDescription('what to ask').setRequired(true)
   )
+  .addStringOption((option) =>
+    option.setName('session').setDescription('conversation session').setMaxLength(100)
+  )
 
 export const applicationCommands = [
   {
@@ -82,15 +85,48 @@ export const applicationCommands = [
 ]
 
 export function areApplicationCommandsCurrent(
-  existing: Array<{ name: string; type: number }>
+  existing: Array<{
+    name: string
+    type: number
+    description?: string
+    options?: Array<{
+      name: string
+      type: number
+      description: string
+      required?: boolean
+      autocomplete?: boolean
+      max_length?: number
+    }>
+  }>
 ): boolean {
-  return (
-    existing.length === applicationCommands.length &&
-    applicationCommands.every((command) => {
-      const registered = existing.find(
-        (candidate) => candidate.name === command.name && candidate.type === command.type
-      )
-      return Boolean(registered)
-    })
-  )
+  if (existing.length !== applicationCommands.length) return false
+
+  return applicationCommands.every((command) => {
+    const type = command.type ?? ApplicationCommandType.ChatInput
+    const registered = existing.find(
+      (candidate) => candidate.name === command.name && candidate.type === type
+    )
+    if (!registered) return false
+
+    if (command.name !== 'a' && command.name !== 'c') return true
+
+    const desired = command as typeof registered
+    const registeredOptions = registered.options ?? []
+    const desiredOptions = desired.options ?? []
+    return (
+      registered.description === desired.description &&
+      registeredOptions.length === desiredOptions.length &&
+      desiredOptions.every((option, index) => {
+        const current = registeredOptions[index]
+        return (
+          current?.name === option.name &&
+          current.type === option.type &&
+          current.description === option.description &&
+          Boolean(current.required) === Boolean(option.required) &&
+          Boolean(current.autocomplete) === Boolean(option.autocomplete) &&
+          current.max_length === option.max_length
+        )
+      })
+    )
+  })
 }

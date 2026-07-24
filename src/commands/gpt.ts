@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  escapeMarkdown,
   MessageFlags,
   SeparatorBuilder,
   SeparatorSpacingSize,
@@ -11,11 +12,11 @@ import {
   TextDisplayBuilder
 } from 'discord.js'
 import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
-import { Agent } from '@strands-agents/sdk'
+import { Agent, type MessageData } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { randomUUID } from 'node:crypto'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
-import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
@@ -63,11 +64,23 @@ interface GptContext {
   model: ModelId
   effort: EffortLevel
   verbosity: VerbosityLevel
+  userId: string
+  sessionName: string
+  history: ConversationTurn[]
+}
+
+interface ConversationTurn {
+  role: 'user' | 'assistant'
+  content: string
 }
 
 const GPT_CONTEXT_KEY = 'gpt-ctx'
+const GPT_SESSION_KEY = 'gpt-session'
+const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
+const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
 const followUpIds = new Map<string, string[]>()
+const sessionQueues = new Map<string, Promise<void>>()
 
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
 
@@ -75,6 +88,10 @@ type GptComponent = ContainerBuilder | AnyRow
 
 function storeGptContext(token: string, ctx: GptContext) {
   setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify(ctx))
+}
+
+function deleteGptContext(token: string): void {
+  deleteStoredValue(`${GPT_CONTEXT_KEY}:${token}`)
 }
 
 function loadGptContext(token: string): GptContext | null {
@@ -87,6 +104,78 @@ function loadGptContext(token: string): GptContext | null {
   }
 }
 
+function selectedSessionKey(userId: string): string {
+  return `${GPT_SELECTED_SESSION_KEY}:${userId}`
+}
+
+function sessionKey(userId: string, sessionName: string): string {
+  return `${GPT_SESSION_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function loadConversation(userId: string, sessionName: string): ConversationTurn[] {
+  const key = sessionKey(userId, sessionName)
+  const stored = getStoredValue(key)
+  if (stored === undefined) {
+    setStoredValue(key, '[]')
+    return []
+  }
+
+  try {
+    const turns = JSON.parse(stored) as ConversationTurn[]
+    if (
+      !Array.isArray(turns) ||
+      !turns.every(
+        (turn) =>
+          (turn.role === 'user' || turn.role === 'assistant') && typeof turn.content === 'string'
+      )
+    ) {
+      return []
+    }
+    return turns
+  } catch {
+    return []
+  }
+}
+
+function storeConversation(ctx: GptContext, response: string): void {
+  setStoredValue(
+    sessionKey(ctx.userId, ctx.sessionName),
+    JSON.stringify([
+      ...ctx.history,
+      { role: 'user', content: ctx.prompt },
+      { role: 'assistant', content: response }
+    ])
+  )
+}
+
+function agentMessages(history: ConversationTurn[]): MessageData[] {
+  return history.map((turn) => ({
+    role: turn.role,
+    content: [{ text: turn.content }]
+  }))
+}
+
+async function runInSession(
+  userId: string,
+  sessionName: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  const key = sessionKey(userId, sessionName)
+  const previous = sessionQueues.get(key) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(operation)
+  sessionQueues.set(key, current)
+
+  try {
+    await current
+  } finally {
+    if (sessionQueues.get(key) === current) sessionQueues.delete(key)
+  }
+}
+
+function footerSessionName(sessionName: string): string {
+  return escapeMarkdown(sessionName.replace(/\s+/g, ' '))
+}
+
 function tokenFromId(customId: string, baseId: string): string | null {
   const prefix = `${baseId}:`
   if (!customId.startsWith(prefix)) return null
@@ -96,6 +185,7 @@ function tokenFromId(customId: string, baseId: string): string | null {
 function buildGptComponents(
   prompt: string,
   content: string,
+  sessionName: string,
   pub: boolean,
   token: string,
   model: string,
@@ -111,6 +201,12 @@ function buildGptComponents(
       new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
     )
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(displayContent))
+    .addSeparatorComponents(
+      new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(false)
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`-# Session: ${footerSessionName(sessionName)}`)
+    )
 
   const modelRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
@@ -224,6 +320,7 @@ async function runGptStream(
       buildGptComponents(
         ctx.prompt,
         'no OPENAI_API_KEY',
+        ctx.sessionName,
         ctx.pub,
         token,
         ctx.model,
@@ -249,6 +346,7 @@ async function runGptStream(
 
   let currentPage = 1
   let currentPageContent = ''
+  let responseContent = ''
   let lastEditTime = 0
 
   const editCurrentPage = async (content: string, streaming: boolean) => {
@@ -257,6 +355,7 @@ async function runGptStream(
         buildGptComponents(
           ctx.prompt,
           content,
+          ctx.sessionName,
           ctx.pub,
           token,
           ctx.model,
@@ -307,6 +406,7 @@ async function runGptStream(
     })
     const agent = new Agent({
       model,
+      messages: agentMessages(ctx.history),
       systemPrompt: systemInstruction ?? undefined,
       printer: false
     })
@@ -323,6 +423,7 @@ async function runGptStream(
         event.event.delta.type === 'textDelta'
       ) {
         currentPageContent += event.event.delta.text
+        responseContent += event.event.delta.text
 
         if (currentPageContent.length > PAGE_LIMIT) {
           const overflow = currentPageContent.slice(PAGE_LIMIT)
@@ -340,7 +441,9 @@ async function runGptStream(
     }
 
     if (!controller.signal.aborted) {
-      await editCurrentPage(currentPageContent || '(no response)', false)
+      const response = responseContent || '(no response)'
+      await editCurrentPage(currentPageContent || response, false)
+      storeConversation(ctx, response)
     }
   } catch (error) {
     if (
@@ -355,6 +458,7 @@ async function runGptStream(
       buildGptComponents(
         ctx.prompt,
         `error: ${errMsg}`,
+        ctx.sessionName,
         ctx.pub,
         token,
         ctx.model,
@@ -403,6 +507,7 @@ async function handleGptSelect(
     buildGptComponents(
       updatedCtx.prompt,
       '',
+      updatedCtx.sessionName,
       updatedCtx.pub,
       token,
       updatedCtx.model,
@@ -412,7 +517,11 @@ async function handleGptSelect(
     )
   )
 
-  await runGptStream(callbacks, updatedCtx, token)
+  try {
+    await runGptStream(callbacks, updatedCtx, token)
+  } finally {
+    deleteGptContext(token)
+  }
 }
 
 export async function handleGptModelSelect(
@@ -443,6 +552,14 @@ export function isGptSelectId(customId: string): boolean {
 
 export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const prompt = interaction.options.getString('prompt', true).trim()
+  const requestedSession = interaction.options.getString('session')?.trim()
+  const sessionName =
+    requestedSession ||
+    getStoredValue(selectedSessionKey(interaction.user.id)) ||
+    DEFAULT_SESSION_NAME
+  setStoredValue(selectedSessionKey(interaction.user.id), sessionName)
+  loadConversation(interaction.user.id, sessionName)
+
   const model = DEFAULT_MODEL
   const pub = true
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
@@ -451,9 +568,11 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     pub,
     model,
     effort: 'medium',
-    verbosity: 'normal'
+    verbosity: 'normal',
+    userId: interaction.user.id,
+    sessionName,
+    history: []
   }
-  storeGptContext(token, ctx)
 
   await interaction.deferReply()
 
@@ -461,6 +580,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     components: buildGptComponents(
       prompt,
       '',
+      sessionName,
       pub,
       token,
       model,
@@ -472,5 +592,13 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   })
 
   const callbacks = makeCallbacks(interaction, pub)
-  await runGptStream(callbacks, ctx, token)
+  await runInSession(interaction.user.id, sessionName, async () => {
+    ctx.history = loadConversation(interaction.user.id, sessionName)
+    storeGptContext(token, ctx)
+    try {
+      await runGptStream(callbacks, ctx, token)
+    } finally {
+      deleteGptContext(token)
+    }
+  })
 }

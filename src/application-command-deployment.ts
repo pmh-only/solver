@@ -7,6 +7,15 @@ export interface RegisteredApplicationCommand {
   id: string
   name: string
   type: number
+  description?: string
+  options?: Array<{
+    name: string
+    type: number
+    description: string
+    required?: boolean
+    autocomplete?: boolean
+    max_length?: number
+  }>
 }
 
 export function staleEntryPointCommands(
