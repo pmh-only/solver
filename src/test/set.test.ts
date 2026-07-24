@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { join } from 'node:path'
-import { subcommand as set } from '../commands/set.js'
+import { CONFIG_ENV_KEYS, subcommand as set } from '../commands/set.js'
 import { clearStoredValues, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues, reopenStoredValuesForTests } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
@@ -30,6 +30,26 @@ describe('set — command', () => {
 
     expect(getStoredValue('aaaa')).toBe('hello world')
   })
+
+  it.each(CONFIG_ENV_KEYS)(
+    'updates the %s environment configuration without persisting it',
+    async (key) => {
+      const previous = process.env[key]
+
+      try {
+        const calls = await dispatch(commandJSON(`set ${key} sensitive-value`), subs)
+        const response = JSON.stringify(getCallback(calls))
+
+        expect(process.env[key]).toBe('sensitive-value')
+        expect(getStoredValue(key)).toBeUndefined()
+        expect(response).toContain(`ok ${key}=[redacted]`)
+        expect(response).not.toContain('sensitive-value')
+      } finally {
+        if (previous === undefined) delete process.env[key]
+        else process.env[key] = previous
+      }
+    }
+  )
 
   it('does not overwrite internal state keys', async () => {
     setStoredValue('__chess-state:token', 'original')

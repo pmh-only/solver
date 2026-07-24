@@ -2,12 +2,33 @@ import type { Subcommand } from '../types.js'
 import {
   commandContainer,
   commandReferenceReply,
+  container,
   sendCommandReply,
   separator,
   summarySection,
   text
 } from '../components.js'
 import { isInternalStoredKey, setStoredValue } from '../helpers/kv-store.js'
+
+export const CONFIG_ENV_KEYS = [
+  'DISCORD_TOKEN',
+  'DISCORD_CLIENT_ID',
+  'ADMIN_USER_IDS',
+  'PORT',
+  'WEB_HOST',
+  'IMAP_HOST',
+  'IMAP_PORT',
+  'IMAP_SECURE',
+  'IMAP_USER',
+  'IMAP_PASS',
+  'IMAP_MAILBOX',
+  'KV_STORE_PATH',
+  'OPENAI_API_KEY',
+  'OPENAI_ADMIN_KEY',
+  'FIRECRAWL_API_KEY'
+] as const
+
+const configEnvKeys = new Set<string>(CONFIG_ENV_KEYS)
 
 function parseSetArgs(args: string): { key: string; value: string } | null {
   const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -48,17 +69,21 @@ export const subcommand: Subcommand = {
       return
     }
 
-    setStoredValue(parsed.key, parsed.value)
-    await sendCommandReply(
-      interaction,
-      commandContainer(
-        subcommand,
-        args,
-        flags,
-        summarySection('Stored value updated', [`Key \`${parsed.key}\` saved successfully`]),
-        separator(),
-        text(`**Result**\n\`ok ${parsed.key}=${parsed.value}\``)
-      )
-    )
+    const isConfigEnv = configEnvKeys.has(parsed.key)
+    if (isConfigEnv) process.env[parsed.key] = parsed.value
+    else setStoredValue(parsed.key, parsed.value)
+
+    const components = [
+      summarySection(isConfigEnv ? 'Environment updated' : 'Stored value updated', [
+        `Key \`${parsed.key}\` updated successfully`
+      ]),
+      separator(),
+      text(`**Result**\n\`ok ${parsed.key}=${isConfigEnv ? '[redacted]' : parsed.value}\``)
+    ]
+    const reply = isConfigEnv
+      ? container(`set ${parsed.key} [redacted]`, flags, ...components)
+      : commandContainer(subcommand, args, flags, ...components)
+
+    await sendCommandReply(interaction, reply)
   }
 }
