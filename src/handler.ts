@@ -74,11 +74,11 @@ import {
   GPT_VERBOSITY_SELECT_ID,
   AGENT_COMMAND_NAME,
   handleAgentCommand,
-  handleGptActionButton,
+  handleGptActionComponent,
   handleGptEffortSelect,
   handleGptModelSelect,
   handleGptVerbositySelect,
-  isGptActionButtonId
+  isGptActionComponentId
 } from './commands/gpt.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
@@ -136,7 +136,7 @@ function hasComponentsV2Payload(components: readonly { toJSON(): unknown }[]) {
 }
 
 function hasPublicSourceMessage(interaction: Interaction): boolean {
-  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+  if (interaction.isMessageComponent()) {
     return !interaction.message.flags.has(MessageFlags.Ephemeral)
   }
   if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
@@ -273,12 +273,12 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
-      if (interaction.isButton()) {
-        if (isGptActionButtonId(interaction.customId)) {
-          await handleGptActionButton(interaction)
-          return
-        }
+      if (interaction.isMessageComponent() && isGptActionComponentId(interaction.customId)) {
+        await handleGptActionComponent(interaction)
+        return
+      }
 
+      if (interaction.isButton()) {
         if (interaction.customId === PUBTAB_BUTTON_ID) {
           const pubtab = subcommands.get('pubtab')
           if (!pubtab) {

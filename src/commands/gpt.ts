@@ -2,7 +2,9 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ComponentType,
   ContainerBuilder,
+  createComponentBuilder,
   escapeMarkdown,
   MessageFlags,
   SeparatorBuilder,
@@ -12,8 +14,8 @@ import {
   TextDisplayBuilder
 } from 'discord.js'
 import type {
-  ButtonInteraction,
   ChatInputCommandInteraction,
+  MessageComponentInteraction,
   StringSelectMenuInteraction
 } from 'discord.js'
 import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
@@ -36,7 +38,7 @@ import {
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
 export const GPT_VERBOSITY_SELECT_ID = 'gpt-verbosity'
-export const GPT_ACTION_BUTTON_ID = 'gpt-action'
+export const GPT_ACTION_COMPONENT_ID = 'gpt-action'
 export const AGENT_COMMAND_NAME = 'a'
 
 const GPT_COLOR = 0x10a37f
@@ -126,15 +128,11 @@ interface GptContext {
   userId: string
   sessionName: string
   history: ConversationTurn[]
-  buttons: GptActionButton[]
+  components: GptManagedComponent[]
   expiresAt: number
 }
 
-interface GptActionButton {
-  id: string
-  label: string
-  style: 'primary' | 'secondary' | 'success' | 'danger'
-}
+type GptManagedComponent = Record<string, unknown>
 
 interface ConversationTurn {
   role: 'user' | 'assistant'
@@ -167,7 +165,7 @@ function isMcpConnectionClosed(error: unknown): boolean {
 
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
 
-type GptComponent = ContainerBuilder | AnyRow
+type GptComponent = ContainerBuilder | AnyRow | GptManagedComponent
 
 function storeGptContext(token: string, ctx: GptContext) {
   setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify({ ...ctx, history: [] }))
@@ -182,21 +180,38 @@ function loadGptContext(token: string): GptContext | null {
   const stored = getStoredValue(key)
   if (!stored) return null
   try {
-    const parsed = JSON.parse(stored) as Partial<GptContext>
+    const parsed = JSON.parse(stored) as Partial<GptContext> & {
+      buttons?: Array<{ id: string; label: string; style: string }>
+    }
     if (
       typeof parsed.displayPrompt !== 'string' ||
       typeof parsed.expiresAt !== 'number' ||
       parsed.expiresAt <= Date.now() ||
-      !Array.isArray(parsed.buttons) ||
-      !parsed.buttons.every(
-        (button) =>
-          typeof button.id === 'string' &&
-          typeof button.label === 'string' &&
-          ['primary', 'secondary', 'success', 'danger'].includes(button.style)
-      )
+      (!Array.isArray(parsed.components) &&
+        (!Array.isArray(parsed.buttons) ||
+          !parsed.buttons.every(
+            (button) =>
+              typeof button.id === 'string' &&
+              typeof button.label === 'string' &&
+              ['primary', 'secondary', 'success', 'danger'].includes(button.style)
+          )))
     ) {
       deleteStoredValue(key)
       return null
+    }
+    if (!Array.isArray(parsed.components)) {
+      const buttons = parsed.buttons!
+      parsed.components = [
+        {
+          type: ComponentType.ActionRow,
+          components: buttons.map((button) => ({
+            type: ComponentType.Button,
+            custom_id: `${GPT_ACTION_COMPONENT_ID}:${token}:${button.id}`,
+            label: button.label,
+            style: buttonStyle(button.style)
+          }))
+        }
+      ]
     }
     return parsed as GptContext
   } catch {
@@ -205,47 +220,98 @@ function loadGptContext(token: string): GptContext | null {
   }
 }
 
-function buttonStyle(style: GptActionButton['style']): ButtonStyle {
+function buttonStyle(style: string): ButtonStyle {
   if (style === 'primary') return ButtonStyle.Primary
   if (style === 'success') return ButtonStyle.Success
   if (style === 'danger') return ButtonStyle.Danger
   return ButtonStyle.Secondary
 }
 
-function interactionButtonTool(token: string, ctx: GptContext) {
+function namespaceComponentIds(value: unknown, token: string, ids: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) namespaceComponentIds(item, token, ids)
+    return
+  }
+  if (!value || typeof value !== 'object') return
+
+  const component = value as Record<string, unknown>
+  if (typeof component.custom_id === 'string') {
+    if (!/^[a-z0-9_-]{1,32}$/.test(component.custom_id)) {
+      throw new Error(`Invalid component id: ${component.custom_id}`)
+    }
+    if (ids.has(component.custom_id))
+      throw new Error(`Duplicate component id: ${component.custom_id}`)
+    ids.add(component.custom_id)
+    component.custom_id = `${GPT_ACTION_COMPONENT_ID}:${token}:${component.custom_id}`
+  }
+  for (const child of Object.values(component)) namespaceComponentIds(child, token, ids)
+}
+
+function validateComponents(input: string, token: string): GptManagedComponent[] {
+  const parsed: unknown = JSON.parse(input)
+  if (!Array.isArray(parsed)) throw new Error('Components must be a JSON array.')
+  if (parsed.length > 10) throw new Error('At most 10 top-level components may exist.')
+
+  const components = structuredClone(parsed) as GptManagedComponent[]
+  namespaceComponentIds(components, token, new Set())
+  let count = 0
+  const countComponents = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) countComponents(item)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    const component = value as Record<string, unknown>
+    if (typeof component.type === 'number') count++
+    if (Array.isArray(component.components)) countComponents(component.components)
+  }
+  countComponents(components)
+  if (count > 30) throw new Error('At most 30 generated components may exist.')
+
+  const topLevelTypes = new Set([
+    ComponentType.ActionRow,
+    ComponentType.Section,
+    ComponentType.TextDisplay,
+    ComponentType.MediaGallery,
+    ComponentType.File,
+    ComponentType.Separator,
+    ComponentType.Container
+  ])
+  return components.map((component) => {
+    if (!topLevelTypes.has(component.type as ComponentType)) {
+      throw new Error(`Component type ${String(component.type)} cannot be top-level.`)
+    }
+    return createComponentBuilder(component as never).toJSON() as unknown as GptManagedComponent
+  })
+}
+
+function interactionComponentTool(token: string, ctx: GptContext) {
   return tool({
-    name: 'manage_interaction_button',
+    name: 'manage_response_components',
     description:
-      'Create, update, or delete a Discord interaction button on this response. Buttons should represent useful user choices. A click is sent back to you so you can rewrite the response. Use a stable short id for each choice. At most 5 buttons may exist.',
+      'Set or clear extra Discord message components on this response. Supports multiple action rows and all message component types: buttons; string, user, role, mentionable, and channel selects; sections and thumbnails; text displays; media galleries; files; separators; and containers. Supply the complete top-level Discord API component array as JSON. Interactive custom_id values must be unique stable lowercase ids (1-32 characters); clicks and selections are sent back to you. Button styles are 1 primary, 2 secondary, 3 success, 4 danger, 5 link, and 6 premium. Component type numbers are 1 action row, 2 button, 3 string select, 5 user select, 6 role select, 7 mentionable select, 8 channel select, 9 section, 10 text display, 11 thumbnail, 12 media gallery, 13 file, 14 separator, and 17 container.',
     inputSchema: z.object({
-      action: z.enum(['create', 'delete']),
-      id: z
+      action: z.enum(['set', 'clear']),
+      components_json: z
         .string()
-        .regex(/^[a-z0-9_-]{1,32}$/)
-        .describe('Stable lowercase button identifier'),
-      label: z.string().min(1).max(80).optional(),
-      style: z.enum(['primary', 'secondary', 'success', 'danger']).optional()
+        .optional()
+        .describe('Complete JSON array of top-level Discord API components; required for set')
     }),
-    callback: ({ action, id, label, style }) => {
-      const existingIndex = ctx.buttons.findIndex((button) => button.id === id)
-      if (action === 'delete') {
-        if (existingIndex === -1) return `Button ${id} does not exist.`
-        ctx.buttons.splice(existingIndex, 1)
+    callback: ({ action, components_json }) => {
+      if (action === 'clear') {
+        ctx.components = []
         storeGptContext(token, ctx)
-        return `Deleted button ${id}.`
+        return 'Cleared response components.'
       }
 
-      if (!label) return 'A label is required when creating a button.'
-      const button: GptActionButton = { id, label, style: style ?? 'secondary' }
-      if (existingIndex >= 0) {
-        ctx.buttons[existingIndex] = button
-      } else if (ctx.buttons.length >= 5) {
-        return 'The response already has the maximum of 5 buttons.'
-      } else {
-        ctx.buttons.push(button)
+      if (!components_json) return 'components_json is required when setting components.'
+      try {
+        ctx.components = validateComponents(components_json, token)
+      } catch (error) {
+        return `Invalid components: ${error instanceof Error ? error.message : String(error)}`
       }
       storeGptContext(token, ctx)
-      return `${existingIndex >= 0 ? 'Updated' : 'Created'} button ${id}.`
+      return `Set ${ctx.components.length} top-level response component(s).`
     }
   })
 }
@@ -390,7 +456,7 @@ function buildGptComponents(
   streaming: boolean,
   usage?: Usage,
   showStats = false,
-  buttons: GptActionButton[] = []
+  managedComponents: GptManagedComponent[] = []
 ): GptComponent[] {
   const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
@@ -424,18 +490,7 @@ function buildGptComponents(
 
   const components: GptComponent[] = [ctr]
 
-  if (buttons.length > 0) {
-    components.push(
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        buttons.map((button) =>
-          new ButtonBuilder()
-            .setCustomId(`${GPT_ACTION_BUTTON_ID}:${token}:${button.id}`)
-            .setLabel(button.label)
-            .setStyle(buttonStyle(button.style))
-        )
-      )
-    )
-  }
+  components.push(...managedComponents)
 
   if (!pub) {
     components.push(
@@ -559,7 +614,7 @@ async function runGptStream(
         false,
         undefined,
         true,
-        ctx.buttons
+        ctx.components
       )
     )
     return
@@ -604,7 +659,7 @@ async function runGptStream(
           streaming,
           complete ? usage : undefined,
           complete,
-          ctx.buttons
+          ctx.components
         )
       )
     } else {
@@ -761,7 +816,7 @@ async function runGptStream(
       )
     }
     const streamAgent = async (prompt: string, diagnosing = false) => {
-      const buttonTool = interactionButtonTool(token, ctx)
+      const componentTool = interactionComponentTool(token, ctx)
       const agent = new Agent({
         model,
         messages: agentMessages(ctx.history),
@@ -774,8 +829,8 @@ async function runGptStream(
               .join('\n')
           : (systemInstruction ?? undefined),
         tools: diagnosing
-          ? [spotifyAuthenticationTool, buttonTool]
-          : [spotifyAuthenticationTool, buttonTool, ...mcpClients],
+          ? [spotifyAuthenticationTool, componentTool]
+          : [spotifyAuthenticationTool, componentTool, ...mcpClients],
         printer: false
       })
 
@@ -913,7 +968,7 @@ async function runGptStream(
         false,
         undefined,
         true,
-        ctx.buttons
+        ctx.components
       )
     )
   } finally {
@@ -967,14 +1022,14 @@ async function handleGptSelect(
       true,
       undefined,
       false,
-      updatedCtx.buttons
+      updatedCtx.components
     )
   )
 
   try {
     await runGptStream(callbacks, updatedCtx, token)
   } finally {
-    if (updatedCtx.buttons.length === 0) deleteGptContext(token)
+    if (updatedCtx.components.length === 0) deleteGptContext(token)
     else storeGptContext(token, updatedCtx)
   }
 }
@@ -1005,18 +1060,29 @@ export function isGptSelectId(customId: string): boolean {
   )
 }
 
-export function isGptActionButtonId(customId: string): boolean {
-  return customId.startsWith(`${GPT_ACTION_BUTTON_ID}:`)
+export function isGptActionComponentId(customId: string): boolean {
+  return customId.startsWith(`${GPT_ACTION_COMPONENT_ID}:`)
 }
 
-export async function handleGptActionButton(interaction: ButtonInteraction): Promise<void> {
+function hasComponentId(value: unknown, customId: string): boolean {
+  if (Array.isArray(value)) return value.some((item) => hasComponentId(item, customId))
+  if (!value || typeof value !== 'object') return false
+  const component = value as Record<string, unknown>
+  return (
+    component.custom_id === customId ||
+    Object.values(component).some((child) => hasComponentId(child, customId))
+  )
+}
+
+export async function handleGptActionComponent(
+  interaction: MessageComponentInteraction
+): Promise<void> {
   const match = /^gpt-action:([^:]+):([a-z0-9_-]{1,32})$/.exec(interaction.customId)
   if (!match) return
   const token = match[1]!
-  const buttonId = match[2]!
+  const componentId = match[2]!
   const ctx = loadGptContext(token)
-  const button = ctx?.buttons.find((candidate) => candidate.id === buttonId)
-  if (!ctx || !button) {
+  if (!ctx || !hasComponentId(ctx.components, interaction.customId)) {
     await interaction.reply(container('agent', new Map(), 'interaction expired'))
     return
   }
@@ -1024,7 +1090,8 @@ export async function handleGptActionButton(interaction: ButtonInteraction): Pro
   await interaction.deferUpdate()
   await runInSession(ctx.userId, ctx.sessionName, async () => {
     ctx.history = loadConversation(ctx.userId, ctx.sessionName)
-    ctx.prompt = `A Discord user clicked the interaction button "${button.label}" (id: ${button.id}). Rewrite the response to handle that choice. You may create, update, or delete interaction buttons as appropriate.`
+    const values = interaction.isAnySelectMenu() ? interaction.values : []
+    ctx.prompt = `A Discord user activated the response component with id "${componentId}"${values.length > 0 ? ` and selected: ${values.join(', ')}` : ''}. Rewrite the response to handle that choice. You may set, update, or clear response components as appropriate.`
     storeGptContext(token, ctx)
 
     const callbacks = makeCallbacks(interaction, ctx.pub)
@@ -1042,11 +1109,11 @@ export async function handleGptActionButton(interaction: ButtonInteraction): Pro
         true,
         undefined,
         false,
-        ctx.buttons
+        ctx.components
       )
     )
     await runGptStream(callbacks, ctx, token)
-    if (ctx.buttons.length === 0) deleteGptContext(token)
+    if (ctx.components.length === 0) deleteGptContext(token)
     else storeGptContext(token, ctx)
   })
 }
@@ -1084,7 +1151,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     userId: interaction.user.id,
     sessionName,
     history: [],
-    buttons: [],
+    components: [],
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
 
@@ -1113,7 +1180,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     try {
       await runGptStream(callbacks, ctx, token)
     } finally {
-      if (ctx.buttons.length === 0) deleteGptContext(token)
+      if (ctx.components.length === 0) deleteGptContext(token)
       else storeGptContext(token, ctx)
     }
   })

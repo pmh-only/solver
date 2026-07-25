@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { agentCommand } from '../application-commands.js'
-import { GPT_ACTION_BUTTON_ID } from '../commands/gpt.js'
+import { GPT_ACTION_COMPONENT_ID } from '../commands/gpt.js'
 import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
 import {
   agentCommandJSON,
   autocompleteJSON,
-  buttonJSON,
   dispatch,
   getCallback,
   getEdit,
-  makeSubcommands
+  makeSubcommands,
+  selectJSON
 } from './e2e.js'
 
 const {
@@ -19,7 +19,7 @@ const {
   httpTransportMock,
   mcpClientMock,
   modelMock,
-  buttonActions,
+  componentActions,
   streamMock,
   toolMock,
   transportMock
@@ -29,7 +29,7 @@ const {
   httpTransportMock: vi.fn(),
   mcpClientMock: vi.fn(),
   modelMock: vi.fn(),
-  buttonActions: [] as Record<string, unknown>[],
+  componentActions: [] as Record<string, unknown>[],
   streamMock: vi.fn(),
   toolMock: vi.fn((options) => options),
   transportMock: vi.fn()
@@ -79,12 +79,12 @@ vi.mock('@strands-agents/sdk', () => ({
     async *stream(prompt: string, options: unknown) {
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
-      const buttonAction = buttonActions.shift()
-      if (buttonAction) {
-        const buttonTool = this.options.tools?.find(
-          (candidate) => candidate.name === 'manage_interaction_button'
+      const componentAction = componentActions.shift()
+      if (componentAction) {
+        const componentTool = this.options.tools?.find(
+          (candidate) => candidate.name === 'manage_response_components'
         )
-        buttonTool?.callback?.(buttonAction as never)
+        componentTool?.callback?.(componentAction as never)
       }
       yield {
         type: 'modelStreamUpdateEvent',
@@ -142,7 +142,7 @@ const subs = makeSubcommands()
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
-  buttonActions.length = 0
+  componentActions.length = 0
   clearStoredValues()
 })
 
@@ -256,7 +256,7 @@ describe('/a', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
-          expect.objectContaining({ name: 'manage_interaction_button' }),
+          expect.objectContaining({ name: 'manage_response_components' }),
           ...Array(7).fill(expect.anything())
         ]
       })
@@ -321,7 +321,7 @@ describe('/a', () => {
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
-          expect.objectContaining({ name: 'manage_interaction_button' })
+          expect.objectContaining({ name: 'manage_response_components' })
         ]
       })
     )
@@ -382,23 +382,43 @@ describe('/a', () => {
     )
   })
 
-  it('lets the agent create a button and rewrites the response when it is clicked', async () => {
-    buttonActions.push({
-      action: 'create',
-      id: 'show-details',
-      label: 'Show details',
-      style: 'primary'
+  it('lets the agent create multiple component rows and rewrites the response on interaction', async () => {
+    componentActions.push({
+      action: 'set',
+      components_json: JSON.stringify([
+        {
+          type: 1,
+          components: [
+            { type: 2, custom_id: 'show-details', label: 'Show details', style: 1 },
+            { type: 2, custom_id: 'download', label: 'Download', style: 2 }
+          ]
+        },
+        {
+          type: 1,
+          components: [
+            {
+              type: 3,
+              custom_id: 'format',
+              placeholder: 'Choose a format',
+              options: [{ label: 'PDF', value: 'pdf' }]
+            }
+          ]
+        }
+      ])
     })
     const initialCalls = await dispatch(agentCommandJSON('summarize the report'), subs)
     const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
       components: unknown[]
     }
-    expect(JSON.stringify(initialEdit)).toContain(`${GPT_ACTION_BUTTON_ID}:`)
+    expect(JSON.stringify(initialEdit)).toContain(`${GPT_ACTION_COMPONENT_ID}:`)
     expect(JSON.stringify(initialEdit)).toContain('Show details')
+    expect(JSON.stringify(initialEdit)).toContain('Choose a format')
+    const formatId = JSON.stringify(initialEdit).match(/gpt-action:[^"]+:format/)?.[0]
+    expect(formatId).toBeTruthy()
 
-    buttonActions.push({ action: 'delete', id: 'show-details' })
+    componentActions.push({ action: 'clear' })
     const clickCalls = await dispatch(
-      buttonJSON(initialEdit.components, GPT_ACTION_BUTTON_ID, {
+      selectJSON(initialEdit.components, formatId!, 'pdf', {
         user: {
           id: '555555555555555555',
           username: 'otheruser',
@@ -414,7 +434,7 @@ describe('/a', () => {
       type: InteractionResponseType.DeferredMessageUpdate
     })
     expect(streamMock).toHaveBeenLastCalledWith(
-      expect.stringContaining('A Discord user clicked the interaction button "Show details"'),
+      expect.stringMatching(/response component with id "format".*selected: pdf/),
       expect.anything()
     )
     expect(agentMock).toHaveBeenLastCalledWith(
@@ -426,7 +446,57 @@ describe('/a', () => {
     )
     const rewritten = clickCalls.filter((call) => call.method === 'PATCH').at(-1)?.body
     expect(JSON.stringify(rewritten)).toContain('**summarize the report**')
-    expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_BUTTON_ID)
+    expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_COMPONENT_ID)
+  })
+
+  it('accepts every Discord message component type', async () => {
+    componentActions.push({
+      action: 'set',
+      components_json: JSON.stringify([
+        {
+          type: 17,
+          accent_color: 1082239,
+          components: [
+            { type: 10, content: 'Extra context' },
+            {
+              type: 9,
+              components: [{ type: 10, content: 'Section content' }],
+              accessory: { type: 11, media: { url: 'https://example.com/image.png' } }
+            },
+            {
+              type: 12,
+              items: [{ media: { url: 'https://example.com/gallery.png' } }]
+            },
+            { type: 14, divider: true, spacing: 1 },
+            { type: 13, file: { url: 'attachment://report.txt' } }
+          ]
+        },
+        {
+          type: 1,
+          components: [{ type: 5, custom_id: 'user', placeholder: 'User' }]
+        },
+        {
+          type: 1,
+          components: [{ type: 6, custom_id: 'role', placeholder: 'Role' }]
+        },
+        {
+          type: 1,
+          components: [{ type: 7, custom_id: 'mention', placeholder: 'Mentionable' }]
+        },
+        {
+          type: 1,
+          components: [{ type: 8, custom_id: 'channel', placeholder: 'Channel' }]
+        }
+      ])
+    })
+
+    const calls = await dispatch(agentCommandJSON('build a dashboard'), subs)
+    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
+    const rendered = JSON.stringify(edit)
+
+    for (const type of [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17]) {
+      expect(rendered).toContain(`"type":${type}`)
+    }
   })
 
   it('switches to a new session and keeps it selected', async () => {
