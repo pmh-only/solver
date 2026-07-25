@@ -457,6 +457,7 @@ async function runGptStream(
   let responseContent = ''
   let lastEditTime = 0
   let usage: Usage | undefined
+  let dockerMcp: McpClient | undefined
   let spotifyMcp: McpClient | undefined
 
   const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
@@ -522,7 +523,17 @@ async function runGptStream(
       modelId: ctx.model,
       apiKey,
       maxTokens: ctx.maxTokens,
-      ...(ctx.effort !== 'none' ? { params: { reasoning: { effort: ctx.effort } } } : {})
+      params: {
+        tools: [{ type: 'web_search' }],
+        ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort } } : {})
+      }
+    })
+    dockerMcp = new McpClient({
+      applicationName: 'solver /a Docker',
+      transport: new StdioClientTransport({
+        command: 'uvx',
+        args: ['mcp-server-docker']
+      })
     })
     const spotifyConfiguration = await loadSpotifyConfiguration()
     if (spotifyConfiguration) {
@@ -539,7 +550,7 @@ async function runGptStream(
       model,
       messages: agentMessages(ctx.history),
       systemPrompt: systemInstruction ?? undefined,
-      tools: spotifyMcp ? [spotifyAuthenticationTool, spotifyMcp] : [spotifyAuthenticationTool],
+      tools: [spotifyAuthenticationTool, dockerMcp, ...(spotifyMcp ? [spotifyMcp] : [])],
       printer: false
     })
 
@@ -606,6 +617,7 @@ async function runGptStream(
       )
     )
   } finally {
+    await dockerMcp?.disconnect().catch(() => {})
     await spotifyMcp?.disconnect().catch(() => {})
     activeStreams.delete(token)
   }

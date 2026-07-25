@@ -126,11 +126,23 @@ describe('/a', () => {
     )
     expect(JSON.stringify(calls)).not.toContain('`/a explain recursion`')
     expect(modelMock).toHaveBeenCalledWith(
-      expect.objectContaining({ api: 'responses', apiKey: 'test-key', modelId: 'gpt-5.4' })
+      expect.objectContaining({
+        api: 'responses',
+        apiKey: 'test-key',
+        modelId: 'gpt-5.4',
+        params: {
+          reasoning: { effort: 'medium' },
+          tools: [{ type: 'web_search' }]
+        }
+      })
+    )
+    expect(transportMock).toHaveBeenCalledWith({ command: 'uvx', args: ['mcp-server-docker'] })
+    expect(mcpClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ applicationName: 'solver /a Docker' })
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.objectContaining({ name: 'spotify_authenticate' })]
+        tools: [expect.objectContaining({ name: 'spotify_authenticate' }), expect.anything()]
       })
     )
     expect(streamMock).toHaveBeenCalledWith(
@@ -153,9 +165,9 @@ describe('/a', () => {
       expect.objectContaining({ applicationName: 'solver /a' })
     )
     expect(agentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ tools: [expect.anything(), expect.anything()] })
+      expect.objectContaining({ tools: [expect.anything(), expect.anything(), expect.anything()] })
     )
-    expect(disconnectMock).toHaveBeenCalledOnce()
+    expect(disconnectMock).toHaveBeenCalledTimes(2)
   })
 
   it('persists model, reasoning effort, and token limit per session', async () => {
@@ -184,7 +196,7 @@ describe('/a', () => {
       expect.objectContaining({
         modelId: 'gpt-5.4-mini',
         maxTokens: 2048,
-        params: { reasoning: { effort: 'high' } }
+        params: { reasoning: { effort: 'high' }, tools: [{ type: 'web_search' }] }
       })
     )
   })

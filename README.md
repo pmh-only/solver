@@ -23,3 +23,10 @@ configuration or terminal command is required.
 Refreshable credentials and the non-secret client ID are stored under `data/.spotify-mcp`, alongside
 the bot's existing persistent data. Existing `SPOTIFY_CLIENT_ID` and `SPOTIFY_REDIRECT_URI`
 environment configuration remains supported.
+
+## Agent Tools
+
+The `/a` agent can search the internet through OpenAI's Responses API and manage containers through
+Docker MCP. The container must have access to a Docker daemon, typically by mounting
+`/var/run/docker.sock` at the same path. The runtime image includes the Docker CLI and launches
+`mcp-server-docker` directly through `uvx`.
