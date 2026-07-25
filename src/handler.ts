@@ -74,9 +74,11 @@ import {
   GPT_VERBOSITY_SELECT_ID,
   AGENT_COMMAND_NAME,
   handleAgentCommand,
+  handleGptActionButton,
   handleGptEffortSelect,
   handleGptModelSelect,
-  handleGptVerbositySelect
+  handleGptVerbositySelect,
+  isGptActionButtonId
 } from './commands/gpt.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
@@ -272,6 +274,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (interaction.isButton()) {
+        if (isGptActionButtonId(interaction.customId)) {
+          await handleGptActionButton(interaction)
+          return
+        }
+
         if (interaction.customId === PUBTAB_BUTTON_ID) {
           const pubtab = subcommands.get('pubtab')
           if (!pubtab) {

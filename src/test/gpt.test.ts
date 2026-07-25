@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { agentCommand } from '../application-commands.js'
+import { GPT_ACTION_BUTTON_ID } from '../commands/gpt.js'
 import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
 import {
   agentCommandJSON,
   autocompleteJSON,
+  buttonJSON,
   dispatch,
   getCallback,
   getEdit,
@@ -17,6 +19,7 @@ const {
   httpTransportMock,
   mcpClientMock,
   modelMock,
+  buttonActions,
   streamMock,
   toolMock,
   transportMock
@@ -26,6 +29,7 @@ const {
   httpTransportMock: vi.fn(),
   mcpClientMock: vi.fn(),
   modelMock: vi.fn(),
+  buttonActions: [] as Record<string, unknown>[],
   streamMock: vi.fn(),
   toolMock: vi.fn((options) => options),
   transportMock: vi.fn()
@@ -65,13 +69,23 @@ vi.mock('@strands-agents/sdk', () => ({
     }
   },
   Agent: class MockAgent {
+    private options: { tools?: { name?: string; callback?: (input: never) => unknown }[] }
+
     constructor(options: unknown) {
       agentMock(options)
+      this.options = options as typeof this.options
     }
 
     async *stream(prompt: string, options: unknown) {
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
+      const buttonAction = buttonActions.shift()
+      if (buttonAction) {
+        const buttonTool = this.options.tools?.find(
+          (candidate) => candidate.name === 'manage_interaction_button'
+        )
+        buttonTool?.callback?.(buttonAction as never)
+      }
       yield {
         type: 'modelStreamUpdateEvent',
         event: {
@@ -128,6 +142,7 @@ const subs = makeSubcommands()
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
+  buttonActions.length = 0
   clearStoredValues()
 })
 
@@ -241,6 +256,7 @@ describe('/a', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
+          expect.objectContaining({ name: 'manage_interaction_button' }),
           ...Array(7).fill(expect.anything())
         ]
       })
@@ -267,7 +283,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(8).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(9).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -287,7 +303,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(8).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(9).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -303,7 +319,10 @@ describe('/a', () => {
       2,
       expect.objectContaining({
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
-        tools: [expect.objectContaining({ name: 'spotify_authenticate' })]
+        tools: [
+          expect.objectContaining({ name: 'spotify_authenticate' }),
+          expect.objectContaining({ name: 'manage_interaction_button' })
+        ]
       })
     )
     expect(streamMock).toHaveBeenNthCalledWith(
@@ -361,6 +380,53 @@ describe('/a', () => {
         ]
       })
     )
+  })
+
+  it('lets the agent create a button and rewrites the response when it is clicked', async () => {
+    buttonActions.push({
+      action: 'create',
+      id: 'show-details',
+      label: 'Show details',
+      style: 'primary'
+    })
+    const initialCalls = await dispatch(agentCommandJSON('summarize the report'), subs)
+    const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: unknown[]
+    }
+    expect(JSON.stringify(initialEdit)).toContain(`${GPT_ACTION_BUTTON_ID}:`)
+    expect(JSON.stringify(initialEdit)).toContain('Show details')
+
+    buttonActions.push({ action: 'delete', id: 'show-details' })
+    const clickCalls = await dispatch(
+      buttonJSON(initialEdit.components, GPT_ACTION_BUTTON_ID, {
+        user: {
+          id: '555555555555555555',
+          username: 'otheruser',
+          discriminator: '0',
+          avatar: null,
+          global_name: 'Other User'
+        }
+      }),
+      subs
+    )
+
+    expect(getCallback(clickCalls)).toMatchObject({
+      type: InteractionResponseType.DeferredMessageUpdate
+    })
+    expect(streamMock).toHaveBeenLastCalledWith(
+      expect.stringContaining('A Discord user clicked the interaction button "Show details"'),
+      expect.anything()
+    )
+    expect(agentMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: 'assistant', content: [{ text: 'hello world' }] })
+        ])
+      })
+    )
+    const rewritten = clickCalls.filter((call) => call.method === 'PATCH').at(-1)?.body
+    expect(JSON.stringify(rewritten)).toContain('**summarize the report**')
+    expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_BUTTON_ID)
   })
 
   it('switches to a new session and keeps it selected', async () => {

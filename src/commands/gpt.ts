@@ -11,7 +11,11 @@ import {
   StringSelectMenuOptionBuilder,
   TextDisplayBuilder
 } from 'discord.js'
-import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
+import type {
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  StringSelectMenuInteraction
+} from 'discord.js'
 import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
@@ -32,12 +36,14 @@ import {
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
 export const GPT_VERBOSITY_SELECT_ID = 'gpt-verbosity'
+export const GPT_ACTION_BUTTON_ID = 'gpt-action'
 export const AGENT_COMMAND_NAME = 'a'
 
 const GPT_COLOR = 0x10a37f
 const PAGE_LIMIT = 3600
 const EDIT_INTERVAL_MS = 750
 const DEFAULT_MAX_TOKENS = 4096
+const GPT_INTERACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
 )
@@ -111,6 +117,7 @@ type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 
 interface GptContext {
   prompt: string
+  displayPrompt: string
   pub: boolean
   model: ModelId
   effort: EffortLevel
@@ -119,6 +126,14 @@ interface GptContext {
   userId: string
   sessionName: string
   history: ConversationTurn[]
+  buttons: GptActionButton[]
+  expiresAt: number
+}
+
+interface GptActionButton {
+  id: string
+  label: string
+  style: 'primary' | 'secondary' | 'success' | 'danger'
 }
 
 interface ConversationTurn {
@@ -155,7 +170,7 @@ type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<Butto
 type GptComponent = ContainerBuilder | AnyRow
 
 function storeGptContext(token: string, ctx: GptContext) {
-  setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify(ctx))
+  setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify({ ...ctx, history: [] }))
 }
 
 function deleteGptContext(token: string): void {
@@ -163,13 +178,76 @@ function deleteGptContext(token: string): void {
 }
 
 function loadGptContext(token: string): GptContext | null {
-  const stored = getStoredValue(`${GPT_CONTEXT_KEY}:${token}`)
+  const key = `${GPT_CONTEXT_KEY}:${token}`
+  const stored = getStoredValue(key)
   if (!stored) return null
   try {
-    return JSON.parse(stored) as GptContext
+    const parsed = JSON.parse(stored) as Partial<GptContext>
+    if (
+      typeof parsed.displayPrompt !== 'string' ||
+      typeof parsed.expiresAt !== 'number' ||
+      parsed.expiresAt <= Date.now() ||
+      !Array.isArray(parsed.buttons) ||
+      !parsed.buttons.every(
+        (button) =>
+          typeof button.id === 'string' &&
+          typeof button.label === 'string' &&
+          ['primary', 'secondary', 'success', 'danger'].includes(button.style)
+      )
+    ) {
+      deleteStoredValue(key)
+      return null
+    }
+    return parsed as GptContext
   } catch {
+    deleteStoredValue(key)
     return null
   }
+}
+
+function buttonStyle(style: GptActionButton['style']): ButtonStyle {
+  if (style === 'primary') return ButtonStyle.Primary
+  if (style === 'success') return ButtonStyle.Success
+  if (style === 'danger') return ButtonStyle.Danger
+  return ButtonStyle.Secondary
+}
+
+function interactionButtonTool(token: string, ctx: GptContext) {
+  return tool({
+    name: 'manage_interaction_button',
+    description:
+      'Create, update, or delete a Discord interaction button on this response. Buttons should represent useful user choices. A click is sent back to you so you can rewrite the response. Use a stable short id for each choice. At most 5 buttons may exist.',
+    inputSchema: z.object({
+      action: z.enum(['create', 'delete']),
+      id: z
+        .string()
+        .regex(/^[a-z0-9_-]{1,32}$/)
+        .describe('Stable lowercase button identifier'),
+      label: z.string().min(1).max(80).optional(),
+      style: z.enum(['primary', 'secondary', 'success', 'danger']).optional()
+    }),
+    callback: ({ action, id, label, style }) => {
+      const existingIndex = ctx.buttons.findIndex((button) => button.id === id)
+      if (action === 'delete') {
+        if (existingIndex === -1) return `Button ${id} does not exist.`
+        ctx.buttons.splice(existingIndex, 1)
+        storeGptContext(token, ctx)
+        return `Deleted button ${id}.`
+      }
+
+      if (!label) return 'A label is required when creating a button.'
+      const button: GptActionButton = { id, label, style: style ?? 'secondary' }
+      if (existingIndex >= 0) {
+        ctx.buttons[existingIndex] = button
+      } else if (ctx.buttons.length >= 5) {
+        return 'The response already has the maximum of 5 buttons.'
+      } else {
+        ctx.buttons.push(button)
+      }
+      storeGptContext(token, ctx)
+      return `${existingIndex >= 0 ? 'Updated' : 'Created'} button ${id}.`
+    }
+  })
 }
 
 function selectedSessionKey(userId: string): string {
@@ -311,7 +389,8 @@ function buildGptComponents(
   verbosity: VerbosityLevel,
   streaming: boolean,
   usage?: Usage,
-  showStats = false
+  showStats = false,
+  buttons: GptActionButton[] = []
 ): GptComponent[] {
   const displayContent = content ? (streaming ? `${content}\n-# ▌` : content) : '-# generating...'
 
@@ -344,6 +423,19 @@ function buildGptComponents(
   )
 
   const components: GptComponent[] = [ctr]
+
+  if (buttons.length > 0) {
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        buttons.map((button) =>
+          new ButtonBuilder()
+            .setCustomId(`${GPT_ACTION_BUTTON_ID}:${token}:${button.id}`)
+            .setLabel(button.label)
+            .setStyle(buttonStyle(button.style))
+        )
+      )
+    )
+  }
 
   if (!pub) {
     components.push(
@@ -455,7 +547,7 @@ async function runGptStream(
   if (!apiKey) {
     await callbacks.editMain(
       buildGptComponents(
-        ctx.prompt,
+        ctx.displayPrompt,
         'no OPENAI_API_KEY',
         ctx.sessionName,
         ctx.pub,
@@ -466,7 +558,8 @@ async function runGptStream(
         ctx.verbosity,
         false,
         undefined,
-        true
+        true,
+        ctx.buttons
       )
     )
     return
@@ -499,7 +592,7 @@ async function runGptStream(
     if (currentPage === 1) {
       await callbacks.editMain(
         buildGptComponents(
-          ctx.prompt,
+          ctx.displayPrompt,
           content,
           ctx.sessionName,
           ctx.pub,
@@ -510,7 +603,8 @@ async function runGptStream(
           ctx.verbosity,
           streaming,
           complete ? usage : undefined,
-          complete
+          complete,
+          ctx.buttons
         )
       )
     } else {
@@ -667,6 +761,7 @@ async function runGptStream(
       )
     }
     const streamAgent = async (prompt: string, diagnosing = false) => {
+      const buttonTool = interactionButtonTool(token, ctx)
       const agent = new Agent({
         model,
         messages: agentMessages(ctx.history),
@@ -679,8 +774,8 @@ async function runGptStream(
               .join('\n')
           : (systemInstruction ?? undefined),
         tools: diagnosing
-          ? [spotifyAuthenticationTool]
-          : [spotifyAuthenticationTool, ...mcpClients],
+          ? [spotifyAuthenticationTool, buttonTool]
+          : [spotifyAuthenticationTool, buttonTool, ...mcpClients],
         printer: false
       })
 
@@ -806,7 +901,7 @@ async function runGptStream(
     const errMsg = error instanceof Error ? error.message : 'unknown error'
     await callbacks.editMain(
       buildGptComponents(
-        ctx.prompt,
+        ctx.displayPrompt,
         `error: ${errMsg}`,
         ctx.sessionName,
         ctx.pub,
@@ -817,7 +912,8 @@ async function runGptStream(
         ctx.verbosity,
         false,
         undefined,
-        true
+        true,
+        ctx.buttons
       )
     )
   } finally {
@@ -868,14 +964,18 @@ async function handleGptSelect(
       updatedCtx.effort,
       updatedCtx.maxTokens,
       updatedCtx.verbosity,
-      true
+      true,
+      undefined,
+      false,
+      updatedCtx.buttons
     )
   )
 
   try {
     await runGptStream(callbacks, updatedCtx, token)
   } finally {
-    deleteGptContext(token)
+    if (updatedCtx.buttons.length === 0) deleteGptContext(token)
+    else storeGptContext(token, updatedCtx)
   }
 }
 
@@ -905,6 +1005,52 @@ export function isGptSelectId(customId: string): boolean {
   )
 }
 
+export function isGptActionButtonId(customId: string): boolean {
+  return customId.startsWith(`${GPT_ACTION_BUTTON_ID}:`)
+}
+
+export async function handleGptActionButton(interaction: ButtonInteraction): Promise<void> {
+  const match = /^gpt-action:([^:]+):([a-z0-9_-]{1,32})$/.exec(interaction.customId)
+  if (!match) return
+  const token = match[1]!
+  const buttonId = match[2]!
+  const ctx = loadGptContext(token)
+  const button = ctx?.buttons.find((candidate) => candidate.id === buttonId)
+  if (!ctx || !button) {
+    await interaction.reply(container('agent', new Map(), 'interaction expired'))
+    return
+  }
+
+  await interaction.deferUpdate()
+  await runInSession(ctx.userId, ctx.sessionName, async () => {
+    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+    ctx.prompt = `A Discord user clicked the interaction button "${button.label}" (id: ${button.id}). Rewrite the response to handle that choice. You may create, update, or delete interaction buttons as appropriate.`
+    storeGptContext(token, ctx)
+
+    const callbacks = makeCallbacks(interaction, ctx.pub)
+    await callbacks.editMain(
+      buildGptComponents(
+        ctx.displayPrompt,
+        '',
+        ctx.sessionName,
+        ctx.pub,
+        token,
+        ctx.model,
+        ctx.effort,
+        ctx.maxTokens,
+        ctx.verbosity,
+        true,
+        undefined,
+        false,
+        ctx.buttons
+      )
+    )
+    await runGptStream(callbacks, ctx, token)
+    if (ctx.buttons.length === 0) deleteGptContext(token)
+    else storeGptContext(token, ctx)
+  })
+}
+
 export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const prompt = interaction.options.getString('prompt', true).trim()
   const requestedSession = interaction.options.getString('session')?.trim()
@@ -929,6 +1075,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt,
+    displayPrompt: prompt,
     pub,
     model: settings.model,
     effort: settings.effort,
@@ -936,7 +1083,9 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     verbosity: 'normal',
     userId: interaction.user.id,
     sessionName,
-    history: []
+    history: [],
+    buttons: [],
+    expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
 
   await interaction.deferReply()
@@ -964,7 +1113,8 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     try {
       await runGptStream(callbacks, ctx, token)
     } finally {
-      deleteGptContext(token)
+      if (ctx.buttons.length === 0) deleteGptContext(token)
+      else storeGptContext(token, ctx)
     }
   })
 }
