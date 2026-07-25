@@ -186,6 +186,7 @@ Treat all Discord arguments, message content, component IDs, URLs, files, and st
 - Add rate, concurrency, output-size, and cost controls for OpenAI or other metered APIs.
 - Avoid unbounded regular expressions, buffers, canvas dimensions, collections, timers, and follow-up messages.
 - Load credentials from environment variables and document new variables in `.env.example` with placeholder values only.
+- Route authentication callbacks for any future MCP through an endpoint on the existing web server, following `/mcp/spotify/callback`; do not expose a separate public listener.
 - Do not rely on `node:vm`, Discord ephemeral responses, or Docker's non-root user as a security boundary.
 
 ## Testing

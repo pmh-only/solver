@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
+const SPOTIFY_MCP_CALLBACK_URL = 'http://127.0.0.1:8888/callback'
+const MCP_CALLBACK_TIMEOUT_MS = 5_000
 
 const HOME_HTML = `<!doctype html>
 <html lang="en">
@@ -82,7 +84,38 @@ function send(
   response.end(headOnly ? undefined : body)
 }
 
-export function handleWebRequest(request: IncomingMessage, response: ServerResponse): void {
+async function proxySpotifyMcpCallback(url: URL, response: ServerResponse): Promise<void> {
+  const callbackUrl = new URL(SPOTIFY_MCP_CALLBACK_URL)
+  callbackUrl.search = url.search
+
+  try {
+    const callbackResponse = await fetch(callbackUrl, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(MCP_CALLBACK_TIMEOUT_MS)
+    })
+    const body = await callbackResponse.text()
+    send(
+      response,
+      callbackResponse.status,
+      callbackResponse.headers.get('content-type') ?? 'text/html; charset=utf-8',
+      body,
+      false
+    )
+  } catch {
+    send(
+      response,
+      502,
+      'text/plain; charset=utf-8',
+      'Spotify authentication is not currently running.\n',
+      false
+    )
+  }
+}
+
+export async function handleWebRequest(
+  request: IncomingMessage,
+  response: ServerResponse
+): Promise<void> {
   const method = request.method ?? 'GET'
   if (method !== 'GET' && method !== 'HEAD') {
     response.setHeader('Allow', 'GET, HEAD')
@@ -90,26 +123,37 @@ export function handleWebRequest(request: IncomingMessage, response: ServerRespo
     return
   }
 
-  let pathname: string
+  let url: URL
   try {
-    pathname = new URL(request.url ?? '/', 'http://web.local').pathname
+    url = new URL(request.url ?? '/', 'http://web.local')
   } catch {
     send(response, 400, 'text/plain; charset=utf-8', 'Bad Request\n', method === 'HEAD')
     return
   }
-  if (pathname === '/') {
+  if (url.pathname === '/') {
     send(response, 200, 'text/html; charset=utf-8', HOME_HTML, method === 'HEAD')
     return
   }
-  if (pathname === '/healthz') {
+  if (url.pathname === '/healthz') {
     send(response, 200, 'text/plain; charset=utf-8', 'ok\n', method === 'HEAD')
+    return
+  }
+  if (url.pathname === '/mcp/spotify/callback') {
+    if (method === 'HEAD') {
+      response.setHeader('Allow', 'GET')
+      send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', true)
+      return
+    }
+    await proxySpotifyMcpCallback(url, response)
     return
   }
   send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', method === 'HEAD')
 }
 
 export function createWebServer(): Server {
-  const server = createServer(handleWebRequest)
+  const server = createServer((request, response) => {
+    void handleWebRequest(request, response)
+  })
   server.requestTimeout = 10_000
   server.headersTimeout = 10_000
   server.keepAliveTimeout = 5_000
