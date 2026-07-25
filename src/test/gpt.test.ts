@@ -53,7 +53,8 @@ vi.mock('@strands-agents/sdk', () => ({
     }
 
     async *stream(prompt: string, options: unknown) {
-      streamMock(prompt, options)
+      const streamResult = streamMock(prompt, options)
+      if (streamResult instanceof Error) throw streamResult
       for (const text of ['hello', ' world']) {
         yield {
           type: 'modelStreamUpdateEvent',
@@ -211,6 +212,31 @@ describe('/a', () => {
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
+  })
+
+  it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
+    streamMock.mockReturnValueOnce(new Error('MCP error -32000: Connection closed'))
+
+    const calls = await dispatch(agentCommandJSON('list my containers'), subs)
+
+    expect(agentMock).toHaveBeenCalledTimes(2)
+    expect(agentMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
+        tools: [expect.objectContaining({ name: 'spotify_authenticate' })]
+      })
+    )
+    expect(streamMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(
+        /Docker MCP \(`uvx mcp-server-docker`\).*Filesystem MCP.*Playwright MCP/
+      ),
+      expect.anything()
+    )
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('error: MCP error -32000: Connection closed')
+    expect(disconnectMock).toHaveBeenCalledTimes(7)
   })
 
   it('persists model, reasoning effort, and token limit per session', async () => {

@@ -139,6 +139,15 @@ const activeStreams = new Map<string, AbortController>()
 const followUpIds = new Map<string, string[]>()
 const sessionQueues = new Map<string, Promise<void>>()
 
+function isMcpConnectionClosed(error: unknown): boolean {
+  let current = error
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (String(current).includes('MCP error -32000: Connection closed')) return true
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return false
+}
+
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
 
 type GptComponent = ContainerBuilder | AnyRow
@@ -622,44 +631,87 @@ async function runGptStream(
         })
       )
     }
-    const agent = new Agent({
-      model,
-      messages: agentMessages(ctx.history),
-      systemPrompt: systemInstruction ?? undefined,
-      tools: [spotifyAuthenticationTool, ...mcpClients],
-      printer: false
-    })
+    const streamAgent = async (prompt: string, diagnosing = false) => {
+      const agent = new Agent({
+        model,
+        messages: agentMessages(ctx.history),
+        systemPrompt: diagnosing
+          ? [
+              systemInstruction,
+              'Diagnose the reported MCP connection failure for the user. Explain the likely cause and concrete recovery checks. Do not claim to have run checks or use MCP tools, because those clients disconnected.'
+            ]
+              .filter(Boolean)
+              .join('\n')
+          : (systemInstruction ?? undefined),
+        tools: diagnosing
+          ? [spotifyAuthenticationTool]
+          : [spotifyAuthenticationTool, ...mcpClients],
+        printer: false
+      })
 
-    for await (const event of agent.stream(ctx.prompt, {
-      cancelSignal: controller.signal,
-      limits: { turns: 8, outputTokens: ctx.maxTokens }
-    })) {
-      if (controller.signal.aborted) break
+      for await (const event of agent.stream(prompt, {
+        cancelSignal: controller.signal,
+        limits: { turns: 8, outputTokens: ctx.maxTokens }
+      })) {
+        if (controller.signal.aborted) break
 
-      if (
-        event.type === 'modelStreamUpdateEvent' &&
-        event.event.type === 'modelContentBlockDeltaEvent' &&
-        event.event.delta.type === 'textDelta'
-      ) {
-        currentPageContent += event.event.delta.text
-        responseContent += event.event.delta.text
+        if (
+          event.type === 'modelStreamUpdateEvent' &&
+          event.event.type === 'modelContentBlockDeltaEvent' &&
+          event.event.delta.type === 'textDelta'
+        ) {
+          currentPageContent += event.event.delta.text
+          responseContent += event.event.delta.text
 
-        if (currentPageContent.length > PAGE_LIMIT) {
-          const overflow = currentPageContent.slice(PAGE_LIMIT)
-          currentPageContent = currentPageContent.slice(0, PAGE_LIMIT)
-          await overflowToNewPage()
-          currentPageContent = overflow
+          if (currentPageContent.length > PAGE_LIMIT) {
+            const overflow = currentPageContent.slice(PAGE_LIMIT)
+            currentPageContent = currentPageContent.slice(0, PAGE_LIMIT)
+            await overflowToNewPage()
+            currentPageContent = overflow
+          }
+
+          const now = Date.now()
+          if (now - lastEditTime >= EDIT_INTERVAL_MS) {
+            await editCurrentPage(currentPageContent, true)
+            lastEditTime = now
+          }
         }
-
-        const now = Date.now()
-        if (now - lastEditTime >= EDIT_INTERVAL_MS) {
-          await editCurrentPage(currentPageContent, true)
-          lastEditTime = now
+        if (event.type === 'agentResultEvent') {
+          usage = event.result.metrics?.latestAgentInvocation?.usage
         }
       }
-      if (event.type === 'agentResultEvent') {
-        usage = event.result.metrics?.latestAgentInvocation?.usage
+    }
+
+    try {
+      await streamAgent(ctx.prompt)
+    } catch (error) {
+      if (!isMcpConnectionClosed(error) || controller.signal.aborted) throw error
+
+      for (const id of followUpIds.get(token) ?? []) {
+        await callbacks.deleteMessage(id).catch(() => {})
       }
+      followUpIds.set(token, [])
+      currentPage = 1
+      currentPageContent = ''
+      responseContent = ''
+      lastEditTime = 0
+      usage = undefined
+      await editCurrentPage('-# diagnosing MCP connection failure...', true)
+
+      const integrations = [
+        'Docker MCP (`uvx mcp-server-docker`)',
+        'Filesystem MCP',
+        'Memory MCP',
+        'Sequential Thinking MCP',
+        'Fetch MCP',
+        'Time MCP',
+        'Playwright MCP',
+        ...(spotifyConfiguration ? ['Spotify MCP'] : [])
+      ].join(' and ')
+      await streamAgent(
+        `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,
+        true
+      )
     }
 
     if (!controller.signal.aborted) {
