@@ -21,6 +21,7 @@
   "license": "MIT",
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
+    "@cocal/google-calendar-mcp": "2.6.2",
     "@hyunbinseo/holidays-kr": "5.2027.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server-filesystem": "2026.7.10",

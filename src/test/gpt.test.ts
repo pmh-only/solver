@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
 import { GPT_ACTION_COMPONENT_ID, GPT_MODAL_ID } from '../commands/gpt.js'
 import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
@@ -154,6 +156,8 @@ vi.mock('@strands-agents/sdk', () => ({
 }))
 
 const subs = makeSubcommands()
+const googleCalendarTestDirectory = join(process.cwd(), '.tmp', 'gpt-google-calendar-test')
+const previousKvStorePath = process.env.KV_STORE_PATH
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
@@ -163,10 +167,15 @@ beforeEach(() => {
   clearStoredValues()
 })
 
-afterEach(() => {
+afterEach(async () => {
   delete process.env.OPENAI_API_KEY
   delete process.env.MAIL_API_KEY
+  delete process.env.GOOGLE_OAUTH_CREDENTIALS
+  delete process.env.GOOGLE_CALENDAR_REDIRECT_URI
   delete process.env.SPOTIFY_CLIENT_ID
+  if (previousKvStorePath === undefined) delete process.env.KV_STORE_PATH
+  else process.env.KV_STORE_PATH = previousKvStorePath
+  await rm(googleCalendarTestDirectory, { recursive: true, force: true })
   vi.clearAllMocks()
 })
 
@@ -266,6 +275,7 @@ describe('/a', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
+          expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
           ...Array(7).fill(expect.anything())
         ]
@@ -359,7 +369,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(9).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(10).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -379,8 +389,41 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(9).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(10).fill(expect.anything())]
       })
+    )
+    expect(disconnectMock).toHaveBeenCalledTimes(8)
+  })
+
+  it('gives the agent Google Calendar MCP tools when OAuth is configured', async () => {
+    await mkdir(googleCalendarTestDirectory, { recursive: true })
+    const credentialsPath = join(googleCalendarTestDirectory, 'oauth.json')
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        web: { client_id: 'google-client-id', client_secret: 'google-client-secret' }
+      })
+    )
+    process.env.GOOGLE_OAUTH_CREDENTIALS = credentialsPath
+    process.env.GOOGLE_CALENDAR_REDIRECT_URI = 'https://solver.example/mcp/google-calendar/callback'
+    process.env.KV_STORE_PATH = join(googleCalendarTestDirectory, 'kv.sqlite')
+
+    await dispatch(agentCommandJSON('show my calendar'), subs)
+
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [expect.stringMatching(/@cocal\/google-calendar-mcp\/build\/index\.js$/)],
+      env: expect.objectContaining({
+        GOOGLE_OAUTH_CREDENTIALS: expect.stringMatching(
+          /gpt-google-calendar-test\/\.google-calendar-mcp\/credentials\.json$/
+        ),
+        GOOGLE_CALENDAR_MCP_TOKEN_PATH: expect.stringMatching(
+          /gpt-google-calendar-test\/\.google-calendar-mcp\/tokens\.json$/
+        )
+      })
+    })
+    expect(mcpClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ applicationName: 'solver /a Google Calendar' })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
   })
@@ -397,6 +440,7 @@ describe('/a', () => {
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
+          expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_response_modals' })
         ]
       })

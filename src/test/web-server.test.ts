@@ -61,6 +61,16 @@ describe('web server', () => {
     expect(await response.text()).toContain('invalid or expired')
   })
 
+  it('rejects Google Calendar callbacks that were not initiated by the agent', async () => {
+    const origin = await startServer()
+    const response = await fetch(
+      `${origin}/mcp/google-calendar/callback?code=auth-code&state=auth-state`
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('invalid or expired')
+  })
+
   it('rejects an invalid PORT configuration', async () => {
     const previousPort = process.env.PORT
     process.env.PORT = 'not-a-port'

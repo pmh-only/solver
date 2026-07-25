@@ -33,6 +33,11 @@ import { z } from 'zod'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import {
+  beginGoogleCalendarAuthentication,
+  getGoogleCalendarMcpEnvironment,
+  loadGoogleCalendarConfiguration
+} from '../google-calendar-auth.js'
+import {
   beginSpotifyAuthentication,
   getSpotifyMcpEnvironment,
   loadSpotifyConfiguration
@@ -49,6 +54,9 @@ const DEFAULT_MAX_TOKENS = 4096
 const GPT_INTERACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
+)
+const GOOGLE_CALENDAR_MCP_PATH = fileURLToPath(
+  new URL('../../node_modules/@cocal/google-calendar-mcp/build/index.js', import.meta.url)
 )
 const FILESYSTEM_MCP_PATH = fileURLToPath(
   new URL(
@@ -84,6 +92,21 @@ const spotifyAuthenticationTool = tool({
   callback: ({ clientId, redirectUri }) => {
     const authorizationUrl = beginSpotifyAuthentication(clientId, redirectUri)
     return `Open this Spotify authorization link within 10 minutes: ${authorizationUrl}`
+  }
+})
+const googleCalendarAuthenticationTool = tool({
+  name: 'google_calendar_authenticate',
+  description:
+    'Start Google Calendar authentication through the bot public callback. Use this instead of the Calendar MCP manage-accounts add action, whose localhost callback is not reachable in deployment. Return the generated Google login link to the user.',
+  inputSchema: z.object({
+    accountId: z
+      .string()
+      .default('personal')
+      .describe('Lowercase nickname for this Google account, such as personal or work')
+  }),
+  callback: async ({ accountId }) => {
+    const authorizationUrl = await beginGoogleCalendarAuthentication(accountId)
+    return `Open this Google Calendar authorization link within 10 minutes: ${authorizationUrl}`
   }
 })
 
@@ -844,6 +867,19 @@ async function runGptStream(
         })
       )
     }
+    const googleCalendarConfiguration = await loadGoogleCalendarConfiguration()
+    if (googleCalendarConfiguration) {
+      mcpClients.push(
+        new McpClient({
+          applicationName: 'solver /a Google Calendar',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [GOOGLE_CALENDAR_MCP_PATH],
+            env: getGoogleCalendarMcpEnvironment(googleCalendarConfiguration)
+          })
+        })
+      )
+    }
     const mailApiKey = process.env.MAIL_API_KEY?.trim()
     if (mailApiKey) {
       mcpClients.push(
@@ -869,8 +905,8 @@ async function runGptStream(
               .join('\n')
           : systemInstruction,
         tools: diagnosing
-          ? [spotifyAuthenticationTool, modalTool]
-          : [spotifyAuthenticationTool, modalTool, ...mcpClients],
+          ? [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool]
+          : [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool, ...mcpClients],
         printer: false
       })
 
@@ -909,6 +945,7 @@ async function runGptStream(
         'Time MCP',
         'Playwright MCP',
         ...(spotifyConfiguration ? ['Spotify MCP'] : []),
+        ...(googleCalendarConfiguration ? ['Google Calendar MCP'] : []),
         ...(mailApiKey ? ['Mail MCP'] : [])
       ].join(' and ')
       await streamAgent(

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 
 const DEFAULT_PORT = 3000
@@ -116,6 +117,16 @@ export async function handleWebRequest(
       return
     }
     const result = await handleSpotifyCallback(url)
+    send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`, false)
+    return
+  }
+  if (url.pathname === '/mcp/google-calendar/callback') {
+    if (method === 'HEAD') {
+      response.setHeader('Allow', 'GET')
+      send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', true)
+      return
+    }
+    const result = await handleGoogleCalendarCallback(url)
     send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`, false)
     return
   }

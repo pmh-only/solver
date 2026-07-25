@@ -37,6 +37,7 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Current-time lookup and time-zone conversion
 - Spotify search, library, playlist, and playback control after authentication
 - Received-mail search and reading, plus outgoing mail scheduling, when `MAIL_API_KEY` is configured
+- Google Calendar search, availability, and event management after authentication
 
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
@@ -45,3 +46,14 @@ servers. No extra MCP installation is required after deployment.
 Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
 bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer
 token.
+
+## Google Calendar MCP
+
+Create a Google Cloud OAuth client of type **Web application**, enable the Google Calendar API, and add
+`https://<your-public-service>/mcp/google-calendar/callback` as an authorized redirect URI. Mount
+the downloaded OAuth JSON in the bot container, set `GOOGLE_OAUTH_CREDENTIALS` to its path, and set
+`GOOGLE_CALENDAR_REDIRECT_URI` to that exact public callback URI. Then ask `/a` to authenticate Google
+Calendar; the agent returns a Google login link without requiring terminal access.
+
+Normalized OAuth credentials and refreshable account tokens are stored with mode `0600` under
+`data/.google-calendar-mcp`. The source OAuth JSON must remain mounted and readable after restarts.
