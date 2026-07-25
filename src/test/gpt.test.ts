@@ -55,6 +55,38 @@ vi.mock('@strands-agents/sdk', () => ({
     async *stream(prompt: string, options: unknown) {
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
+      yield {
+        type: 'modelStreamUpdateEvent',
+        event: {
+          type: 'modelContentBlockDeltaEvent',
+          delta: { type: 'reasoningContentDelta', text: 'I should look this up.' }
+        }
+      }
+      yield {
+        type: 'modelStreamUpdateEvent',
+        event: {
+          type: 'modelContentBlockStartEvent',
+          start: { type: 'toolUseStart', name: 'docker_list', toolUseId: 'tool-1' }
+        }
+      }
+      yield {
+        type: 'modelStreamUpdateEvent',
+        event: {
+          type: 'modelContentBlockDeltaEvent',
+          delta: { type: 'toolUseInputDelta', input: '{"apiKey":"secret"}' }
+        }
+      }
+      yield {
+        type: 'toolResultEvent',
+        result: { toolUseId: 'tool-1', status: 'success', content: [] }
+      }
+      yield {
+        type: 'modelStreamUpdateEvent',
+        event: {
+          type: 'modelContentBlockDeltaEvent',
+          delta: { type: 'citationsDelta', citations: [], content: [] }
+        }
+      }
       for (const text of ['hello', ' world']) {
         yield {
           type: 'modelStreamUpdateEvent',
@@ -120,6 +152,15 @@ describe('/a', () => {
     const edit = getEdit(calls)
     expect(edit).not.toBeNull()
     expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).toContain('**Reasoning**')
+    expect(JSON.stringify(calls)).toContain('I should look this up.')
+    expect(JSON.stringify(calls)).toContain('**Tool:** docker\\\\_list')
+    expect(JSON.stringify(calls)).toContain('docker\\\\_list succeeded')
+    expect(JSON.stringify(calls)).toContain('**Tool:** web\\\\_search')
+    expect(JSON.stringify(calls)).toContain('web\\\\_search succeeded')
+    expect(JSON.stringify(calls)).toContain('**Response**')
+    expect(JSON.stringify(calls)).not.toContain('apiKey')
+    expect(JSON.stringify(calls)).not.toContain('secret')
     expect(JSON.stringify(calls)).toContain('Session: default')
     expect(JSON.stringify(calls)).toContain('Tokens used: 1,234 in / 56 out / 1,290 total')
     expect(JSON.stringify(calls)).toContain(

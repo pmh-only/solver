@@ -488,6 +488,10 @@ async function runGptStream(
   let lastEditTime = 0
   let usage: Usage | undefined
   const mcpClients: McpClient[] = []
+  let activeDisplayType: 'reasoning' | 'text' | null = null
+  let hasTrace = false
+  let displayedWebSearch = false
+  const toolNames = new Map<string, string>()
 
   const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
     if (currentPage === 1) {
@@ -536,6 +540,24 @@ async function runGptStream(
       const ids = followUpIds.get(token) ?? []
       ids.push(msg.id)
       followUpIds.set(token, ids)
+    }
+  }
+
+  const appendDisplayContent = async (content: string) => {
+    currentPageContent += content
+    if (currentPageContent.length > PAGE_LIMIT) {
+      const overflow = currentPageContent.slice(PAGE_LIMIT)
+      currentPageContent = currentPageContent.slice(0, PAGE_LIMIT)
+      await overflowToNewPage()
+      currentPageContent = overflow
+    }
+  }
+
+  const updateStreamingDisplay = async () => {
+    const now = Date.now()
+    if (now - lastEditTime >= EDIT_INTERVAL_MS) {
+      await editCurrentPage(currentPageContent, true)
+      lastEditTime = now
     }
   }
 
@@ -655,26 +677,62 @@ async function runGptStream(
       })) {
         if (controller.signal.aborted) break
 
-        if (
-          event.type === 'modelStreamUpdateEvent' &&
-          event.event.type === 'modelContentBlockDeltaEvent' &&
-          event.event.delta.type === 'textDelta'
-        ) {
-          currentPageContent += event.event.delta.text
-          responseContent += event.event.delta.text
-
-          if (currentPageContent.length > PAGE_LIMIT) {
-            const overflow = currentPageContent.slice(PAGE_LIMIT)
-            currentPageContent = currentPageContent.slice(0, PAGE_LIMIT)
-            await overflowToNewPage()
-            currentPageContent = overflow
+        if (event.type === 'modelStreamUpdateEvent') {
+          if (
+            event.event.type === 'modelContentBlockStartEvent' &&
+            event.event.start?.type === 'toolUseStart'
+          ) {
+            const { name, toolUseId } = event.event.start
+            toolNames.set(toolUseId, name)
+            await appendDisplayContent(
+              `${currentPageContent ? '\n\n' : ''}**Tool:** ${escapeMarkdown(name)}`
+            )
+            activeDisplayType = null
+            hasTrace = true
+            await updateStreamingDisplay()
           }
 
-          const now = Date.now()
-          if (now - lastEditTime >= EDIT_INTERVAL_MS) {
-            await editCurrentPage(currentPageContent, true)
-            lastEditTime = now
+          if (event.event.type === 'modelContentBlockDeltaEvent') {
+            if (event.event.delta.type === 'reasoningContentDelta' && event.event.delta.text) {
+              const heading =
+                activeDisplayType === 'reasoning'
+                  ? ''
+                  : `${currentPageContent ? '\n\n' : ''}**Reasoning**\n`
+              await appendDisplayContent(`${heading}${event.event.delta.text}`)
+              activeDisplayType = 'reasoning'
+              hasTrace = true
+              await updateStreamingDisplay()
+            }
+
+            if (event.event.delta.type === 'citationsDelta' && !displayedWebSearch) {
+              await appendDisplayContent(
+                `${currentPageContent ? '\n\n' : ''}**Tool:** web\\_search\n-# web\\_search succeeded`
+              )
+              activeDisplayType = null
+              hasTrace = true
+              displayedWebSearch = true
+              await updateStreamingDisplay()
+            }
+
+            if (event.event.delta.type === 'textDelta') {
+              const heading =
+                hasTrace && activeDisplayType !== 'text'
+                  ? `${currentPageContent ? '\n\n' : ''}**Response**\n`
+                  : ''
+              await appendDisplayContent(`${heading}${event.event.delta.text}`)
+              responseContent += event.event.delta.text
+              activeDisplayType = 'text'
+              await updateStreamingDisplay()
+            }
           }
+        }
+        if (event.type === 'toolResultEvent') {
+          const name = toolNames.get(event.result.toolUseId) ?? 'unknown tool'
+          const status = event.result.status === 'success' ? 'succeeded' : 'failed'
+          await appendDisplayContent(`\n-# ${escapeMarkdown(name)} ${status}`)
+          activeDisplayType = null
+          hasTrace = true
+          await updateStreamingDisplay()
         }
         if (event.type === 'agentResultEvent') {
           usage = event.result.metrics?.latestAgentInvocation?.usage
@@ -696,6 +754,10 @@ async function runGptStream(
       responseContent = ''
       lastEditTime = 0
       usage = undefined
+      activeDisplayType = null
+      hasTrace = false
+      displayedWebSearch = false
+      toolNames.clear()
       await editCurrentPage('-# diagnosing MCP connection failure...', true)
 
       const integrations = [
