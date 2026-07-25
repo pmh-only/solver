@@ -563,11 +563,19 @@ function buildAgentPayload(
   const footer = usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage)
 
   if (usesComponentsV2) {
-    if (components.length >= 10) {
+    const content = typeof payload.content === 'string' ? payload.content : ''
+    const header: GptManagedComponent[] = [
+      { type: ComponentType.TextDisplay, content: `**${ctx.displayPrompt}**` },
+      { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small }
+    ]
+    if (content) header.push({ type: ComponentType.TextDisplay, content })
+
+    if (header.length + components.length >= 10) {
       throw new Error(
-        'At most 9 top-level components may be used so the token footer can be appended.'
+        `At most ${9 - header.length} top-level response components may be used so the request prompt, divider, and token footer can be appended.`
       )
     }
+    components.unshift(...header)
     components.push({ type: ComponentType.TextDisplay, content: footer })
     payload.content = null
     payload.embeds = []

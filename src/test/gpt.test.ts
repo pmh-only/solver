@@ -296,6 +296,31 @@ describe('/a', () => {
     expect(edit.allowed_mentions).toEqual({ parse: [] })
   })
 
+  it('renders content inside Components V2 after the request prompt and a divider', async () => {
+    responsePayloads.push({
+      content: 'Rendered response',
+      components: [{ type: 10, content: 'Additional context' }],
+      flags: MessageFlags.IsComponentsV2
+    })
+
+    const calls = await dispatch(agentCommandJSON('show the request'), subs)
+    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      content: string | null
+      components: Array<{ type: number; content?: string; divider?: boolean }>
+      flags: number
+    }
+
+    expect(edit.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(edit.content).toBe('')
+    expect(edit.components.slice(0, 4)).toEqual([
+      { type: 10, content: '**show the request**' },
+      { type: 14, divider: true, spacing: 1 },
+      { type: 10, content: 'Rendered response' },
+      { type: 10, content: 'Additional context' }
+    ])
+    expect(edit.components.at(-1)?.content).toContain('Tokens used:')
+  })
+
   it('accepts raw Discord API poll JSON', async () => {
     responsePayloads.push({
       content: 'Vote now',
