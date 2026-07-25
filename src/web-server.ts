@@ -1,9 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { handleSpotifyCallback } from './spotify-auth.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
-const SPOTIFY_MCP_CALLBACK_URL = 'http://127.0.0.1:8888/callback'
-const MCP_CALLBACK_TIMEOUT_MS = 5_000
 
 const HOME_HTML = `<!doctype html>
 <html lang="en">
@@ -84,34 +83,6 @@ function send(
   response.end(headOnly ? undefined : body)
 }
 
-async function proxySpotifyMcpCallback(url: URL, response: ServerResponse): Promise<void> {
-  const callbackUrl = new URL(SPOTIFY_MCP_CALLBACK_URL)
-  callbackUrl.search = url.search
-
-  try {
-    const callbackResponse = await fetch(callbackUrl, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(MCP_CALLBACK_TIMEOUT_MS)
-    })
-    const body = await callbackResponse.text()
-    send(
-      response,
-      callbackResponse.status,
-      callbackResponse.headers.get('content-type') ?? 'text/html; charset=utf-8',
-      body,
-      false
-    )
-  } catch {
-    send(
-      response,
-      502,
-      'text/plain; charset=utf-8',
-      'Spotify authentication is not currently running.\n',
-      false
-    )
-  }
-}
-
 export async function handleWebRequest(
   request: IncomingMessage,
   response: ServerResponse
@@ -144,7 +115,8 @@ export async function handleWebRequest(
       send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', true)
       return
     }
-    await proxySpotifyMcpCallback(url, response)
+    const result = await handleSpotifyCallback(url)
+    send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`, false)
     return
   }
   send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', method === 'HEAD')

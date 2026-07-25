@@ -53,49 +53,12 @@ describe('web server', () => {
     expect(post.headers.get('allow')).toBe('GET, HEAD')
   })
 
-  it('proxies Spotify MCP authentication callbacks to its loopback listener', async () => {
-    const realFetch = fetch
-    const callbackFetch = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-      const url = new URL(String(input))
-      if (url.origin === 'http://127.0.0.1:8888') {
-        expect(url.pathname).toBe('/callback')
-        expect(url.searchParams.get('code')).toBe('auth-code')
-        expect(url.searchParams.get('state')).toBe('auth-state')
-        expect(init).toMatchObject({ redirect: 'manual' })
-        return Promise.resolve(
-          new Response('<h1>Authentication successful</h1>', {
-            headers: { 'Content-Type': 'text/html' }
-          })
-        )
-      }
-      return realFetch(input, init)
-    })
+  it('rejects Spotify callbacks that were not initiated by the agent', async () => {
     const origin = await startServer()
+    const response = await fetch(`${origin}/mcp/spotify/callback?code=auth-code&state=auth-state`)
 
-    const response = await realFetch(
-      `${origin}/mcp/spotify/callback?code=auth-code&state=auth-state`
-    )
-
-    expect(response.status).toBe(200)
-    expect(response.headers.get('content-type')).toBe('text/html')
-    expect(await response.text()).toContain('Authentication successful')
-    expect(callbackFetch).toHaveBeenCalled()
-  })
-
-  it('reports when the Spotify MCP authentication listener is unavailable', async () => {
-    const realFetch = fetch
-    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-      if (new URL(String(input)).origin === 'http://127.0.0.1:8888') {
-        return Promise.reject(new Error('connection refused'))
-      }
-      return realFetch(input, init)
-    })
-    const origin = await startServer()
-
-    const response = await realFetch(`${origin}/mcp/spotify/callback?error=access_denied`)
-
-    expect(response.status).toBe(502)
-    expect(await response.text()).toContain('Spotify authentication is not currently running')
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('invalid or expired')
   })
 
   it('rejects an invalid PORT configuration', async () => {

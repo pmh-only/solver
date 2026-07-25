@@ -12,14 +12,20 @@ import {
   TextDisplayBuilder
 } from 'discord.js'
 import type { ChatInputCommandInteraction, StringSelectMenuInteraction } from 'discord.js'
-import { Agent, McpClient, type MessageData } from '@strands-agents/sdk'
+import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { z } from 'zod'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import {
+  beginSpotifyAuthentication,
+  getSpotifyMcpEnvironment,
+  loadSpotifyConfiguration
+} from '../spotify-auth.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
@@ -33,6 +39,21 @@ const DEFAULT_MAX_TOKENS = 4096
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
 )
+const spotifyAuthenticationTool = tool({
+  name: 'spotify_authenticate',
+  description:
+    'Start Spotify MCP authentication without terminal access. Use the Spotify app client ID and its exact public redirect URI, which must end in /mcp/spotify/callback. Return the generated authorization link to the user.',
+  inputSchema: z.object({
+    clientId: z.string().describe('Client ID from the Spotify Developer Dashboard'),
+    redirectUri: z
+      .string()
+      .describe('Public HTTPS callback URI registered in Spotify, ending /mcp/spotify/callback')
+  }),
+  callback: ({ clientId, redirectUri }) => {
+    const authorizationUrl = beginSpotifyAuthentication(clientId, redirectUri)
+    return `Open this Spotify authorization link within 10 minutes: ${authorizationUrl}`
+  }
+})
 
 export const GPT_MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4' },
@@ -503,12 +524,14 @@ async function runGptStream(
       maxTokens: ctx.maxTokens,
       ...(ctx.effort !== 'none' ? { params: { reasoning: { effort: ctx.effort } } } : {})
     })
-    if (process.env.SPOTIFY_CLIENT_ID) {
+    const spotifyConfiguration = await loadSpotifyConfiguration()
+    if (spotifyConfiguration) {
       spotifyMcp = new McpClient({
         applicationName: 'solver /a',
         transport: new StdioClientTransport({
           command: process.execPath,
-          args: [SPOTIFY_MCP_PATH]
+          args: [SPOTIFY_MCP_PATH],
+          env: getSpotifyMcpEnvironment(spotifyConfiguration)
         })
       })
     }
@@ -516,7 +539,7 @@ async function runGptStream(
       model,
       messages: agentMessages(ctx.history),
       systemPrompt: systemInstruction ?? undefined,
-      tools: spotifyMcp ? [spotifyMcp] : undefined,
+      tools: spotifyMcp ? [spotifyAuthenticationTool, spotifyMcp] : [spotifyAuthenticationTool],
       printer: false
     })
 

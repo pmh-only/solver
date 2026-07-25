@@ -11,13 +11,14 @@ import {
   makeSubcommands
 } from './e2e.js'
 
-const { agentMock, disconnectMock, mcpClientMock, modelMock, streamMock, transportMock } =
+const { agentMock, disconnectMock, mcpClientMock, modelMock, streamMock, toolMock, transportMock } =
   vi.hoisted(() => ({
     agentMock: vi.fn(),
     disconnectMock: vi.fn().mockResolvedValue(undefined),
     mcpClientMock: vi.fn(),
     modelMock: vi.fn(),
     streamMock: vi.fn(),
+    toolMock: vi.fn((options) => options),
     transportMock: vi.fn()
   }))
 
@@ -38,6 +39,7 @@ vi.mock('@strands-agents/sdk/models/openai', () => ({
 }))
 
 vi.mock('@strands-agents/sdk', () => ({
+  tool: toolMock,
   McpClient: class MockMcpClient {
     disconnect = disconnectMock
 
@@ -126,6 +128,11 @@ describe('/a', () => {
     expect(modelMock).toHaveBeenCalledWith(
       expect.objectContaining({ api: 'responses', apiKey: 'test-key', modelId: 'gpt-5.4' })
     )
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [expect.objectContaining({ name: 'spotify_authenticate' })]
+      })
+    )
     expect(streamMock).toHaveBeenCalledWith(
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
@@ -139,12 +146,15 @@ describe('/a', () => {
 
     expect(transportMock).toHaveBeenCalledWith({
       command: process.execPath,
-      args: [expect.stringMatching(/node_modules\/spotify-mcp\/dist\/index\.js$/)]
+      args: [expect.stringMatching(/node_modules\/spotify-mcp\/dist\/index\.js$/)],
+      env: expect.objectContaining({ SPOTIFY_CLIENT_ID: 'spotify-client-id' })
     })
     expect(mcpClientMock).toHaveBeenCalledWith(
       expect.objectContaining({ applicationName: 'solver /a' })
     )
-    expect(agentMock).toHaveBeenCalledWith(expect.objectContaining({ tools: [expect.anything()] }))
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: [expect.anything(), expect.anything()] })
+    )
     expect(disconnectMock).toHaveBeenCalledOnce()
   })
 
