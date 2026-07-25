@@ -218,6 +218,7 @@ Mock network and paid services. Use fake timers for deletion or timer behavior. 
 
 ## Absolute Rules
 
+- Every feature must be fully configurable through `/a` and must not require additional environment variables or terminal operations.
 - Never expose a new feature only in source; register every entrypoint and route every interaction it needs.
 - Never forget that command `args` starts with the subcommand name.
 - Never detect autocomplete argument mode with `bare.includes(' ')`; use `focused.includes(' ')` because flags are stripped from `bare`.
