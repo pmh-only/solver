@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { join } from 'node:path'
-import { CONFIG_ENV_KEYS, subcommand as set } from '../commands/set.js'
+import { subcommand as set } from '../commands/set.js'
 import { clearStoredValues, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues, reopenStoredValuesForTests } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
@@ -31,18 +31,18 @@ describe('set — command', () => {
     expect(getStoredValue('aaaa')).toBe('hello world')
   })
 
-  it.each(CONFIG_ENV_KEYS)(
-    'updates the %s environment configuration without persisting it',
+  it.each(['SPOTIFY_CLIENT_SECRET', 'UNLISTED_SOLVER_SETTING'])(
+    'updates arbitrary %s environment configuration without persisting it',
     async (key) => {
       const previous = process.env[key]
 
       try {
-        const calls = await dispatch(commandJSON(`set ${key} sensitive-value`), subs)
+        const calls = await dispatch(commandJSON(`set env:${key} sensitive-value`), subs)
         const response = JSON.stringify(getCallback(calls))
 
         expect(process.env[key]).toBe('sensitive-value')
-        expect(getStoredValue(key)).toBeUndefined()
-        expect(response).toContain(`ok ${key}=[redacted]`)
+        expect(getStoredValue(`env:${key}`)).toBeUndefined()
+        expect(response).toContain(`ok env:${key}=[redacted]`)
         expect(response).not.toContain('sensitive-value')
       } finally {
         if (previous === undefined) delete process.env[key]
@@ -50,6 +50,13 @@ describe('set — command', () => {
       }
     }
   )
+
+  it('requires a key after the environment prefix', async () => {
+    const calls = await dispatch(commandJSON('set env: sensitive-value'), subs)
+
+    expect(JSON.stringify(getCallback(calls))).toContain('environment key is required')
+    expect(getStoredValue('env:')).toBeUndefined()
+  })
 
   it('does not overwrite internal state keys', async () => {
     setStoredValue('__chess-state:token', 'original')
