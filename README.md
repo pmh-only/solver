@@ -26,7 +26,17 @@ environment configuration remains supported.
 
 ## Agent Tools
 
-The `/a` agent can search the internet through OpenAI's Responses API and manage containers through
-Docker MCP. The container must have access to a Docker daemon, typically by mounting
-`/var/run/docker.sock` at the same path. The runtime image includes the Docker CLI and launches
-`mcp-server-docker` directly through `uvx`.
+The `/a` agent can search the internet through OpenAI's Responses API and includes MCP tools for:
+
+- Docker container and Compose management
+- Browser automation through headless Chromium and Playwright
+- Fetching and converting web pages to Markdown
+- Reading and writing files under the persistent `data/` directory
+- Persistent knowledge-graph memory stored at `data/.agent-memory.jsonl`
+- Structured sequential reasoning
+- Current-time lookup and time-zone conversion
+- Spotify search, library, playlist, and playback control after authentication
+
+Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
+same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
+servers. No extra MCP installation is required after deployment.

@@ -17,6 +17,7 @@ import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
@@ -39,6 +40,26 @@ const DEFAULT_MAX_TOKENS = 4096
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
 )
+const FILESYSTEM_MCP_PATH = fileURLToPath(
+  new URL(
+    '../../node_modules/@modelcontextprotocol/server-filesystem/dist/index.js',
+    import.meta.url
+  )
+)
+const MEMORY_MCP_PATH = fileURLToPath(
+  new URL('../../node_modules/@modelcontextprotocol/server-memory/dist/index.js', import.meta.url)
+)
+const SEQUENTIAL_THINKING_MCP_PATH = fileURLToPath(
+  new URL(
+    '../../node_modules/@modelcontextprotocol/server-sequential-thinking/dist/index.js',
+    import.meta.url
+  )
+)
+const PLAYWRIGHT_MCP_PATH = fileURLToPath(
+  new URL('../../node_modules/@playwright/mcp/cli.js', import.meta.url)
+)
+const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
+const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const spotifyAuthenticationTool = tool({
   name: 'spotify_authenticate',
   description:
@@ -457,8 +478,7 @@ async function runGptStream(
   let responseContent = ''
   let lastEditTime = 0
   let usage: Usage | undefined
-  let dockerMcp: McpClient | undefined
-  let spotifyMcp: McpClient | undefined
+  const mcpClients: McpClient[] = []
 
   const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
     if (currentPage === 1) {
@@ -528,29 +548,85 @@ async function runGptStream(
         ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort } } : {})
       }
     })
-    dockerMcp = new McpClient({
-      applicationName: 'solver /a Docker',
-      transport: new StdioClientTransport({
-        command: 'uvx',
-        args: ['mcp-server-docker']
-      })
-    })
-    const spotifyConfiguration = await loadSpotifyConfiguration()
-    if (spotifyConfiguration) {
-      spotifyMcp = new McpClient({
-        applicationName: 'solver /a',
+    mcpClients.push(
+      new McpClient({
+        applicationName: 'solver /a Docker',
+        transport: new StdioClientTransport({
+          command: 'uvx',
+          args: ['mcp-server-docker']
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Filesystem',
         transport: new StdioClientTransport({
           command: process.execPath,
-          args: [SPOTIFY_MCP_PATH],
-          env: getSpotifyMcpEnvironment(spotifyConfiguration)
+          args: [FILESYSTEM_MCP_PATH, MCP_DATA_DIRECTORY]
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Memory',
+        transport: new StdioClientTransport({
+          command: process.execPath,
+          args: [MEMORY_MCP_PATH],
+          env: { MEMORY_FILE_PATH: MCP_MEMORY_PATH }
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Sequential Thinking',
+        transport: new StdioClientTransport({
+          command: process.execPath,
+          args: [SEQUENTIAL_THINKING_MCP_PATH]
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Fetch',
+        transport: new StdioClientTransport({
+          command: 'uvx',
+          args: ['mcp-server-fetch==2026.7.10']
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Time',
+        transport: new StdioClientTransport({
+          command: 'uvx',
+          args: ['mcp-server-time==2026.7.10']
+        })
+      }),
+      new McpClient({
+        applicationName: 'solver /a Playwright',
+        transport: new StdioClientTransport({
+          command: process.execPath,
+          args: [
+            PLAYWRIGHT_MCP_PATH,
+            '--headless',
+            '--isolated',
+            '--no-sandbox',
+            '--image-responses',
+            'omit',
+            '--executable-path',
+            '/usr/bin/chromium'
+          ]
         })
       })
+    )
+    const spotifyConfiguration = await loadSpotifyConfiguration()
+    if (spotifyConfiguration) {
+      mcpClients.push(
+        new McpClient({
+          applicationName: 'solver /a',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [SPOTIFY_MCP_PATH],
+            env: getSpotifyMcpEnvironment(spotifyConfiguration)
+          })
+        })
+      )
     }
     const agent = new Agent({
       model,
       messages: agentMessages(ctx.history),
       systemPrompt: systemInstruction ?? undefined,
-      tools: [spotifyAuthenticationTool, dockerMcp, ...(spotifyMcp ? [spotifyMcp] : [])],
+      tools: [spotifyAuthenticationTool, ...mcpClients],
       printer: false
     })
 
@@ -617,8 +693,7 @@ async function runGptStream(
       )
     )
   } finally {
-    await dockerMcp?.disconnect().catch(() => {})
-    await spotifyMcp?.disconnect().catch(() => {})
+    await Promise.all(mcpClients.map((client) => client.disconnect().catch(() => {})))
     activeStreams.delete(token)
   }
 }

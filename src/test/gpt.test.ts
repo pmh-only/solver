@@ -137,14 +137,55 @@ describe('/a', () => {
       })
     )
     expect(transportMock).toHaveBeenCalledWith({ command: 'uvx', args: ['mcp-server-docker'] })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: 'uvx',
+      args: ['mcp-server-fetch==2026.7.10']
+    })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: 'uvx',
+      args: ['mcp-server-time==2026.7.10']
+    })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [
+        expect.stringMatching(/server-filesystem\/dist\/index\.js$/),
+        expect.stringMatching(/data$/)
+      ]
+    })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [expect.stringMatching(/server-memory\/dist\/index\.js$/)],
+      env: { MEMORY_FILE_PATH: expect.stringMatching(/data\/\.agent-memory\.jsonl$/) }
+    })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [expect.stringMatching(/server-sequential-thinking\/dist\/index\.js$/)]
+    })
+    expect(transportMock).toHaveBeenCalledWith({
+      command: process.execPath,
+      args: [
+        expect.stringMatching(/@playwright\/mcp\/cli\.js$/),
+        '--headless',
+        '--isolated',
+        '--no-sandbox',
+        '--image-responses',
+        'omit',
+        '--executable-path',
+        '/usr/bin/chromium'
+      ]
+    })
     expect(mcpClientMock).toHaveBeenCalledWith(
       expect.objectContaining({ applicationName: 'solver /a Docker' })
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.objectContaining({ name: 'spotify_authenticate' }), expect.anything()]
+        tools: [
+          expect.objectContaining({ name: 'spotify_authenticate' }),
+          ...Array(7).fill(expect.anything())
+        ]
       })
     )
+    expect(disconnectMock).toHaveBeenCalledTimes(7)
     expect(streamMock).toHaveBeenCalledWith(
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
@@ -165,9 +206,11 @@ describe('/a', () => {
       expect.objectContaining({ applicationName: 'solver /a' })
     )
     expect(agentMock).toHaveBeenCalledWith(
-      expect.objectContaining({ tools: [expect.anything(), expect.anything(), expect.anything()] })
+      expect.objectContaining({
+        tools: [expect.anything(), ...Array(8).fill(expect.anything())]
+      })
     )
-    expect(disconnectMock).toHaveBeenCalledTimes(2)
+    expect(disconnectMock).toHaveBeenCalledTimes(8)
   })
 
   it('persists model, reasoning effort, and token limit per session', async () => {
