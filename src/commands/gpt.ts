@@ -16,6 +16,7 @@ import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,6 +61,7 @@ const PLAYWRIGHT_MCP_PATH = fileURLToPath(
 )
 const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
 const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
+const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
 const spotifyAuthenticationTool = tool({
   name: 'spotify_authenticate',
   description:
@@ -653,6 +655,17 @@ async function runGptStream(
         })
       )
     }
+    const mailApiKey = process.env.MAIL_API_KEY?.trim()
+    if (mailApiKey) {
+      mcpClients.push(
+        new McpClient({
+          applicationName: 'solver /a Mail',
+          transport: new StreamableHTTPClientTransport(new URL(MAIL_MCP_URL), {
+            requestInit: { headers: { Authorization: `Bearer ${mailApiKey}` } }
+          })
+        })
+      )
+    }
     const streamAgent = async (prompt: string, diagnosing = false) => {
       const agent = new Agent({
         model,
@@ -768,7 +781,8 @@ async function runGptStream(
         'Fetch MCP',
         'Time MCP',
         'Playwright MCP',
-        ...(spotifyConfiguration ? ['Spotify MCP'] : [])
+        ...(spotifyConfiguration ? ['Spotify MCP'] : []),
+        ...(mailApiKey ? ['Mail MCP'] : [])
       ].join(' and ')
       await streamAgent(
         `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,

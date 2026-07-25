@@ -36,7 +36,12 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Structured sequential reasoning
 - Current-time lookup and time-zone conversion
 - Spotify search, library, playlist, and playback control after authentication
+- Received-mail search and reading, plus outgoing mail scheduling, when `MAIL_API_KEY` is configured
 
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
 servers. No extra MCP installation is required after deployment.
+
+Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
+bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer
+token.

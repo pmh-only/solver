@@ -11,21 +11,38 @@ import {
   makeSubcommands
 } from './e2e.js'
 
-const { agentMock, disconnectMock, mcpClientMock, modelMock, streamMock, toolMock, transportMock } =
-  vi.hoisted(() => ({
-    agentMock: vi.fn(),
-    disconnectMock: vi.fn().mockResolvedValue(undefined),
-    mcpClientMock: vi.fn(),
-    modelMock: vi.fn(),
-    streamMock: vi.fn(),
-    toolMock: vi.fn((options) => options),
-    transportMock: vi.fn()
-  }))
+const {
+  agentMock,
+  disconnectMock,
+  httpTransportMock,
+  mcpClientMock,
+  modelMock,
+  streamMock,
+  toolMock,
+  transportMock
+} = vi.hoisted(() => ({
+  agentMock: vi.fn(),
+  disconnectMock: vi.fn().mockResolvedValue(undefined),
+  httpTransportMock: vi.fn(),
+  mcpClientMock: vi.fn(),
+  modelMock: vi.fn(),
+  streamMock: vi.fn(),
+  toolMock: vi.fn((options) => options),
+  transportMock: vi.fn()
+}))
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
   StdioClientTransport: class MockStdioClientTransport {
     constructor(options: unknown) {
       transportMock(options)
+    }
+  }
+}))
+
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+  StreamableHTTPClientTransport: class MockStreamableHTTPClientTransport {
+    constructor(url: URL, options: unknown) {
+      httpTransportMock(url, options)
     }
   }
 }))
@@ -116,6 +133,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.OPENAI_API_KEY
+  delete process.env.MAIL_API_KEY
   delete process.env.SPOTIFY_CLIENT_ID
   vi.clearAllMocks()
 })
@@ -246,6 +264,26 @@ describe('/a', () => {
     })
     expect(mcpClientMock).toHaveBeenCalledWith(
       expect.objectContaining({ applicationName: 'solver /a' })
+    )
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [expect.anything(), ...Array(8).fill(expect.anything())]
+      })
+    )
+    expect(disconnectMock).toHaveBeenCalledTimes(8)
+  })
+
+  it('gives the agent authenticated Mail MCP tools when Mail is configured', async () => {
+    process.env.MAIL_API_KEY = 'pmail_test-key'
+
+    await dispatch(agentCommandJSON('read my unread mail'), subs)
+
+    expect(httpTransportMock).toHaveBeenCalledWith(
+      new URL('https://mail.pmh.codes/api/external/v1/mcp'),
+      { requestInit: { headers: { Authorization: 'Bearer pmail_test-key' } } }
+    )
+    expect(mcpClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ applicationName: 'solver /a Mail' })
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
