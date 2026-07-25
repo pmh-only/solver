@@ -77,8 +77,10 @@ import {
   handleGptActionComponent,
   handleGptEffortSelect,
   handleGptModelSelect,
+  handleGptModalSubmit,
   handleGptVerbositySelect,
-  isGptActionComponentId
+  isGptActionComponentId,
+  isGptModalId
 } from './commands/gpt.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
@@ -275,6 +277,11 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
       if (interaction.isMessageComponent() && isGptActionComponentId(interaction.customId)) {
         await handleGptActionComponent(interaction)
+        return
+      }
+
+      if (interaction.isModalSubmit() && isGptModalId(interaction.customId)) {
+        await handleGptModalSubmit(interaction)
         return
       }
 

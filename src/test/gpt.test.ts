@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { agentCommand } from '../application-commands.js'
-import { GPT_ACTION_COMPONENT_ID } from '../commands/gpt.js'
+import { GPT_ACTION_COMPONENT_ID, GPT_MODAL_ID } from '../commands/gpt.js'
 import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
 import {
   agentCommandJSON,
   autocompleteJSON,
+  buttonJSON,
   dispatch,
   getCallback,
   getEdit,
   makeSubcommands,
+  modalJSON,
   selectJSON
 } from './e2e.js'
 
@@ -20,6 +22,8 @@ const {
   mcpClientMock,
   modelMock,
   componentActions,
+  modalActions,
+  responsePayloads,
   streamMock,
   toolMock,
   transportMock
@@ -30,6 +34,8 @@ const {
   mcpClientMock: vi.fn(),
   modelMock: vi.fn(),
   componentActions: [] as Record<string, unknown>[],
+  modalActions: [] as Record<string, unknown>[],
+  responsePayloads: [] as Record<string, unknown>[],
   streamMock: vi.fn(),
   toolMock: vi.fn((options) => options),
   transportMock: vi.fn()
@@ -80,11 +86,12 @@ vi.mock('@strands-agents/sdk', () => ({
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
       const componentAction = componentActions.shift()
-      if (componentAction) {
-        const componentTool = this.options.tools?.find(
-          (candidate) => candidate.name === 'manage_response_components'
+      const modalAction = modalActions.shift()
+      if (modalAction) {
+        const modalTool = this.options.tools?.find(
+          (candidate) => candidate.name === 'manage_response_modals'
         )
-        componentTool?.callback?.(componentAction as never)
+        modalTool?.callback?.(modalAction as never)
       }
       yield {
         type: 'modelStreamUpdateEvent',
@@ -118,7 +125,15 @@ vi.mock('@strands-agents/sdk', () => ({
           delta: { type: 'citationsDelta', citations: [], content: [] }
         }
       }
-      for (const text of ['hello', ' world']) {
+      const response = JSON.stringify(
+        responsePayloads.shift() ?? {
+          content: 'hello world',
+          ...(typeof componentAction?.components_json === 'string'
+            ? { components: JSON.parse(componentAction.components_json) }
+            : {})
+        }
+      )
+      for (const text of [response.slice(0, 10), response.slice(10)]) {
         yield {
           type: 'modelStreamUpdateEvent',
           event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } }
@@ -143,6 +158,8 @@ const subs = makeSubcommands()
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
   componentActions.length = 0
+  modalActions.length = 0
+  responsePayloads.length = 0
   clearStoredValues()
 })
 
@@ -177,7 +194,7 @@ describe('/a', () => {
     })
   })
 
-  it('always responds publicly with the selected session in the footer', async () => {
+  it('renders the agent JSON publicly and appends token usage', async () => {
     const calls = await dispatch(agentCommandJSON('explain recursion'), subs)
     const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
@@ -185,16 +202,9 @@ describe('/a', () => {
     const edit = getEdit(calls)
     expect(edit).not.toBeNull()
     expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).toContain('**Reasoning**')
-    expect(JSON.stringify(calls)).toContain('I should look this up.')
-    expect(JSON.stringify(calls)).toContain('**Tool:** docker\\\\_list')
-    expect(JSON.stringify(calls)).toContain('docker\\\\_list succeeded')
-    expect(JSON.stringify(calls)).toContain('**Tool:** web\\\\_search')
-    expect(JSON.stringify(calls)).toContain('web\\\\_search succeeded')
-    expect(JSON.stringify(calls)).toContain('**Response**')
+    expect(JSON.stringify(calls)).not.toContain('I should look this up.')
     expect(JSON.stringify(calls)).not.toContain('apiKey')
     expect(JSON.stringify(calls)).not.toContain('secret')
-    expect(JSON.stringify(calls)).toContain('Session: default')
     expect(JSON.stringify(calls)).toContain('Tokens used: 1,234 in / 56 out / 1,290 total')
     expect(JSON.stringify(calls)).toContain(
       'Model: gpt-5.4 | Reasoning effort: medium | Token limit: 4,096'
@@ -256,7 +266,7 @@ describe('/a', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
-          expect.objectContaining({ name: 'manage_response_components' }),
+          expect.objectContaining({ name: 'manage_response_modals' }),
           ...Array(7).fill(expect.anything())
         ]
       })
@@ -266,6 +276,47 @@ describe('/a', () => {
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
     )
+  })
+
+  it('preserves raw Discord embeds and appends token usage to the last footer', async () => {
+    responsePayloads.push({
+      embeds: [{ title: 'Status', description: 'Everything is healthy', footer: { text: 'Live' } }],
+      allowed_mentions: { parse: [] }
+    })
+
+    const calls = await dispatch(agentCommandJSON('show status'), subs)
+    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      embeds: Array<{ footer?: { text?: string } }>
+      components: unknown[]
+      allowed_mentions?: unknown
+    }
+
+    expect(edit.embeds[0]?.footer?.text).toContain('Live\nTokens used:')
+    expect(edit.components).toEqual([])
+    expect(edit.allowed_mentions).toEqual({ parse: [] })
+  })
+
+  it('accepts raw Discord API poll JSON', async () => {
+    responsePayloads.push({
+      content: 'Vote now',
+      poll: {
+        question: { text: 'Preferred release day?' },
+        answers: [{ poll_media: { text: 'Tuesday' } }, { poll_media: { text: 'Thursday' } }],
+        duration: 24,
+        allow_multiselect: true
+      }
+    })
+
+    const calls = await dispatch(agentCommandJSON('create a release poll'), subs)
+    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      poll?: { answers?: Array<{ poll_media?: { text?: string } }>; allow_multiselect?: boolean }
+    }
+
+    expect(edit.poll?.answers?.map((answer) => answer.poll_media?.text)).toEqual([
+      'Tuesday',
+      'Thursday'
+    ])
+    expect(edit.poll?.allow_multiselect).toBe(true)
   })
 
   it('gives the agent Spotify MCP tools when Spotify is configured', async () => {
@@ -321,7 +372,7 @@ describe('/a', () => {
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
           expect.objectContaining({ name: 'spotify_authenticate' }),
-          expect.objectContaining({ name: 'manage_response_components' })
+          expect.objectContaining({ name: 'manage_response_modals' })
         ]
       })
     )
@@ -376,7 +427,10 @@ describe('/a', () => {
       expect.objectContaining({
         messages: [
           expect.objectContaining({ role: 'user', content: [{ text: 'first question' }] }),
-          expect.objectContaining({ role: 'assistant', content: [{ text: 'hello world' }] })
+          expect.objectContaining({
+            role: 'assistant',
+            content: [{ text: '{"content":"hello world"}' }]
+          })
         ]
       })
     )
@@ -434,18 +488,21 @@ describe('/a', () => {
       type: InteractionResponseType.DeferredMessageUpdate
     })
     expect(streamMock).toHaveBeenLastCalledWith(
-      expect.stringMatching(/response component with id "format".*selected: pdf/),
+      JSON.stringify({ type: 'discord_component', custom_id: 'format', values: ['pdf'] }),
       expect.anything()
     )
     expect(agentMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         messages: expect.arrayContaining([
-          expect.objectContaining({ role: 'assistant', content: [{ text: 'hello world' }] })
+          expect.objectContaining({
+            role: 'assistant',
+            content: [{ text: expect.stringContaining('{"content":"hello world","components":') }]
+          })
         ])
       })
     )
     const rewritten = clickCalls.filter((call) => call.method === 'PATCH').at(-1)?.body
-    expect(JSON.stringify(rewritten)).toContain('**summarize the report**')
+    expect(JSON.stringify(rewritten)).toContain('hello world')
     expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_COMPONENT_ID)
   })
 
@@ -499,18 +556,74 @@ describe('/a', () => {
     }
   })
 
+  it('opens agent-defined modals and sends every submitted field back as JSON', async () => {
+    modalActions.push({
+      action: 'set',
+      trigger_id: 'configure',
+      modal_json: JSON.stringify({
+        title: 'Configure report',
+        components: [
+          {
+            type: 1,
+            components: [{ type: 4, custom_id: 'topic', label: 'Topic', style: 1, required: true }]
+          }
+        ]
+      })
+    })
+    responsePayloads.push({
+      content: 'Choose settings',
+      components: [
+        {
+          type: 1,
+          components: [{ type: 2, custom_id: 'configure', label: 'Configure', style: 1 }]
+        }
+      ]
+    })
+
+    const initialCalls = await dispatch(agentCommandJSON('build a configurable report'), subs)
+    const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: unknown[]
+    }
+    const configureId = JSON.stringify(initialEdit).match(/gpt-action:[^"]+:configure/)?.[0]
+    expect(configureId).toBeTruthy()
+
+    const openCalls = await dispatch(buttonJSON(initialEdit.components, configureId!), subs)
+    const open = getCallback(openCalls) as { type: number; data: { custom_id: string } }
+    expect(open.type).toBe(InteractionResponseType.Modal)
+    expect(open.data.custom_id).toMatch(new RegExp(`^${GPT_MODAL_ID}:[^:]+:configure$`))
+
+    const submitCalls = await dispatch(
+      modalJSON('quarterly revenue', {}, { customId: open.data.custom_id, inputId: 'topic' }),
+      subs
+    )
+    expect(getCallback(submitCalls)).toMatchObject({
+      type: InteractionResponseType.DeferredMessageUpdate
+    })
+    expect(streamMock).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        type: 'discord_modal_submit',
+        trigger_id: 'configure',
+        fields: [{ custom_id: 'topic', type: 4, value: 'quarterly revenue' }]
+      }),
+      expect.anything()
+    )
+  })
+
   it('switches to a new session and keeps it selected', async () => {
     await dispatch(agentCommandJSON('default question'), subs)
     const switched = await dispatch(agentCommandJSON('work question', {}, 'work'), subs)
     const continued = await dispatch(agentCommandJSON('follow-up'), subs)
 
-    expect(JSON.stringify(switched)).toContain('Session: work')
-    expect(JSON.stringify(continued)).toContain('Session: work')
+    expect(JSON.stringify(switched)).toContain('hello world')
+    expect(JSON.stringify(continued)).toContain('hello world')
     expect(agentMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         messages: [
           expect.objectContaining({ role: 'user', content: [{ text: 'work question' }] }),
-          expect.objectContaining({ role: 'assistant', content: [{ text: 'hello world' }] })
+          expect.objectContaining({
+            role: 'assistant',
+            content: [{ text: '{"content":"hello world"}' }]
+          })
         ]
       })
     )
@@ -530,17 +643,20 @@ describe('/a', () => {
             role: 'user',
             content: [{ text: 'first concurrent question' }]
           }),
-          expect.objectContaining({ role: 'assistant', content: [{ text: 'hello world' }] })
+          expect.objectContaining({
+            role: 'assistant',
+            content: [{ text: '{"content":"hello world"}' }]
+          })
         ]
       })
     )
   })
 
-  it('keeps multiline session names on one escaped footer line', async () => {
+  it('does not inject session metadata into agent-owned output', async () => {
     const calls = await dispatch(agentCommandJSON('question', {}, 'work\n# notes'), subs)
 
-    expect(JSON.stringify(calls)).toContain('Session: work # notes')
-    expect(JSON.stringify(calls)).not.toContain('Session: work\\n# notes')
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('Session:')
   })
 
   it('edits reply when no API key', async () => {

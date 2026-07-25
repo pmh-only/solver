@@ -7,6 +7,7 @@ import {
   createComponentBuilder,
   escapeMarkdown,
   MessageFlags,
+  ModalBuilder,
   SeparatorBuilder,
   SeparatorSpacingSize,
   StringSelectMenuBuilder,
@@ -15,7 +16,9 @@ import {
 } from 'discord.js'
 import type {
   ChatInputCommandInteraction,
+  InteractionEditReplyOptions,
   MessageComponentInteraction,
+  ModalSubmitInteraction,
   StringSelectMenuInteraction
 } from 'discord.js'
 import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
@@ -39,11 +42,9 @@ export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
 export const GPT_VERBOSITY_SELECT_ID = 'gpt-verbosity'
 export const GPT_ACTION_COMPONENT_ID = 'gpt-action'
+export const GPT_MODAL_ID = 'gpt-modal'
 export const AGENT_COMMAND_NAME = 'a'
 
-const GPT_COLOR = 0x10a37f
-const PAGE_LIMIT = 3600
-const EDIT_INTERVAL_MS = 750
 const DEFAULT_MAX_TOKENS = 4096
 const GPT_INTERACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SPOTIFY_MCP_PATH = fileURLToPath(
@@ -129,6 +130,7 @@ interface GptContext {
   sessionName: string
   history: ConversationTurn[]
   components: GptManagedComponent[]
+  modals: Record<string, GptManagedComponent>
   expiresAt: number
 }
 
@@ -151,7 +153,6 @@ const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
 const GPT_SETTINGS_KEY = 'gpt-settings'
 const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
-const followUpIds = new Map<string, string[]>()
 const sessionQueues = new Map<string, Promise<void>>()
 
 function isMcpConnectionClosed(error: unknown): boolean {
@@ -212,6 +213,20 @@ function loadGptContext(token: string): GptContext | null {
           }))
         }
       ]
+    }
+    if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
+      parsed.modals = {}
+    }
+    for (const [triggerId, modal] of Object.entries(parsed.modals)) {
+      if (
+        !/^[a-z0-9_-]{1,32}$/.test(triggerId) ||
+        !modal ||
+        typeof modal !== 'object' ||
+        (modal as GptManagedComponent).custom_id !== `${GPT_MODAL_ID}:${token}:${triggerId}`
+      ) {
+        throw new Error('Invalid stored modal.')
+      }
+      ModalBuilder.from(modal as never).toJSON()
     }
     return parsed as GptContext
   } catch {
@@ -285,33 +300,52 @@ function validateComponents(input: string, token: string): GptManagedComponent[]
   })
 }
 
-function interactionComponentTool(token: string, ctx: GptContext) {
+function validateModal(input: string, token: string, triggerId: string): GptManagedComponent {
+  const parsed: unknown = JSON.parse(input)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Modal must be a JSON object.')
+  }
+  const modal = structuredClone(parsed) as GptManagedComponent
+  modal.custom_id = `${GPT_MODAL_ID}:${token}:${triggerId}`
+  return new ModalBuilder(modal as never).toJSON() as unknown as GptManagedComponent
+}
+
+function interactionModalTool(token: string, ctx: GptContext) {
   return tool({
-    name: 'manage_response_components',
+    name: 'manage_response_modals',
     description:
-      'Set or clear extra Discord message components on this response. Supports multiple action rows and all message component types: buttons; string, user, role, mentionable, and channel selects; sections and thumbnails; text displays; media galleries; files; separators; and containers. Supply the complete top-level Discord API component array as JSON. Interactive custom_id values must be unique stable lowercase ids (1-32 characters); clicks and selections are sent back to you. Button styles are 1 primary, 2 secondary, 3 success, 4 danger, 5 link, and 6 premium. Component type numbers are 1 action row, 2 button, 3 string select, 5 user select, 6 role select, 7 mentionable select, 8 channel select, 9 section, 10 text display, 11 thumbnail, 12 media gallery, 13 file, 14 separator, and 17 container.',
+      'Set, remove, or clear Discord modals opened by buttons in your response JSON. trigger_id must match the stable custom_id of a button in the response. modal_json is a complete Discord API modal object and supports legacy action-row text inputs plus Components V2 text displays and labels containing selects, text inputs, file uploads, radio groups, checkboxes, and checkbox groups. The modal custom_id is managed automatically. Submitted field values are sent back to you.',
     inputSchema: z.object({
-      action: z.enum(['set', 'clear']),
-      components_json: z
+      action: z.enum(['set', 'remove', 'clear']),
+      trigger_id: z
+        .string()
+        .regex(/^[a-z0-9_-]{1,32}$/)
+        .optional(),
+      modal_json: z
         .string()
         .optional()
-        .describe('Complete JSON array of top-level Discord API components; required for set')
+        .describe('Complete Discord API modal object; required for set')
     }),
-    callback: ({ action, components_json }) => {
+    callback: ({ action, trigger_id, modal_json }) => {
       if (action === 'clear') {
-        ctx.components = []
+        ctx.modals = {}
         storeGptContext(token, ctx)
-        return 'Cleared response components.'
+        return 'Cleared response modals.'
       }
-
-      if (!components_json) return 'components_json is required when setting components.'
+      if (!trigger_id) return 'trigger_id is required.'
+      if (action === 'remove') {
+        delete ctx.modals[trigger_id]
+        storeGptContext(token, ctx)
+        return `Removed modal for ${trigger_id}.`
+      }
+      if (!modal_json) return 'modal_json is required when setting a modal.'
       try {
-        ctx.components = validateComponents(components_json, token)
+        ctx.modals[trigger_id] = validateModal(modal_json, token, trigger_id)
       } catch (error) {
-        return `Invalid components: ${error instanceof Error ? error.message : String(error)}`
+        return `Invalid modal: ${error instanceof Error ? error.message : String(error)}`
       }
       storeGptContext(token, ctx)
-      return `Set ${ctx.components.length} top-level response component(s).`
+      return `Set modal for ${trigger_id}.`
     }
   })
 }
@@ -437,6 +471,128 @@ function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usag
   return `-# Tokens used: ${tokens} | Model: ${model} | Reasoning effort: ${effort} | Token limit: ${maxTokens.toLocaleString('en-US')}`
 }
 
+function parseJsonObject(input: string): Record<string, unknown> {
+  const trimmed = input.trim()
+  const json = trimmed.startsWith('```')
+    ? trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+    : trimmed
+  const parsed: unknown = JSON.parse(json)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('The response must be a JSON object.')
+  }
+  return parsed as Record<string, unknown>
+}
+
+function appendFooterToEmbed(embed: Record<string, unknown>, footer: string): void {
+  const current = embed.footer
+  const plainFooter = footer.replace(/^-# /, '')
+  const currentText =
+    current &&
+    typeof current === 'object' &&
+    typeof (current as Record<string, unknown>).text === 'string'
+      ? ((current as Record<string, unknown>).text as string)
+      : ''
+  const available = Math.max(0, 2048 - plainFooter.length - (currentText ? 1 : 0))
+  const text = `${currentText.slice(0, available)}${currentText ? '\n' : ''}${plainFooter}`
+  embed.footer = {
+    ...(current && typeof current === 'object' ? current : {}),
+    text
+  }
+}
+
+function normalizePoll(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const poll = structuredClone(value) as Record<string, unknown>
+  const answers = Array.isArray(poll.answers)
+    ? poll.answers.map((answer) => {
+        if (!answer || typeof answer !== 'object') return answer
+        const raw = answer as Record<string, unknown>
+        return raw.poll_media && typeof raw.poll_media === 'object' ? raw.poll_media : raw
+      })
+    : poll.answers
+  return {
+    question: poll.question,
+    answers,
+    duration: poll.duration,
+    allowMultiselect: poll.allowMultiselect ?? poll.allow_multiselect,
+    ...(poll.layoutType !== undefined || poll.layout_type !== undefined
+      ? { layoutType: poll.layoutType ?? poll.layout_type }
+      : {})
+  }
+}
+
+function buildAgentPayload(
+  response: string,
+  token: string,
+  ctx: GptContext,
+  usage?: Usage
+): InteractionEditReplyOptions {
+  const raw = parseJsonObject(response)
+  const allowed = new Set([
+    'content',
+    'embeds',
+    'components',
+    'allowed_mentions',
+    'allowedMentions',
+    'attachments',
+    'poll',
+    'flags'
+  ])
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) throw new Error(`Unsupported Discord response field: ${key}`)
+  }
+
+  const payload = { ...raw } as Record<string, unknown>
+  if ('allowed_mentions' in payload) {
+    payload.allowedMentions = payload.allowed_mentions
+    delete payload.allowed_mentions
+  }
+  if ('poll' in payload) payload.poll = normalizePoll(payload.poll)
+
+  const components = validateComponents(JSON.stringify(payload.components ?? []), token)
+  ctx.components = components
+  for (const triggerId of Object.keys(ctx.modals)) {
+    if (!hasComponentId(components, `${GPT_ACTION_COMPONENT_ID}:${token}:${triggerId}`)) {
+      delete ctx.modals[triggerId]
+    }
+  }
+  const flags = typeof payload.flags === 'number' ? payload.flags : 0
+  const usesComponentsV2 =
+    (flags & MessageFlags.IsComponentsV2) !== 0 ||
+    components.some((component) => component.type !== ComponentType.ActionRow)
+  const footer = usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage)
+
+  if (usesComponentsV2) {
+    if (components.length >= 10) {
+      throw new Error(
+        'At most 9 top-level components may be used so the token footer can be appended.'
+      )
+    }
+    components.push({ type: ComponentType.TextDisplay, content: footer })
+    payload.content = null
+    payload.embeds = []
+    payload.components = components
+    payload.flags = flags | MessageFlags.IsComponentsV2
+  } else {
+    payload.components = components
+    const embeds = Array.isArray(payload.embeds)
+      ? (structuredClone(payload.embeds) as Record<string, unknown>[])
+      : []
+    if (embeds.length > 0) {
+      appendFooterToEmbed(embeds[embeds.length - 1]!, footer)
+      payload.embeds = embeds
+    } else {
+      const content = typeof payload.content === 'string' ? payload.content : ''
+      const separator = content ? '\n\n' : ''
+      const available = Math.max(0, 2000 - footer.length - separator.length)
+      payload.content = `${content.slice(0, available)}${separator}${footer}`
+    }
+    payload.flags = flags & MessageFlags.SuppressEmbeds
+  }
+
+  return payload as InteractionEditReplyOptions
+}
+
 function tokenFromId(customId: string, baseId: string): string | null {
   const prefix = `${baseId}:`
   if (!customId.startsWith(prefix)) return null
@@ -531,51 +687,18 @@ function buildGptComponents(
   return components
 }
 
-function buildFollowUpComponents(
-  content: string,
-  streaming: boolean,
-  stats?: string
-): GptComponent[] {
-  const displayContent = streaming ? `${content}\n-# ▌` : content
-  const ctr = new ContainerBuilder()
-    .setAccentColor(GPT_COLOR)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(displayContent))
-
-  if (stats) {
-    ctr
-      .addSeparatorComponents(
-        new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(false)
-      )
-      .addTextDisplayComponents(new TextDisplayBuilder().setContent(stats))
-  }
-
-  return [ctr]
-}
-
 interface StreamCallbacks {
   editMain: (components: GptComponent[]) => Promise<{ id?: string } | unknown>
-  followUp: (components: GptComponent[]) => Promise<{ id?: string } | unknown>
-  editMessage: (messageId: string, components: GptComponent[]) => Promise<unknown>
-  deleteMessage: (messageId: string) => Promise<unknown>
+  editPayload: (payload: InteractionEditReplyOptions) => Promise<{ id?: string } | unknown>
 }
 
 function makeCallbacks(
   interaction: {
     editReply: (options: { components: never; flags: number }) => Promise<unknown>
-    followUp: (options: { components: never; flags: readonly number[] }) => Promise<unknown>
-    webhook: {
-      editMessage: (id: string, data: { components: never; flags: number }) => Promise<unknown>
-      deleteMessage: (id: string) => Promise<unknown>
-    }
   },
   pub: boolean
 ): StreamCallbacks {
-  const msgFlags = pub
-    ? MessageFlags.IsComponentsV2
-    : MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
-  const followUpFlags: readonly number[] = pub
-    ? [MessageFlags.IsComponentsV2]
-    : [MessageFlags.IsComponentsV2, MessageFlags.Ephemeral]
+  void pub
 
   return {
     editMain: (comps) =>
@@ -583,13 +706,14 @@ function makeCallbacks(
         components: comps as never,
         flags: MessageFlags.IsComponentsV2
       }),
-    followUp: (comps) => interaction.followUp({ components: comps as never, flags: followUpFlags }),
-    editMessage: (id, comps) =>
-      interaction.webhook.editMessage(id, {
-        components: comps as never,
-        flags: msgFlags
-      }),
-    deleteMessage: (id) => interaction.webhook.deleteMessage(id)
+    editPayload: (payload) =>
+      interaction.editReply({
+        content: null,
+        embeds: [],
+        components: [],
+        attachments: [],
+        ...payload
+      } as never)
   }
 }
 
@@ -600,22 +724,8 @@ async function runGptStream(
 ): Promise<void> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
-    await callbacks.editMain(
-      buildGptComponents(
-        ctx.displayPrompt,
-        'no OPENAI_API_KEY',
-        ctx.sessionName,
-        ctx.pub,
-        token,
-        ctx.model,
-        ctx.effort,
-        ctx.maxTokens,
-        ctx.verbosity,
-        false,
-        undefined,
-        true,
-        ctx.components
-      )
+    await callbacks.editPayload(
+      buildAgentPayload(JSON.stringify({ content: 'no OPENAI_API_KEY' }), token, ctx)
     )
     return
   }
@@ -623,102 +733,24 @@ async function runGptStream(
   const existing = activeStreams.get(token)
   existing?.abort()
 
-  const oldFollowUps = followUpIds.get(token) ?? []
-  for (const id of oldFollowUps) {
-    await callbacks.deleteMessage(id).catch(() => {})
-  }
-  followUpIds.set(token, [])
-
   const controller = new AbortController()
   activeStreams.set(token, controller)
 
-  let currentPage = 1
-  let currentPageContent = ''
   let responseContent = ''
-  let lastEditTime = 0
   let usage: Usage | undefined
   const mcpClients: McpClient[] = []
-  let activeDisplayType: 'reasoning' | 'text' | null = null
-  let hasTrace = false
-  let displayedWebSearch = false
-  const toolNames = new Map<string, string>()
-
-  const editCurrentPage = async (content: string, streaming: boolean, complete = false) => {
-    if (currentPage === 1) {
-      await callbacks.editMain(
-        buildGptComponents(
-          ctx.displayPrompt,
-          content,
-          ctx.sessionName,
-          ctx.pub,
-          token,
-          ctx.model,
-          ctx.effort,
-          ctx.maxTokens,
-          ctx.verbosity,
-          streaming,
-          complete ? usage : undefined,
-          complete,
-          ctx.components
-        )
-      )
-    } else {
-      const pageIds = followUpIds.get(token) ?? []
-      const pageId = pageIds[currentPage - 2]
-      if (pageId) {
-        await callbacks.editMessage(
-          pageId,
-          buildFollowUpComponents(
-            content,
-            streaming,
-            complete ? usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage) : undefined
-          )
-        )
-      }
-    }
-  }
-
-  const overflowToNewPage = async () => {
-    await editCurrentPage(currentPageContent, false)
-    currentPage++
-    currentPageContent = ''
-
-    const msg = (await callbacks.followUp(buildFollowUpComponents('-# generating...', true))) as {
-      id?: string
-    }
-
-    if (msg?.id) {
-      const ids = followUpIds.get(token) ?? []
-      ids.push(msg.id)
-      followUpIds.set(token, ids)
-    }
-  }
-
-  const appendDisplayContent = async (content: string) => {
-    currentPageContent += content
-    if (currentPageContent.length > PAGE_LIMIT) {
-      const overflow = currentPageContent.slice(PAGE_LIMIT)
-      currentPageContent = currentPageContent.slice(0, PAGE_LIMIT)
-      await overflowToNewPage()
-      currentPageContent = overflow
-    }
-  }
-
-  const updateStreamingDisplay = async () => {
-    const now = Date.now()
-    if (now - lastEditTime >= EDIT_INTERVAL_MS) {
-      await editCurrentPage(currentPageContent, true)
-      lastEditTime = now
-    }
-  }
 
   try {
-    const systemInstruction =
+    const systemInstruction = [
+      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       ctx.verbosity === 'brief'
         ? 'Be concise and to the point. Keep responses short.'
         : ctx.verbosity === 'detailed'
           ? 'Be thorough and comprehensive. Explain in detail.'
           : null
+    ]
+      .filter(Boolean)
+      .join('\n')
 
     const model = new OpenAIModel({
       api: 'responses',
@@ -816,7 +848,7 @@ async function runGptStream(
       )
     }
     const streamAgent = async (prompt: string, diagnosing = false) => {
-      const componentTool = interactionComponentTool(token, ctx)
+      const modalTool = interactionModalTool(token, ctx)
       const agent = new Agent({
         model,
         messages: agentMessages(ctx.history),
@@ -827,10 +859,10 @@ async function runGptStream(
             ]
               .filter(Boolean)
               .join('\n')
-          : (systemInstruction ?? undefined),
+          : systemInstruction,
         tools: diagnosing
-          ? [spotifyAuthenticationTool, componentTool]
-          : [spotifyAuthenticationTool, componentTool, ...mcpClients],
+          ? [spotifyAuthenticationTool, modalTool]
+          : [spotifyAuthenticationTool, modalTool, ...mcpClients],
         printer: false
       })
 
@@ -841,61 +873,11 @@ async function runGptStream(
         if (controller.signal.aborted) break
 
         if (event.type === 'modelStreamUpdateEvent') {
-          if (
-            event.event.type === 'modelContentBlockStartEvent' &&
-            event.event.start?.type === 'toolUseStart'
-          ) {
-            const { name, toolUseId } = event.event.start
-            toolNames.set(toolUseId, name)
-            await appendDisplayContent(
-              `${currentPageContent ? '\n\n' : ''}**Tool:** ${escapeMarkdown(name)}`
-            )
-            activeDisplayType = null
-            hasTrace = true
-            await updateStreamingDisplay()
-          }
-
           if (event.event.type === 'modelContentBlockDeltaEvent') {
-            if (event.event.delta.type === 'reasoningContentDelta' && event.event.delta.text) {
-              const heading =
-                activeDisplayType === 'reasoning'
-                  ? ''
-                  : `${currentPageContent ? '\n\n' : ''}**Reasoning**\n`
-              await appendDisplayContent(`${heading}${event.event.delta.text}`)
-              activeDisplayType = 'reasoning'
-              hasTrace = true
-              await updateStreamingDisplay()
-            }
-
-            if (event.event.delta.type === 'citationsDelta' && !displayedWebSearch) {
-              await appendDisplayContent(
-                `${currentPageContent ? '\n\n' : ''}**Tool:** web\\_search\n-# web\\_search succeeded`
-              )
-              activeDisplayType = null
-              hasTrace = true
-              displayedWebSearch = true
-              await updateStreamingDisplay()
-            }
-
             if (event.event.delta.type === 'textDelta') {
-              const heading =
-                hasTrace && activeDisplayType !== 'text'
-                  ? `${currentPageContent ? '\n\n' : ''}**Response**\n`
-                  : ''
-              await appendDisplayContent(`${heading}${event.event.delta.text}`)
               responseContent += event.event.delta.text
-              activeDisplayType = 'text'
-              await updateStreamingDisplay()
             }
           }
-        }
-        if (event.type === 'toolResultEvent') {
-          const name = toolNames.get(event.result.toolUseId) ?? 'unknown tool'
-          const status = event.result.status === 'success' ? 'succeeded' : 'failed'
-          await appendDisplayContent(`\n-# ${escapeMarkdown(name)} ${status}`)
-          activeDisplayType = null
-          hasTrace = true
-          await updateStreamingDisplay()
         }
         if (event.type === 'agentResultEvent') {
           usage = event.result.metrics?.latestAgentInvocation?.usage
@@ -908,21 +890,8 @@ async function runGptStream(
     } catch (error) {
       if (!isMcpConnectionClosed(error) || controller.signal.aborted) throw error
 
-      for (const id of followUpIds.get(token) ?? []) {
-        await callbacks.deleteMessage(id).catch(() => {})
-      }
-      followUpIds.set(token, [])
-      currentPage = 1
-      currentPageContent = ''
       responseContent = ''
-      lastEditTime = 0
       usage = undefined
-      activeDisplayType = null
-      hasTrace = false
-      displayedWebSearch = false
-      toolNames.clear()
-      await editCurrentPage('-# diagnosing MCP connection failure...', true)
-
       const integrations = [
         'Docker MCP (`uvx mcp-server-docker`)',
         'Filesystem MCP',
@@ -942,7 +911,7 @@ async function runGptStream(
 
     if (!controller.signal.aborted) {
       const response = responseContent || '(no response)'
-      await editCurrentPage(currentPageContent || response, false, true)
+      await callbacks.editPayload(buildAgentPayload(response, token, ctx, usage))
       storeConversation(ctx, response)
     }
   } catch (error) {
@@ -954,22 +923,8 @@ async function runGptStream(
     }
 
     const errMsg = error instanceof Error ? error.message : 'unknown error'
-    await callbacks.editMain(
-      buildGptComponents(
-        ctx.displayPrompt,
-        `error: ${errMsg}`,
-        ctx.sessionName,
-        ctx.pub,
-        token,
-        ctx.model,
-        ctx.effort,
-        ctx.maxTokens,
-        ctx.verbosity,
-        false,
-        undefined,
-        true,
-        ctx.components
-      )
+    await callbacks.editPayload(
+      buildAgentPayload(JSON.stringify({ content: `error: ${errMsg}` }), token, ctx, usage)
     )
   } finally {
     await Promise.all(mcpClients.map((client) => client.disconnect().catch(() => {})))
@@ -1029,7 +984,8 @@ async function handleGptSelect(
   try {
     await runGptStream(callbacks, updatedCtx, token)
   } finally {
-    if (updatedCtx.components.length === 0) deleteGptContext(token)
+    if (updatedCtx.components.length === 0 && Object.keys(updatedCtx.modals).length === 0)
+      deleteGptContext(token)
     else storeGptContext(token, updatedCtx)
   }
 }
@@ -1064,6 +1020,10 @@ export function isGptActionComponentId(customId: string): boolean {
   return customId.startsWith(`${GPT_ACTION_COMPONENT_ID}:`)
 }
 
+export function isGptModalId(customId: string): boolean {
+  return customId.startsWith(`${GPT_MODAL_ID}:`)
+}
+
 function hasComponentId(value: unknown, customId: string): boolean {
   if (Array.isArray(value)) return value.some((item) => hasComponentId(item, customId))
   if (!value || typeof value !== 'object') return false
@@ -1087,33 +1047,72 @@ export async function handleGptActionComponent(
     return
   }
 
+  const modal = ctx.modals[componentId]
+  if (modal && interaction.isButton()) {
+    await interaction.showModal(ModalBuilder.from(modal as never))
+    return
+  }
+
   await interaction.deferUpdate()
   await runInSession(ctx.userId, ctx.sessionName, async () => {
     ctx.history = loadConversation(ctx.userId, ctx.sessionName)
     const values = interaction.isAnySelectMenu() ? interaction.values : []
-    ctx.prompt = `A Discord user activated the response component with id "${componentId}"${values.length > 0 ? ` and selected: ${values.join(', ')}` : ''}. Rewrite the response to handle that choice. You may set, update, or clear response components as appropriate.`
+    ctx.prompt = JSON.stringify({
+      type: 'discord_component',
+      custom_id: componentId,
+      values
+    })
     storeGptContext(token, ctx)
 
     const callbacks = makeCallbacks(interaction, ctx.pub)
-    await callbacks.editMain(
-      buildGptComponents(
-        ctx.displayPrompt,
-        '',
-        ctx.sessionName,
-        ctx.pub,
-        token,
-        ctx.model,
-        ctx.effort,
-        ctx.maxTokens,
-        ctx.verbosity,
-        true,
-        undefined,
-        false,
-        ctx.components
-      )
-    )
     await runGptStream(callbacks, ctx, token)
-    if (ctx.components.length === 0) deleteGptContext(token)
+    if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) deleteGptContext(token)
+    else storeGptContext(token, ctx)
+  })
+}
+
+export async function handleGptModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
+  const match = /^gpt-modal:([^:]+):([a-z0-9_-]{1,32})$/.exec(interaction.customId)
+  if (!match) return
+  const token = match[1]!
+  const triggerId = match[2]!
+  const ctx = loadGptContext(token)
+  if (!ctx || !ctx.modals[triggerId]) {
+    await interaction.reply(container('agent', new Map(), 'interaction expired'))
+    return
+  }
+
+  const fields = [...interaction.fields.fields.values()].map((field) => {
+    const value = field as unknown as Record<string, unknown>
+    const attachments = value.attachments
+    return {
+      custom_id: field.customId,
+      type: field.type,
+      ...(typeof value.value === 'string' ||
+      typeof value.value === 'boolean' ||
+      value.value === null
+        ? { value: value.value }
+        : {}),
+      ...(Array.isArray(value.values) ? { values: value.values } : {}),
+      ...(attachments && typeof attachments === 'object' && 'map' in attachments
+        ? {
+            attachments: (
+              attachments as {
+                map: (callback: (item: { toJSON(): unknown }) => unknown) => unknown[]
+              }
+            ).map((attachment) => attachment.toJSON())
+          }
+        : {})
+    }
+  })
+
+  await interaction.deferUpdate()
+  await runInSession(ctx.userId, ctx.sessionName, async () => {
+    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+    ctx.prompt = JSON.stringify({ type: 'discord_modal_submit', trigger_id: triggerId, fields })
+    storeGptContext(token, ctx)
+    await runGptStream(makeCallbacks(interaction, ctx.pub), ctx, token)
+    if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) deleteGptContext(token)
     else storeGptContext(token, ctx)
   })
 }
@@ -1152,26 +1151,13 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     sessionName,
     history: [],
     components: [],
+    modals: {},
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
 
   await interaction.deferReply()
 
-  await interaction.editReply({
-    components: buildGptComponents(
-      prompt,
-      '',
-      sessionName,
-      pub,
-      token,
-      settings.model,
-      settings.effort,
-      settings.maxTokens,
-      'normal',
-      true
-    ) as never,
-    flags: MessageFlags.IsComponentsV2
-  })
+  await interaction.editReply({ content: '-# generating...' })
 
   const callbacks = makeCallbacks(interaction, pub)
   await runInSession(interaction.user.id, sessionName, async () => {
@@ -1180,7 +1166,8 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     try {
       await runGptStream(callbacks, ctx, token)
     } finally {
-      if (ctx.components.length === 0) deleteGptContext(token)
+      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+        deleteGptContext(token)
       else storeGptContext(token, ctx)
     }
   })
