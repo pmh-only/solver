@@ -21,7 +21,7 @@ import type {
   ModalSubmitInteraction,
   StringSelectMenuInteraction
 } from 'discord.js'
-import { Agent, McpClient, tool, type MessageData } from '@strands-agents/sdk'
+import { Agent, McpClient, tool, type MessageData, type Tool } from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -186,6 +186,19 @@ function isMcpConnectionClosed(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined
   }
   return false
+}
+
+function replaceDuplicateTools<T extends { name: string }>(tools: T[]): T[] {
+  const toolsByNormalizedName = new Map<string, T>()
+  for (const candidate of tools) {
+    toolsByNormalizedName.set(candidate.name.replaceAll('-', '_'), candidate)
+  }
+  return [...toolsByNormalizedName.values()]
+}
+
+async function loadMcpTools(clients: McpClient[]): Promise<Tool[]> {
+  const toolsByClient = await Promise.all(clients.map((client) => client.listTools()))
+  return toolsByClient.flat()
 }
 
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
@@ -926,6 +939,10 @@ async function runGptStream(
     }
     const streamAgent = async (prompt: string, diagnosing = false) => {
       const modalTool = interactionModalTool(token, ctx)
+      const localTools = [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool]
+      const agentTools = diagnosing
+        ? localTools
+        : replaceDuplicateTools([...localTools, ...(await loadMcpTools(mcpClients))])
       const agent = new Agent({
         model,
         messages: agentMessages(ctx.history),
@@ -937,9 +954,7 @@ async function runGptStream(
               .filter(Boolean)
               .join('\n')
           : systemInstruction,
-        tools: diagnosing
-          ? [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool]
-          : [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool, ...mcpClients],
+        tools: agentTools,
         printer: false
       })
 

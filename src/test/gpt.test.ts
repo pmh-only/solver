@@ -22,6 +22,8 @@ const {
   disconnectMock,
   httpTransportMock,
   mcpClientMock,
+  mcpToolGroups,
+  mcpToolNumber,
   modelMock,
   componentActions,
   modalActions,
@@ -34,6 +36,8 @@ const {
   disconnectMock: vi.fn().mockResolvedValue(undefined),
   httpTransportMock: vi.fn(),
   mcpClientMock: vi.fn(),
+  mcpToolGroups: [] as Record<string, unknown>[][],
+  mcpToolNumber: { value: 0 },
   modelMock: vi.fn(),
   componentActions: [] as Record<string, unknown>[],
   modalActions: [] as Record<string, unknown>[],
@@ -71,9 +75,14 @@ vi.mock('@strands-agents/sdk', () => ({
   tool: toolMock,
   McpClient: class MockMcpClient {
     disconnect = disconnectMock
+    listTools: () => Promise<Record<string, unknown>[]>
 
     constructor(options: unknown) {
       mcpClientMock(options)
+      const tools = mcpToolGroups.shift() ?? [
+        { name: `mcp_tool_${mcpToolNumber.value++}`, description: 'MCP tool' }
+      ]
+      this.listTools = vi.fn().mockResolvedValue(tools)
     }
   },
   Agent: class MockAgent {
@@ -164,6 +173,8 @@ beforeEach(() => {
   componentActions.length = 0
   modalActions.length = 0
   responsePayloads.length = 0
+  mcpToolGroups.length = 0
+  mcpToolNumber.value = 0
   clearStoredValues()
 })
 
@@ -422,6 +433,23 @@ describe('/a', () => {
       expect.objectContaining({ applicationName: 'solver /a Google Calendar' })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
+  })
+
+  it('replaces MCP tools whose names differ only by hyphens and underscores', async () => {
+    mcpToolGroups.push(
+      [{ name: 'get-current-time', source: 'old' }],
+      [{ name: 'get_current_time', source: 'replacement' }],
+      ...Array.from({ length: 5 }, (_, index) => [{ name: `other_tool_${index}` }])
+    )
+
+    await dispatch(agentCommandJSON('what time is it?'), subs)
+
+    const tools = (agentMock.mock.calls[0]![0] as { tools: Record<string, unknown>[] }).tools
+    expect(tools).toContainEqual(
+      expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
+    )
+    expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
+    expect(tools).toHaveLength(9)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
