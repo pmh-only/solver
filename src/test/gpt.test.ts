@@ -519,6 +519,7 @@ describe('/a', () => {
               type: 3,
               custom_id: 'format',
               placeholder: 'Choose a format',
+              sender_only: false,
               options: [{ label: 'PDF', value: 'pdf' }]
             }
           ]
@@ -569,6 +570,63 @@ describe('/a', () => {
     const rewritten = clickCalls.filter((call) => call.method === 'PATCH').at(-1)?.body
     expect(JSON.stringify(rewritten)).toContain('hello world')
     expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_COMPONENT_ID)
+  })
+
+  it('restricts sender-only components while leaving the parameter out of Discord JSON', async () => {
+    responsePayloads.push({
+      content: 'Choose an action',
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              custom_id: 'private-action',
+              label: 'Private action',
+              style: 1,
+              sender_only: true
+            }
+          ]
+        }
+      ]
+    })
+    const initialCalls = await dispatch(agentCommandJSON('create a private action'), subs)
+    const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: unknown[]
+    }
+    const actionId = JSON.stringify(initialEdit).match(/gpt-action:[^"]+:private-action/)?.[0]
+
+    expect(actionId).toBeTruthy()
+    expect(JSON.stringify(initialEdit)).not.toContain('sender_only')
+
+    const unauthorizedCalls = await dispatch(
+      buttonJSON(initialEdit.components, actionId!, {
+        user: {
+          id: '555555555555555555',
+          username: 'otheruser',
+          discriminator: '0',
+          avatar: null,
+          global_name: 'Other User'
+        }
+      }),
+      subs
+    )
+    const unauthorized = getCallback(unauthorizedCalls) as {
+      type: number
+      data: { flags: number; components: unknown[] }
+    }
+    expect(unauthorized.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(unauthorized.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(JSON.stringify(unauthorized.data.components)).toContain(
+      'only the user who sent this request can use this component'
+    )
+    expect(streamMock).toHaveBeenCalledTimes(1)
+
+    const ownerCalls = await dispatch(buttonJSON(initialEdit.components, actionId!), subs)
+    expect(getCallback(ownerCalls)).toMatchObject({
+      type: InteractionResponseType.DeferredMessageUpdate
+    })
+    expect(streamMock).toHaveBeenCalledTimes(2)
   })
 
   it('accepts every Discord message component type', async () => {

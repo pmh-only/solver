@@ -153,6 +153,7 @@ interface GptContext {
   sessionName: string
   history: ConversationTurn[]
   components: GptManagedComponent[]
+  senderOnlyComponentIds: string[]
   modals: Record<string, GptManagedComponent>
   expiresAt: number
 }
@@ -237,6 +238,14 @@ function loadGptContext(token: string): GptContext | null {
         }
       ]
     }
+    if (parsed.senderOnlyComponentIds === undefined) {
+      parsed.senderOnlyComponentIds = []
+    } else if (
+      !Array.isArray(parsed.senderOnlyComponentIds) ||
+      !parsed.senderOnlyComponentIds.every((id) => typeof id === 'string')
+    ) {
+      throw new Error('Invalid sender-only component ids.')
+    }
     if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
       parsed.modals = {}
     }
@@ -265,14 +274,24 @@ function buttonStyle(style: string): ButtonStyle {
   return ButtonStyle.Secondary
 }
 
-function namespaceComponentIds(value: unknown, token: string, ids: Set<string>): void {
+function namespaceComponentIds(
+  value: unknown,
+  token: string,
+  ids: Set<string>,
+  senderOnlyIds: Set<string>
+): void {
   if (Array.isArray(value)) {
-    for (const item of value) namespaceComponentIds(item, token, ids)
+    for (const item of value) namespaceComponentIds(item, token, ids, senderOnlyIds)
     return
   }
   if (!value || typeof value !== 'object') return
 
   const component = value as Record<string, unknown>
+  const senderOnly = component.sender_only
+  if (senderOnly !== undefined && typeof senderOnly !== 'boolean') {
+    throw new Error('sender_only must be a boolean.')
+  }
+  delete component.sender_only
   if (typeof component.custom_id === 'string') {
     if (!/^[a-z0-9_-]{1,32}$/.test(component.custom_id)) {
       throw new Error(`Invalid component id: ${component.custom_id}`)
@@ -280,18 +299,27 @@ function namespaceComponentIds(value: unknown, token: string, ids: Set<string>):
     if (ids.has(component.custom_id))
       throw new Error(`Duplicate component id: ${component.custom_id}`)
     ids.add(component.custom_id)
+    if (senderOnly) senderOnlyIds.add(component.custom_id)
     component.custom_id = `${GPT_ACTION_COMPONENT_ID}:${token}:${component.custom_id}`
+  } else if (senderOnly) {
+    throw new Error('sender_only requires an interactive component with custom_id.')
   }
-  for (const child of Object.values(component)) namespaceComponentIds(child, token, ids)
+  for (const child of Object.values(component)) {
+    namespaceComponentIds(child, token, ids, senderOnlyIds)
+  }
 }
 
-function validateComponents(input: string, token: string): GptManagedComponent[] {
+function validateComponents(
+  input: string,
+  token: string
+): { components: GptManagedComponent[]; senderOnlyIds: string[] } {
   const parsed: unknown = JSON.parse(input)
   if (!Array.isArray(parsed)) throw new Error('Components must be a JSON array.')
   if (parsed.length > 10) throw new Error('At most 10 top-level components may exist.')
 
   const components = structuredClone(parsed) as GptManagedComponent[]
-  namespaceComponentIds(components, token, new Set())
+  const senderOnlyIds = new Set<string>()
+  namespaceComponentIds(components, token, new Set(), senderOnlyIds)
   let count = 0
   const countComponents = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -315,12 +343,13 @@ function validateComponents(input: string, token: string): GptManagedComponent[]
     ComponentType.Separator,
     ComponentType.Container
   ])
-  return components.map((component) => {
+  const validated = components.map((component) => {
     if (!topLevelTypes.has(component.type as ComponentType)) {
       throw new Error(`Component type ${String(component.type)} cannot be top-level.`)
     }
     return createComponentBuilder(component as never).toJSON() as unknown as GptManagedComponent
   })
+  return { components: validated, senderOnlyIds: [...senderOnlyIds] }
 }
 
 function validateModal(input: string, token: string, triggerId: string): GptManagedComponent {
@@ -572,8 +601,12 @@ function buildAgentPayload(
   }
   if ('poll' in payload) payload.poll = normalizePoll(payload.poll)
 
-  const components = validateComponents(JSON.stringify(payload.components ?? []), token)
+  const { components, senderOnlyIds } = validateComponents(
+    JSON.stringify(payload.components ?? []),
+    token
+  )
   ctx.components = components
+  ctx.senderOnlyComponentIds = senderOnlyIds
   for (const triggerId of Object.keys(ctx.modals)) {
     if (!hasComponentId(components, `${GPT_ACTION_COMPONENT_ID}:${token}:${triggerId}`)) {
       delete ctx.modals[triggerId]
@@ -773,7 +806,7 @@ async function runGptStream(
 
   try {
     const systemInstruction = [
-      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
+      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       ctx.verbosity === 'brief'
         ? 'Be concise and to the point. Keep responses short.'
         : ctx.verbosity === 'detailed'
@@ -1079,6 +1112,21 @@ function hasComponentId(value: unknown, customId: string): boolean {
   )
 }
 
+async function rejectUnauthorizedGptInteraction(
+  interaction: MessageComponentInteraction | ModalSubmitInteraction,
+  ctx: GptContext,
+  componentId: string
+): Promise<boolean> {
+  if (!ctx.senderOnlyComponentIds.includes(componentId) || interaction.user.id === ctx.userId) {
+    return false
+  }
+
+  await interaction.reply(
+    container('agent', new Map(), 'only the user who sent this request can use this component')
+  )
+  return true
+}
+
 export async function handleGptActionComponent(
   interaction: MessageComponentInteraction
 ): Promise<void> {
@@ -1091,6 +1139,7 @@ export async function handleGptActionComponent(
     await interaction.reply(container('agent', new Map(), 'interaction expired'))
     return
   }
+  if (await rejectUnauthorizedGptInteraction(interaction, ctx, componentId)) return
 
   const modal = ctx.modals[componentId]
   if (modal && interaction.isButton()) {
@@ -1126,6 +1175,7 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
     await interaction.reply(container('agent', new Map(), 'interaction expired'))
     return
   }
+  if (await rejectUnauthorizedGptInteraction(interaction, ctx, triggerId)) return
 
   const fields = [...interaction.fields.fields.values()].map((field) => {
     const value = field as unknown as Record<string, unknown>
@@ -1196,6 +1246,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     sessionName,
     history: [],
     components: [],
+    senderOnlyComponentIds: [],
     modals: {},
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
