@@ -55,5 +55,8 @@ Create a Google Cloud OAuth client of type **Web application**, enable the Googl
 set `GOOGLE_CALENDAR_REDIRECT_URI` to that exact public callback URI. Then ask `/a` to authenticate
 Google Calendar; the agent returns a Google login link without requiring terminal access.
 
+Both values can be applied to the running bot with `/c set env:<name> <value>`. Values set this way
+are process-local and must be configured in the deployment environment to survive a bot restart.
+
 Normalized OAuth credentials and refreshable account tokens are stored with mode `0600` under
 `data/.google-calendar-mcp`.

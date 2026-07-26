@@ -123,9 +123,13 @@ export async function beginGoogleCalendarAuthentication(accountIdValue: string):
   }
   const configuration = await loadGoogleCalendarConfiguration()
   if (!configuration) {
-    throw new Error(
-      'Google Calendar requires GOOGLE_OAUTH_CREDENTIALS_BASE64 and GOOGLE_CALENDAR_REDIRECT_URI'
-    )
+    const missing = [
+      ['GOOGLE_OAUTH_CREDENTIALS_BASE64', process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64],
+      ['GOOGLE_CALENDAR_REDIRECT_URI', process.env.GOOGLE_CALENDAR_REDIRECT_URI]
+    ]
+      .filter(([, value]) => !value?.trim())
+      .map(([name]) => name)
+    throw new Error(`Google Calendar requires ${missing.join(' and ')}`)
   }
   const credentials = parseCredentials(await readFile(configuration.credentialsPath, 'utf8'))
   const verifier = randomBytes(32).toString('base64url')

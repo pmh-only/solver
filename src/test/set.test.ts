@@ -43,6 +43,7 @@ describe('set — command', () => {
         expect(process.env[key]).toBe('sensitive-value')
         expect(getStoredValue(`env:${key}`)).toBeUndefined()
         expect(response).toContain(`ok env:${key}=[redacted]`)
+        expect(response).toContain('resets when the bot restarts')
         expect(response).not.toContain('sensitive-value')
       } finally {
         if (previous === undefined) delete process.env[key]

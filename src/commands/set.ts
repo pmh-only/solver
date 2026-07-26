@@ -67,7 +67,9 @@ export const subcommand: Subcommand = {
 
     const components = [
       summarySection(isConfigEnv ? 'Environment updated' : 'Stored value updated', [
-        `Key \`${parsed.key}\` updated successfully`
+        isConfigEnv
+          ? `Key \`${parsed.key}\` updated for the current bot process; it resets when the bot restarts`
+          : `Key \`${parsed.key}\` updated successfully`
       ]),
       separator(),
       text(`**Result**\n\`ok ${parsed.key}=${isConfigEnv ? '[redacted]' : parsed.value}\``)

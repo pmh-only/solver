@@ -107,4 +107,13 @@ describe('Google Calendar agent authentication', () => {
       'Google OAuth credentials must be base64-encoded JSON'
     )
   })
+
+  it('reports only the Google Calendar setting that is missing', async () => {
+    configureGoogleCalendar()
+    delete process.env.GOOGLE_CALENDAR_REDIRECT_URI
+
+    await expect(beginGoogleCalendarAuthentication('personal')).rejects.toThrow(
+      /^Google Calendar requires GOOGLE_CALENDAR_REDIRECT_URI$/
+    )
+  })
 })
