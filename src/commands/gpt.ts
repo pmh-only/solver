@@ -165,6 +165,11 @@ interface ConversationTurn {
   content: string
 }
 
+interface AgentActivity {
+  reasoning: string
+  tools: Array<{ id: string; name: string; status: 'running' | 'success' | 'error' }>
+}
+
 interface GptSessionSettings {
   model: ModelId
   effort: EffortLevel
@@ -536,6 +541,29 @@ function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usag
   return `-# Tokens used: ${tokens} | Model: ${model} | Reasoning effort: ${effort} | Token limit: ${maxTokens.toLocaleString('en-US')}`
 }
 
+function formatAgentActivity(activity: AgentActivity): string {
+  const sections: string[] = []
+  const reasoning = activity.reasoning.trim()
+  if (reasoning) {
+    const limit = 1200
+    sections.push(
+      `**Reasoning**\n${reasoning.length > limit ? `${reasoning.slice(0, limit - 3)}...` : reasoning}`
+    )
+  }
+  if (activity.tools.length > 0) {
+    const tools = activity.tools.slice(0, 20).map(({ name, status }) => {
+      const label = name.replaceAll('`', '')
+      return `- \`${label}\`: ${status}`
+    })
+    if (activity.tools.length > tools.length)
+      tools.push(`- ${activity.tools.length - tools.length} more`)
+    sections.push(`**Tools used**\n${tools.join('\n')}`)
+  }
+  const summary = sections.join('\n\n')
+  const limit = 1500
+  return summary.length > limit ? `${summary.slice(0, limit - 3)}...` : summary
+}
+
 function parseJsonObject(input: string): Record<string, unknown> {
   const trimmed = input.trim()
   const json = trimmed.startsWith('```')
@@ -590,7 +618,8 @@ function buildAgentPayload(
   response: string,
   token: string,
   ctx: GptContext,
-  usage?: Usage
+  usage?: Usage,
+  activity: AgentActivity = { reasoning: '', tools: [] }
 ): InteractionEditReplyOptions {
   const raw = parseJsonObject(response)
   const allowed = new Set([
@@ -630,6 +659,7 @@ function buildAgentPayload(
     (flags & MessageFlags.IsComponentsV2) !== 0 ||
     components.some((component) => component.type !== ComponentType.ActionRow)
   const footer = usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage)
+  const activityText = formatAgentActivity(activity)
 
   if (usesComponentsV2) {
     const content = typeof payload.content === 'string' ? payload.content : ''
@@ -639,12 +669,16 @@ function buildAgentPayload(
     ]
     if (content) header.push({ type: ComponentType.TextDisplay, content })
 
-    if (header.length + components.length >= 10) {
+    const activityComponents = activityText
+      ? [{ type: ComponentType.TextDisplay, content: activityText }]
+      : []
+    if (header.length + components.length + activityComponents.length >= 10) {
       throw new Error(
-        `At most ${9 - header.length} top-level response components may be used so the request prompt, divider, and token footer can be appended.`
+        `At most ${9 - header.length - activityComponents.length} top-level response components may be used so the request prompt, divider, activity, and token footer can be appended.`
       )
     }
     components.unshift(...header)
+    components.push(...activityComponents)
     components.push({ type: ComponentType.TextDisplay, content: footer })
     payload.content = null
     payload.embeds = []
@@ -658,11 +692,18 @@ function buildAgentPayload(
     if (embeds.length > 0) {
       appendFooterToEmbed(embeds[embeds.length - 1]!, footer)
       payload.embeds = embeds
+      if (activityText) {
+        const content = typeof payload.content === 'string' ? payload.content : ''
+        const separator = content ? '\n\n' : ''
+        const available = Math.max(0, 2000 - activityText.length - separator.length)
+        payload.content = `${content.slice(0, available)}${separator}${activityText}`
+      }
     } else {
       const content = typeof payload.content === 'string' ? payload.content : ''
+      const activity = activityText ? `\n\n${activityText}` : ''
       const separator = content ? '\n\n' : ''
-      const available = Math.max(0, 2000 - footer.length - separator.length)
-      payload.content = `${content.slice(0, available)}${separator}${footer}`
+      const available = Math.max(0, 2000 - activity.length - footer.length - separator.length)
+      payload.content = `${content.slice(0, available)}${activity}${separator}${footer}`
     }
     payload.flags = flags & MessageFlags.SuppressEmbeds
   }
@@ -815,6 +856,7 @@ async function runGptStream(
 
   let responseContent = ''
   let usage: Usage | undefined
+  const activity: AgentActivity = { reasoning: '', tools: [] }
   const mcpClients: McpClient[] = []
 
   try {
@@ -968,8 +1010,36 @@ async function runGptStream(
           if (event.event.type === 'modelContentBlockDeltaEvent') {
             if (event.event.delta.type === 'textDelta') {
               responseContent += event.event.delta.text
+            } else if (
+              event.event.delta.type === 'reasoningContentDelta' &&
+              event.event.delta.text
+            ) {
+              activity.reasoning += event.event.delta.text
+            } else if (
+              event.event.delta.type === 'citationsDelta' &&
+              event.event.delta.citations.length > 0 &&
+              !activity.tools.some(({ id }) => id === 'web_search')
+            ) {
+              activity.tools.push({
+                id: 'web_search',
+                name: 'web_search',
+                status: 'success'
+              })
             }
+          } else if (
+            event.event.type === 'modelContentBlockStartEvent' &&
+            event.event.start?.type === 'toolUseStart'
+          ) {
+            activity.tools.push({
+              id: event.event.start.toolUseId,
+              name: event.event.start.name,
+              status: 'running'
+            })
           }
+        }
+        if (event.type === 'toolResultEvent') {
+          const usedTool = activity.tools.find(({ id }) => id === event.result.toolUseId)
+          if (usedTool) usedTool.status = event.result.status
         }
         if (event.type === 'agentResultEvent') {
           usage = event.result.metrics?.latestAgentInvocation?.usage
@@ -984,6 +1054,8 @@ async function runGptStream(
 
       responseContent = ''
       usage = undefined
+      activity.reasoning = ''
+      activity.tools = []
       const integrations = [
         'Docker MCP (`uvx mcp-server-docker`)',
         'Filesystem MCP',
@@ -1004,7 +1076,7 @@ async function runGptStream(
 
     if (!controller.signal.aborted) {
       const response = responseContent || '(no response)'
-      await callbacks.editPayload(buildAgentPayload(response, token, ctx, usage))
+      await callbacks.editPayload(buildAgentPayload(response, token, ctx, usage, activity))
       storeConversation(ctx, response)
     }
   } catch (error) {

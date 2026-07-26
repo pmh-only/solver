@@ -133,7 +133,11 @@ vi.mock('@strands-agents/sdk', () => ({
         type: 'modelStreamUpdateEvent',
         event: {
           type: 'modelContentBlockDeltaEvent',
-          delta: { type: 'citationsDelta', citations: [], content: [] }
+          delta: {
+            type: 'citationsDelta',
+            citations: [{ source: 'https://example.com' }],
+            content: []
+          }
         }
       }
       const response = JSON.stringify(
@@ -222,7 +226,11 @@ describe('/a', () => {
     const edit = getEdit(calls)
     expect(edit).not.toBeNull()
     expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).not.toContain('I should look this up.')
+    expect(JSON.stringify(calls)).toContain('**Reasoning**')
+    expect(JSON.stringify(calls)).toContain('I should look this up.')
+    expect(JSON.stringify(calls)).toContain('**Tools used**')
+    expect(JSON.stringify(calls)).toContain('`docker_list`: success')
+    expect(JSON.stringify(calls)).toContain('`web_search`: success')
     expect(JSON.stringify(calls)).not.toContain('apiKey')
     expect(JSON.stringify(calls)).not.toContain('secret')
     expect(JSON.stringify(calls)).toContain('Tokens used: 1,234 in / 56 out / 1,290 total')
@@ -307,6 +315,7 @@ describe('/a', () => {
 
     const calls = await dispatch(agentCommandJSON('show status'), subs)
     const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      content?: string
       embeds: Array<{ footer?: { text?: string } }>
       components: unknown[]
       allowed_mentions?: unknown
@@ -315,6 +324,8 @@ describe('/a', () => {
     expect(edit.embeds[0]?.footer?.text).toContain('Live\nTokens used:')
     expect(edit.components).toEqual([])
     expect(edit.allowed_mentions).toEqual({ parse: [] })
+    expect(JSON.stringify(edit.content)).toContain('I should look this up.')
+    expect(JSON.stringify(edit.content)).toContain('`docker_list`: success')
   })
 
   it('renders content inside Components V2 after the request prompt and a divider', async () => {
@@ -340,6 +351,8 @@ describe('/a', () => {
       { type: 10, content: 'Additional context' }
     ])
     expect(edit.components.at(-1)?.content).toContain('Tokens used:')
+    expect(edit.components.at(-2)?.content).toContain('I should look this up.')
+    expect(edit.components.at(-2)?.content).toContain('`docker_list`: success')
   })
 
   it('accepts raw Discord API poll JSON', async () => {
