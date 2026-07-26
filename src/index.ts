@@ -38,6 +38,9 @@ import { subcommand as gohome } from './commands/gohome.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
+import { restoreStoredEnvironment } from './helpers/environment-store.js'
+
+restoreStoredEnvironment()
 
 const subcommands = new Collection<string, Subcommand>()
 

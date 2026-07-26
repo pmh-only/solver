@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { getDefaultKvStorePath } from './kv-store-path.js'
@@ -13,6 +13,7 @@ const INTERNAL_KEY_PREFIXES = [
   '__quiz-state:',
   'command-input:',
   'constrained-command:',
+  'env:',
   'gpt-ctx:',
   'gpt-settings:',
   'gpt-session:',
@@ -32,6 +33,7 @@ function getDatabase(): DatabaseSync {
   if (database) return database
 
   database = new DatabaseSync(storePath, { timeout: 5_000 })
+  chmodSync(storePath, 0o600)
   database.exec(
     'CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) STRICT'
   )

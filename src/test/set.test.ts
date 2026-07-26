@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { join } from 'node:path'
 import { subcommand as set } from '../commands/set.js'
+import { restoreStoredEnvironment } from '../helpers/environment-store.js'
 import { clearStoredValues, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues, reopenStoredValuesForTests } from '../helpers/kv-store-test.js'
 import { autocompleteJSON, commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
@@ -32,7 +33,7 @@ describe('set — command', () => {
   })
 
   it.each(['SPOTIFY_CLIENT_SECRET', 'UNLISTED_SOLVER_SETTING'])(
-    'updates arbitrary %s environment configuration without persisting it',
+    'updates and persists arbitrary %s environment configuration',
     async (key) => {
       const previous = process.env[key]
 
@@ -41,10 +42,15 @@ describe('set — command', () => {
         const response = JSON.stringify(getCallback(calls))
 
         expect(process.env[key]).toBe('sensitive-value')
-        expect(getStoredValue(`env:${key}`)).toBeUndefined()
+        expect(getStoredValue(`env:${key}`)).toBe('sensitive-value')
         expect(response).toContain(`ok env:${key}=[redacted]`)
-        expect(response).toContain('resets when the bot restarts')
+        expect(response).toContain('saved for future bot restarts')
         expect(response).not.toContain('sensitive-value')
+
+        delete process.env[key]
+        reopenStoredValuesForTests()
+        restoreStoredEnvironment()
+        expect(process.env[key]).toBe('sensitive-value')
       } finally {
         if (previous === undefined) delete process.env[key]
         else process.env[key] = previous

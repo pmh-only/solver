@@ -8,9 +8,8 @@ import {
   summarySection,
   text
 } from '../components.js'
+import { ENVIRONMENT_KEY_PREFIX, setStoredEnvironmentValue } from '../helpers/environment-store.js'
 import { isInternalStoredKey, setStoredValue } from '../helpers/kv-store.js'
-
-const ENV_KEY_PREFIX = 'env:'
 
 function parseSetArgs(args: string): { key: string; value: string } | null {
   const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -43,7 +42,9 @@ export const subcommand: Subcommand = {
       return
     }
 
-    if (isInternalStoredKey(parsed.key)) {
+    const isConfigEnv = parsed.key.startsWith(ENVIRONMENT_KEY_PREFIX)
+
+    if (!isConfigEnv && isInternalStoredKey(parsed.key)) {
       await sendCommandReply(
         interaction,
         commandReferenceReply(subcommand, args, flags, 'usage', 'reserved key')
@@ -51,8 +52,7 @@ export const subcommand: Subcommand = {
       return
     }
 
-    const isConfigEnv = parsed.key.startsWith(ENV_KEY_PREFIX)
-    const envKey = parsed.key.slice(ENV_KEY_PREFIX.length)
+    const envKey = parsed.key.slice(ENVIRONMENT_KEY_PREFIX.length)
 
     if (isConfigEnv && !envKey) {
       await sendCommandReply(
@@ -62,13 +62,13 @@ export const subcommand: Subcommand = {
       return
     }
 
-    if (isConfigEnv) process.env[envKey] = parsed.value
+    if (isConfigEnv) setStoredEnvironmentValue(envKey, parsed.value)
     else setStoredValue(parsed.key, parsed.value)
 
     const components = [
       summarySection(isConfigEnv ? 'Environment updated' : 'Stored value updated', [
         isConfigEnv
-          ? `Key \`${parsed.key}\` updated for the current bot process; it resets when the bot restarts`
+          ? `Key \`${parsed.key}\` updated and saved for future bot restarts`
           : `Key \`${parsed.key}\` updated successfully`
       ]),
       separator(),
