@@ -50,10 +50,10 @@ token.
 ## Google Calendar MCP
 
 Create a Google Cloud OAuth client of type **Web application**, enable the Google Calendar API, and add
-`https://<your-public-service>/mcp/google-calendar/callback` as an authorized redirect URI. Mount
-the downloaded OAuth JSON in the bot container, set `GOOGLE_OAUTH_CREDENTIALS` to its path, and set
-`GOOGLE_CALENDAR_REDIRECT_URI` to that exact public callback URI. Then ask `/a` to authenticate Google
-Calendar; the agent returns a Google login link without requiring terminal access.
+`https://<your-public-service>/mcp/google-calendar/callback` as an authorized redirect URI. Set
+`GOOGLE_OAUTH_CREDENTIALS_BASE64` to a single-line base64 encoding of the downloaded OAuth JSON, and
+set `GOOGLE_CALENDAR_REDIRECT_URI` to that exact public callback URI. Then ask `/a` to authenticate
+Google Calendar; the agent returns a Google login link without requiring terminal access.
 
 Normalized OAuth credentials and refreshable account tokens are stored with mode `0600` under
-`data/.google-calendar-mcp`. The source OAuth JSON must remain mounted and readable after restarts.
+`data/.google-calendar-mcp`.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   beginGoogleCalendarAuthentication,
@@ -15,16 +15,13 @@ afterEach(async () => {
   vi.restoreAllMocks()
   if (previousKvStorePath === undefined) delete process.env.KV_STORE_PATH
   else process.env.KV_STORE_PATH = previousKvStorePath
-  delete process.env.GOOGLE_OAUTH_CREDENTIALS
+  delete process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64
   delete process.env.GOOGLE_CALENDAR_REDIRECT_URI
   await rm(testDirectory, { recursive: true, force: true })
 })
 
-async function configureGoogleCalendar(): Promise<string> {
-  await mkdir(testDirectory, { recursive: true })
-  const credentialsPath = join(testDirectory, 'oauth.json')
-  await writeFile(
-    credentialsPath,
+function configureGoogleCalendar(): void {
+  process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64 = Buffer.from(
     JSON.stringify({
       web: {
         client_id: 'google-client-id',
@@ -32,16 +29,14 @@ async function configureGoogleCalendar(): Promise<string> {
         token_uri: 'https://oauth2.googleapis.com/token'
       }
     })
-  )
+  ).toString('base64')
   process.env.KV_STORE_PATH = join(testDirectory, 'kv.sqlite')
-  process.env.GOOGLE_OAUTH_CREDENTIALS = credentialsPath
   process.env.GOOGLE_CALENDAR_REDIRECT_URI = 'https://solver.example/mcp/google-calendar/callback'
-  return credentialsPath
 }
 
 describe('Google Calendar agent authentication', () => {
   it('creates a PKCE URL and persists MCP-compatible tokens after the callback', async () => {
-    await configureGoogleCalendar()
+    configureGoogleCalendar()
     const authorizationUrl = new URL(await beginGoogleCalendarAuthentication('Work'))
     const state = authorizationUrl.searchParams.get('state')
 
@@ -88,7 +83,7 @@ describe('Google Calendar agent authentication', () => {
   })
 
   it('rejects unsafe callbacks and consumes state once', async () => {
-    await configureGoogleCalendar()
+    configureGoogleCalendar()
     process.env.GOOGLE_CALENDAR_REDIRECT_URI = 'http://solver.example/mcp/google-calendar/callback'
     await expect(beginGoogleCalendarAuthentication('personal')).rejects.toThrow('must use HTTPS')
 
@@ -102,5 +97,14 @@ describe('Google Calendar agent authentication', () => {
       status: 400,
       body: 'Google Calendar authentication request is invalid or expired.'
     })
+  })
+
+  it('rejects base64 credentials that do not contain JSON', async () => {
+    configureGoogleCalendar()
+    process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64 = Buffer.from('not JSON').toString('base64')
+
+    await expect(loadGoogleCalendarConfiguration()).rejects.toThrow(
+      'Google OAuth credentials must be base64-encoded JSON'
+    )
   })
 })

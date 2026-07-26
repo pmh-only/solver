@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
 import { GPT_ACTION_COMPONENT_ID, GPT_MODAL_ID } from '../commands/gpt.js'
@@ -170,7 +170,7 @@ beforeEach(() => {
 afterEach(async () => {
   delete process.env.OPENAI_API_KEY
   delete process.env.MAIL_API_KEY
-  delete process.env.GOOGLE_OAUTH_CREDENTIALS
+  delete process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64
   delete process.env.GOOGLE_CALENDAR_REDIRECT_URI
   delete process.env.SPOTIFY_CLIENT_ID
   if (previousKvStorePath === undefined) delete process.env.KV_STORE_PATH
@@ -396,15 +396,11 @@ describe('/a', () => {
   })
 
   it('gives the agent Google Calendar MCP tools when OAuth is configured', async () => {
-    await mkdir(googleCalendarTestDirectory, { recursive: true })
-    const credentialsPath = join(googleCalendarTestDirectory, 'oauth.json')
-    await writeFile(
-      credentialsPath,
+    process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64 = Buffer.from(
       JSON.stringify({
         web: { client_id: 'google-client-id', client_secret: 'google-client-secret' }
       })
-    )
-    process.env.GOOGLE_OAUTH_CREDENTIALS = credentialsPath
+    ).toString('base64')
     process.env.GOOGLE_CALENDAR_REDIRECT_URI = 'https://solver.example/mcp/google-calendar/callback'
     process.env.KV_STORE_PATH = join(googleCalendarTestDirectory, 'kv.sqlite')
 

@@ -61,8 +61,13 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
   await chmod(path, 0o600)
 }
 
-async function loadCredentials(path: string): Promise<GoogleCredentials> {
-  const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+function parseCredentials(json: string): GoogleCredentials {
+  let value: Record<string, unknown>
+  try {
+    value = JSON.parse(json) as Record<string, unknown>
+  } catch {
+    throw new Error('Google OAuth credentials must be base64-encoded JSON')
+  }
   const nested = (value.installed ?? value.web ?? value) as Record<string, unknown>
   const clientId = typeof nested.client_id === 'string' ? nested.client_id.trim() : ''
   const clientSecret = typeof nested.client_secret === 'string' ? nested.client_secret.trim() : ''
@@ -92,11 +97,11 @@ async function saveAccountTokens(path: string, accountId: string, tokens: unknow
 export async function loadGoogleCalendarConfiguration(): Promise<
   GoogleCalendarConfiguration | undefined
 > {
-  const sourcePath = process.env.GOOGLE_OAUTH_CREDENTIALS?.trim()
+  const encodedCredentials = process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64?.trim()
   const redirectValue = process.env.GOOGLE_CALENDAR_REDIRECT_URI?.trim()
-  if (!sourcePath || !redirectValue) return undefined
+  if (!encodedCredentials || !redirectValue) return undefined
 
-  const credentials = await loadCredentials(resolve(sourcePath))
+  const credentials = parseCredentials(Buffer.from(encodedCredentials, 'base64').toString('utf8'))
   const directory = calendarDirectory()
   const credentialsPath = join(directory, 'credentials.json')
   const tokenPath = join(directory, 'tokens.json')
@@ -119,10 +124,10 @@ export async function beginGoogleCalendarAuthentication(accountIdValue: string):
   const configuration = await loadGoogleCalendarConfiguration()
   if (!configuration) {
     throw new Error(
-      'Google Calendar requires GOOGLE_OAUTH_CREDENTIALS and GOOGLE_CALENDAR_REDIRECT_URI'
+      'Google Calendar requires GOOGLE_OAUTH_CREDENTIALS_BASE64 and GOOGLE_CALENDAR_REDIRECT_URI'
     )
   }
-  const credentials = await loadCredentials(configuration.credentialsPath)
+  const credentials = parseCredentials(await readFile(configuration.credentialsPath, 'utf8'))
   const verifier = randomBytes(32).toString('base64url')
   const state = randomBytes(24).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
