@@ -209,6 +209,15 @@ function isMcpConnectionClosed(error: unknown): boolean {
   return false
 }
 
+function isToolInputJsonError(error: unknown): boolean {
+  let current = error
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (String(current).toLowerCase().includes('unable to parse tool input json')) return true
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return false
+}
+
 function replaceDuplicateTools<T extends { name: string }>(tools: T[]): T[] {
   const toolsByNormalizedName = new Map<string, T>()
   for (const candidate of tools) {
@@ -580,6 +589,14 @@ function formatAgentActivity(activity: AgentActivity): string {
   return summary.length > limit ? `${summary.slice(0, limit - 3)}...` : summary
 }
 
+function buildAgentProgressPayload(activity: AgentActivity): InteractionEditReplyOptions {
+  const activityText = formatAgentActivity(activity)
+  return {
+    content: `${activityText}${activityText ? '\n\n' : ''}-# generating...`,
+    allowedMentions: { parse: [] }
+  }
+}
+
 function parseJsonObject(input: string): Record<string, unknown> {
   const trimmed = input.trim()
   const json = trimmed.startsWith('```')
@@ -874,6 +891,18 @@ async function runGptStream(
   let usage: Usage | undefined
   const activity: AgentActivity = { reasoning: '', tools: [] }
   const mcpClients: McpClient[] = []
+  let lastProgressUpdate = 0
+  let lastProgressContent = ''
+
+  const updateProgress = async (force = false): Promise<void> => {
+    const payload = buildAgentProgressPayload(activity)
+    const content = String(payload.content)
+    const now = Date.now()
+    if (content === lastProgressContent || (!force && now - lastProgressUpdate < 1000)) return
+    await callbacks.editPayload(payload)
+    lastProgressContent = content
+    lastProgressUpdate = now
+  }
 
   try {
     const systemInstruction = [
@@ -998,7 +1027,7 @@ async function runGptStream(
         })
       )
     }
-    const streamAgent = async (prompt: string, diagnosing = false) => {
+    const streamAgent = async (prompt: string, diagnosing = false, retryingToolInput = false) => {
       const modalTool = interactionModalTool(token, ctx)
       const localTools = [
         publishHtmlTool,
@@ -1019,7 +1048,14 @@ async function runGptStream(
             ]
               .filter(Boolean)
               .join('\n')
-          : systemInstruction,
+          : [
+              systemInstruction,
+              retryingToolInput
+                ? 'The previous attempt produced malformed tool input. Retry the request, ensuring every tool input is one complete valid JSON object that exactly matches its schema.'
+                : null
+            ]
+              .filter(Boolean)
+              .join('\n'),
         tools: agentTools,
         printer: false
       })
@@ -1030,6 +1066,9 @@ async function runGptStream(
       })) {
         if (controller.signal.aborted) break
 
+        let activityChanged = false
+        let forceProgressUpdate = false
+
         if (event.type === 'modelStreamUpdateEvent') {
           if (event.event.type === 'modelContentBlockDeltaEvent') {
             if (event.event.delta.type === 'textDelta') {
@@ -1039,6 +1078,7 @@ async function runGptStream(
               event.event.delta.text
             ) {
               activity.reasoning += event.event.delta.text
+              activityChanged = true
             } else if (
               event.event.delta.type === 'citationsDelta' &&
               event.event.delta.citations.length > 0 &&
@@ -1049,6 +1089,8 @@ async function runGptStream(
                 name: 'web_search',
                 status: 'success'
               })
+              activityChanged = true
+              forceProgressUpdate = true
             }
           } else if (
             event.event.type === 'modelContentBlockStartEvent' &&
@@ -1059,20 +1101,38 @@ async function runGptStream(
               name: event.event.start.name,
               status: 'running'
             })
+            activityChanged = true
+            forceProgressUpdate = true
           }
         }
         if (event.type === 'toolResultEvent') {
           const usedTool = activity.tools.find(({ id }) => id === event.result.toolUseId)
-          if (usedTool) usedTool.status = event.result.status
+          if (usedTool) {
+            usedTool.status = event.result.status
+            activityChanged = true
+            forceProgressUpdate = true
+          }
         }
         if (event.type === 'agentResultEvent') {
           usage = event.result.metrics?.latestAgentInvocation?.usage
         }
+        if (activityChanged) await updateProgress(forceProgressUpdate)
       }
     }
 
     try {
-      await streamAgent(ctx.prompt)
+      try {
+        await streamAgent(ctx.prompt)
+      } catch (error) {
+        if (!isToolInputJsonError(error) || controller.signal.aborted) throw error
+        for (const usedTool of activity.tools) {
+          if (usedTool.status === 'running') usedTool.status = 'error'
+        }
+        await updateProgress(true)
+        responseContent = ''
+        usage = undefined
+        await streamAgent(ctx.prompt, false, true)
+      }
     } catch (error) {
       if (!isMcpConnectionClosed(error) || controller.signal.aborted) throw error
 
@@ -1112,8 +1172,17 @@ async function runGptStream(
     }
 
     const errMsg = error instanceof Error ? error.message : 'unknown error'
+    for (const usedTool of activity.tools) {
+      if (usedTool.status === 'running') usedTool.status = 'error'
+    }
     await callbacks.editPayload(
-      buildAgentPayload(JSON.stringify({ content: `error: ${errMsg}` }), token, ctx, usage)
+      buildAgentPayload(
+        JSON.stringify({ content: `error: ${errMsg}` }),
+        token,
+        ctx,
+        usage,
+        activity
+      )
     )
   } finally {
     await Promise.all(mcpClients.map((client) => client.disconnect().catch(() => {})))

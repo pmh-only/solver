@@ -140,6 +140,9 @@ vi.mock('@strands-agents/sdk', () => ({
           }
         }
       }
+      if (streamResult === 'throwAfterActivity') {
+        throw new Error('unable to parse tool input JSON')
+      }
       const response = JSON.stringify(
         responsePayloads.shift() ?? {
           content: 'hello world',
@@ -307,6 +310,51 @@ describe('/a', () => {
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
     )
+  })
+
+  it('updates reasoning and tool status while the agent is generating', async () => {
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+    const progressEdits = calls
+      .filter((call) => call.method === 'PATCH')
+      .slice(1, -1)
+      .map((call) => JSON.stringify(call.body))
+
+    expect(progressEdits.some((edit) => edit.includes('I should look this up.'))).toBe(true)
+    expect(progressEdits.some((edit) => edit.includes('`docker_list`: running'))).toBe(true)
+    expect(progressEdits.some((edit) => edit.includes('`docker_list`: success'))).toBe(true)
+    expect(progressEdits.every((edit) => edit.includes('generating...'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
+  })
+
+  it('retries malformed tool input JSON with stricter tool guidance', async () => {
+    streamMock.mockReturnValueOnce(new Error('unable to parse tool input JSON'))
+
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+
+    expect(agentMock).toHaveBeenCalledTimes(2)
+    expect(agentMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('previous attempt produced malformed tool input')
+      })
+    )
+    expect(streamMock).toHaveBeenNthCalledWith(2, 'inspect the system', expect.anything())
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('error: unable to parse tool input JSON')
+  })
+
+  it('retains reasoning and failed tool status if malformed tool input persists', async () => {
+    streamMock.mockReturnValueOnce('throwAfterActivity').mockReturnValueOnce('throwAfterActivity')
+
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+    const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
+    const rendered = JSON.stringify(finalEdit)
+
+    expect(agentMock).toHaveBeenCalledTimes(2)
+    expect(rendered).toContain('error: unable to parse tool input JSON')
+    expect(rendered).toContain('I should look this up.')
+    expect(rendered).toContain('`docker_list`: error')
+    expect(rendered).not.toContain('secret')
   })
 
   it('provides the configured web domain and publishing tool to the agent', async () => {
