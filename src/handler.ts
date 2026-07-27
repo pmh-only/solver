@@ -670,6 +670,14 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
+      if (
+        interaction.isChatInputCommand() &&
+        interaction.commandName === AGENT_COMMAND_NAME &&
+        (interaction.deferred || interaction.replied)
+      ) {
+        return
+      }
+
       const reply = container('err', new Map(), 'err')
 
       if ('deferred' in interaction && interaction.deferred) {
