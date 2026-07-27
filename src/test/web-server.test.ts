@@ -1,15 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFile, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
+import {
+  HOSTED_HTML_PATH,
+  MAX_HOSTED_HTML_BYTES,
+  hostedPageUrl,
+  writeHostedHtml
+} from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 
 let server: Server | undefined
 
 afterEach(async () => {
   vi.restoreAllMocks()
-  if (!server) return
-  await closeWebServer(server)
-  server = undefined
+  delete process.env.WEB_DOMAIN
+  await rm(HOSTED_HTML_PATH, { force: true })
+  if (server) {
+    await closeWebServer(server)
+    server = undefined
+  }
 })
 
 async function startServer(): Promise<string> {
@@ -41,6 +51,32 @@ describe('web server', () => {
     expect(head.status).toBe(200)
     expect(await head.text()).toBe('')
     expect(Number(head.headers.get('content-length'))).toBeGreaterThan(0)
+  })
+
+  it('atomically publishes and serves one persistent HTML file', async () => {
+    const html =
+      '<!doctype html><html><body><script>document.body.dataset.ready="yes"</script></body></html>'
+    await writeHostedHtml(html)
+    const origin = await startServer()
+
+    const response = await fetch(`${origin}/`)
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe(html)
+    expect(response.headers.get('content-security-policy')).toBeNull()
+    expect(await readFile(HOSTED_HTML_PATH, 'utf8')).toBe(html)
+  })
+
+  it('validates hosted HTML and normalizes WEB_DOMAIN', async () => {
+    await expect(writeHostedHtml('')).rejects.toThrow('HTML must not be empty')
+    await expect(writeHostedHtml('x'.repeat(MAX_HOSTED_HTML_BYTES + 1))).rejects.toThrow(
+      'HTML must not exceed 1 MiB'
+    )
+
+    process.env.WEB_DOMAIN = 'pages.example.com'
+    expect(hostedPageUrl()).toBe('https://pages.example.com')
+    process.env.WEB_DOMAIN = 'http://localhost:3000'
+    expect(hostedPageUrl()).toBe('http://localhost:3000')
   })
 
   it('rejects unknown routes and unsupported methods', async () => {

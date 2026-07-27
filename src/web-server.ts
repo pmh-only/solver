@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
+import { readHostedHtml } from './hosted-page.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -70,14 +71,19 @@ function send(
   statusCode: number,
   contentType: string,
   body: string,
-  headOnly: boolean
+  headOnly: boolean,
+  contentSecurityPolicy = true
 ): void {
   response.writeHead(statusCode, {
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-    'Content-Security-Policy':
-      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+    ...(contentSecurityPolicy
+      ? {
+          'Content-Security-Policy':
+            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'"
+        }
+      : {}),
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff'
   })
@@ -103,7 +109,15 @@ export async function handleWebRequest(
     return
   }
   if (url.pathname === '/') {
-    send(response, 200, 'text/html; charset=utf-8', HOME_HTML, method === 'HEAD')
+    const hostedHtml = await readHostedHtml()
+    send(
+      response,
+      200,
+      'text/html; charset=utf-8',
+      hostedHtml ?? HOME_HTML,
+      method === 'HEAD',
+      hostedHtml === null
+    )
     return
   }
   if (url.pathname === '/healthz') {

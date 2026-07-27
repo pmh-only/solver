@@ -188,6 +188,7 @@ afterEach(async () => {
   delete process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64
   delete process.env.GOOGLE_CALENDAR_REDIRECT_URI
   delete process.env.SPOTIFY_CLIENT_ID
+  delete process.env.WEB_DOMAIN
   if (previousKvStorePath === undefined) delete process.env.KV_STORE_PATH
   else process.env.KV_STORE_PATH = previousKvStorePath
   await rm(googleCalendarTestDirectory, { recursive: true, force: true })
@@ -293,6 +294,7 @@ describe('/a', () => {
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: [
+          expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
@@ -304,6 +306,21 @@ describe('/a', () => {
     expect(streamMock).toHaveBeenCalledWith(
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
+    )
+  })
+
+  it('provides the configured web domain and publishing tool to the agent', async () => {
+    process.env.WEB_DOMAIN = 'https://pages.example.com'
+
+    await dispatch(agentCommandJSON('build a landing page'), subs)
+
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining(
+          'persistent single-file web page is hosted at https://pages.example.com'
+        ),
+        tools: expect.arrayContaining([expect.objectContaining({ name: 'publish_html' })])
+      })
     )
   })
 
@@ -393,7 +410,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(10).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(11).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -413,7 +430,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(10).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(11).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -462,7 +479,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
-    expect(tools).toHaveLength(9)
+    expect(tools).toHaveLength(10)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
@@ -476,6 +493,7 @@ describe('/a', () => {
       expect.objectContaining({
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
+          expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_response_modals' })

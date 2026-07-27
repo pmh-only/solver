@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { hostedPageUrl, writeHostedHtml } from '../hosted-page.js'
 import {
   beginGoogleCalendarAuthentication,
   getGoogleCalendarMcpEnvironment,
@@ -79,6 +80,21 @@ const PLAYWRIGHT_MCP_PATH = fileURLToPath(
 const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
 const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
+const publishHtmlTool = tool({
+  name: 'publish_html',
+  description:
+    'Publish a complete single-file HTML page at the configured web domain. Include all CSS and JavaScript in the HTML. Publishing replaces the previously hosted page and persists across restarts.',
+  inputSchema: z.object({
+    html: z.string().describe('Complete HTML document to publish, up to 1 MiB')
+  }),
+  callback: async ({ html }) => {
+    await writeHostedHtml(html)
+    const url = hostedPageUrl()
+    return url
+      ? `Published the persistent HTML page at ${url}`
+      : 'Published the persistent HTML page. WEB_DOMAIN is not configured, so no public URL is available.'
+  }
+})
 const spotifyAuthenticationTool = tool({
   name: 'spotify_authenticate',
   description:
@@ -862,6 +878,9 @@ async function runGptStream(
   try {
     const systemInstruction = [
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
+      hostedPageUrl()
+        ? `The persistent single-file web page is hosted at ${hostedPageUrl()}. Use publish_html to create or replace it.`
+        : 'Use publish_html to create or replace the persistent single-file web page. WEB_DOMAIN is not configured, so tell the user that its public URL is unavailable.',
       ctx.verbosity === 'brief'
         ? 'Be concise and to the point. Keep responses short.'
         : ctx.verbosity === 'detailed'
@@ -981,7 +1000,12 @@ async function runGptStream(
     }
     const streamAgent = async (prompt: string, diagnosing = false) => {
       const modalTool = interactionModalTool(token, ctx)
-      const localTools = [spotifyAuthenticationTool, googleCalendarAuthenticationTool, modalTool]
+      const localTools = [
+        publishHtmlTool,
+        spotifyAuthenticationTool,
+        googleCalendarAuthenticationTool,
+        modalTool
+      ]
       const agentTools = diagnosing
         ? localTools
         : replaceDuplicateTools([...localTools, ...(await loadMcpTools(mcpClients))])

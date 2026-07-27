@@ -2,8 +2,10 @@
 
 ## Web Server
 
-The bot serves a responsive `Hello, World!` page from `/` and a health check from `/healthz` on
-`PORT` (default `3000`). Set `WEB_HOST` to control the listening interface.
+The bot serves a persistent single-file HTML page from `/` and a health check from `/healthz` on
+`PORT` (default `3000`). Until a page is published, `/` shows the built-in `Hello, World!` page.
+Set `WEB_HOST` to control the listening interface and `WEB_DOMAIN` to the page's public URL. The
+domain can be updated without a restart using `/c set env:WEB_DOMAIN https://example.com`.
 
 ## Interaction Access
 
@@ -38,6 +40,8 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Spotify search, library, playlist, and playback control after authentication
 - Received-mail search and reading, plus outgoing mail scheduling, when `MAIL_API_KEY` is configured
 - Google Calendar search, availability, and event management after authentication
+- Publishing a complete single-file HTML page at `WEB_DOMAIN`; the page is stored at
+  `data/hosted.html` and survives bot restarts
 
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP

@@ -32,7 +32,7 @@ describe('set — command', () => {
     expect(getStoredValue('aaaa')).toBe('hello world')
   })
 
-  it.each(['SPOTIFY_CLIENT_SECRET', 'UNLISTED_SOLVER_SETTING'])(
+  it.each(['WEB_DOMAIN', 'SPOTIFY_CLIENT_SECRET', 'UNLISTED_SOLVER_SETTING'])(
     'updates and persists arbitrary %s environment configuration',
     async (key) => {
       const previous = process.env[key]
