@@ -18,20 +18,15 @@ afterEach(() => {
 })
 
 describe('/a error handling', () => {
-  it('does not replace an acknowledged response with the generic error controls', async () => {
-    handleAgentCommandMock.mockImplementationOnce(async (interaction) => {
-      ;(interaction as { deferred: boolean }).deferred = true
-      throw new Error('late agent failure')
-    })
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-
-    const editReply = vi.fn()
-    const interaction = {
+  function agentInteraction(overrides: Record<string, unknown> = {}) {
+    return {
       user: { id: '666666666666666666' },
       commandName: 'a',
       deferred: false,
       replied: false,
-      editReply,
+      editReply: vi.fn(),
+      followUp: vi.fn(),
+      reply: vi.fn(),
       isAutocomplete: () => false,
       isMessageComponent: () => false,
       isModalSubmit: () => false,
@@ -39,12 +34,43 @@ describe('/a error handling', () => {
       isStringSelectMenu: () => false,
       isUserContextMenuCommand: () => false,
       isMessageContextMenuCommand: () => false,
-      isChatInputCommand: () => true
+      isChatInputCommand: () => true,
+      ...overrides
     } as unknown as Interaction
+  }
+
+  it('displays an error directly when the command fails before acknowledgement', async () => {
+    handleAgentCommandMock.mockRejectedValueOnce(new Error('agent startup failed'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const reply = vi.fn()
+    const interaction = agentInteraction({ reply })
 
     await createHandler(new Collection<string, Subcommand>())(interaction)
 
-    expect(handleAgentCommandMock).toHaveBeenCalledOnce()
-    expect(editReply).not.toHaveBeenCalled()
+    expect(reply).toHaveBeenCalledWith({
+      content: 'error: agent startup failed',
+      embeds: [],
+      components: [],
+      attachments: []
+    })
+  })
+
+  it('displays an error directly when the command fails after deferring', async () => {
+    handleAgentCommandMock.mockImplementationOnce(async (interaction) => {
+      ;(interaction as { deferred: boolean }).deferred = true
+      throw new Error('late agent failure')
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const editReply = vi.fn()
+    const interaction = agentInteraction({ editReply })
+
+    await createHandler(new Collection<string, Subcommand>())(interaction)
+
+    expect(editReply).toHaveBeenCalledWith({
+      content: 'error: late agent failure',
+      embeds: [],
+      components: [],
+      attachments: []
+    })
   })
 })

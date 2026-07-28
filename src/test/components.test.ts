@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ComponentType, MessageFlags } from 'discord.js'
 import {
   container,
+  errorContainer,
   extractCommandInputFromComponents,
   hasEphemeralFlag,
   matchesInteractiveId
@@ -18,6 +19,15 @@ describe('canvas command presentation', () => {
     expect(JSON.stringify(components)).not.toContain(`"type":${ComponentType.MediaGallery}`)
     expect(JSON.stringify(components)).not.toContain('accent_color')
     expect(reply.files).toHaveLength(0)
+  })
+})
+
+describe('errorContainer', () => {
+  it('does not include publish or other controls', () => {
+    const reply = errorContainer('err', new Map(), 'failed')
+
+    expect(reply.components).toHaveLength(1)
+    expect(JSON.stringify(reply.components)).not.toContain('pub')
   })
 })
 

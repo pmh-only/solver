@@ -63,6 +63,7 @@ export type TopLevelComponent =
 interface CommandReplyOptions {
   subcommand?: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>
   private?: boolean
+  controls?: boolean
 }
 
 interface PlainTextReplyPayload {
@@ -365,9 +366,11 @@ function buildContainer(
 
   const responseComponents = options.private
     ? [body, pinButtonRow()]
-    : pub
-      ? withPubtabButton([body], isPubtabContext(flags))
-      : [body, ...controlRows(pub, options.subcommand, commandInput)]
+    : options.controls === false
+      ? [body]
+      : pub
+        ? withPubtabButton([body], isPubtabContext(flags))
+        : [body, ...controlRows(pub, options.subcommand, commandInput)]
 
   return {
     components: responseComponents,
@@ -402,6 +405,10 @@ export function commandContainer(
 
 export function privateContainer(args: string, flags: Flags, ...components: TopLevelComponent[]) {
   return buildContainer(args, flags, components, { private: true })
+}
+
+export function errorContainer(args: string, flags: Flags, ...components: TopLevelComponent[]) {
+  return buildContainer(args, flags, components, { controls: false })
 }
 
 export function text(content: string) {

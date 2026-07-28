@@ -17,6 +17,7 @@ import {
   container,
   commandReferenceReply,
   contentPublishButtonRow,
+  errorContainer,
   loadContentPublishValue,
   pinnedMessageComponents,
   sendCommandReply,
@@ -245,7 +246,8 @@ async function runCommandInput(
     await sub.execute(interaction, bare, flags)
   } catch (error) {
     console.error(error)
-    const reply = container(bare, flags, 'err')
+    const message = error instanceof Error ? error.message : String(error)
+    const reply = errorContainer(bare, flags, message)
     if (interaction.deferred) {
       const message = (await interaction.editReply({
         components: reply.components,
@@ -670,15 +672,16 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         return
       }
 
-      if (
-        interaction.isChatInputCommand() &&
-        interaction.commandName === AGENT_COMMAND_NAME &&
-        (interaction.deferred || interaction.replied)
-      ) {
+      if (interaction.isChatInputCommand() && interaction.commandName === AGENT_COMMAND_NAME) {
+        const message = error instanceof Error ? error.message : String(error)
+        const reply = { content: `error: ${message}`, embeds: [], components: [], attachments: [] }
+        if (interaction.deferred) await interaction.editReply(reply)
+        else if (interaction.replied) await interaction.followUp(reply)
+        else await interaction.reply(reply)
         return
       }
 
-      const reply = container('err', new Map(), 'err')
+      const reply = errorContainer('err', new Map(), 'err')
 
       if ('deferred' in interaction && interaction.deferred) {
         const message = (await interaction.editReply({

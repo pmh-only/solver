@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { container, matchesInteractiveId, PIN_BUTTON_ID, PUB_BUTTON_ID } from '../components.js'
+import { errorContainer, matchesInteractiveId, PIN_BUTTON_ID } from '../components.js'
 import { executeAgentShell, formatAgentShellResult } from '../helpers/agent-shell.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { hostedPageUrl, writeHostedHtml } from '../hosted-page.js'
@@ -823,11 +823,7 @@ function buildGptComponents(
         new ButtonBuilder()
           .setCustomId(PIN_BUTTON_ID)
           .setLabel('Pin')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(PUB_BUTTON_ID)
-          .setLabel('Publish')
-          .setStyle(ButtonStyle.Success)
+          .setStyle(ButtonStyle.Secondary)
       ),
       modelRow,
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
@@ -1226,7 +1222,7 @@ async function handleGptSelect(
 
   const ctx = loadGptContext(token)
   if (!ctx) {
-    await interaction.reply(container('gpt', new Map(), 'session expired'))
+    await interaction.reply(errorContainer('gpt', new Map(), 'session expired'))
     return
   }
 
@@ -1321,7 +1317,7 @@ async function rejectUnauthorizedGptInteraction(
   }
 
   await interaction.reply(
-    container('agent', new Map(), 'only the user who sent this request can use this component')
+    errorContainer('agent', new Map(), 'only the user who sent this request can use this component')
   )
   return true
 }
@@ -1335,7 +1331,7 @@ export async function handleGptActionComponent(
   const componentId = match[2]!
   const ctx = loadGptContext(token)
   if (!ctx || !hasComponentId(ctx.components, interaction.customId)) {
-    await interaction.reply(container('agent', new Map(), 'interaction expired'))
+    await interaction.reply(errorContainer('agent', new Map(), 'interaction expired'))
     return
   }
   if (await rejectUnauthorizedGptInteraction(interaction, ctx, componentId)) return
@@ -1371,7 +1367,7 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
   const triggerId = match[2]!
   const ctx = loadGptContext(token)
   if (!ctx || !ctx.modals[triggerId]) {
-    await interaction.reply(container('agent', new Map(), 'interaction expired'))
+    await interaction.reply(errorContainer('agent', new Map(), 'interaction expired'))
     return
   }
   if (await rejectUnauthorizedGptInteraction(interaction, ctx, triggerId)) return
