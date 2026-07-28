@@ -31,6 +31,7 @@ environment configuration remains supported.
 The `/a` agent can search the internet through OpenAI's Responses API and includes MCP tools for:
 
 - Docker container and Compose management
+- Unrestricted Bash shell access as the `agent` user, with passwordless `sudo` for root operations
 - Browser automation through headless Chromium and Playwright
 - Fetching and converting web pages to Markdown
 - Reading and writing files under the persistent `data/` directory

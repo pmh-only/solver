@@ -19,4 +19,4 @@ else
   ) &
 fi
 
-exec gosu node "$@"
+exec gosu agent "$@"

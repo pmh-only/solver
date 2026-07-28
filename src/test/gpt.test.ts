@@ -297,6 +297,7 @@ describe('/a', () => {
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: [
+          expect.objectContaining({ name: 'shell' }),
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
@@ -458,7 +459,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(11).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(12).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -478,7 +479,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(11).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(12).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -527,7 +528,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
-    expect(tools).toHaveLength(10)
+    expect(tools).toHaveLength(11)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
@@ -541,6 +542,7 @@ describe('/a', () => {
       expect.objectContaining({
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
+          expect.objectContaining({ name: 'shell' }),
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
