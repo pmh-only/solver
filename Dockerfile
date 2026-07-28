@@ -34,7 +34,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends docker-buildx-plugin docker-ce-cli docker-compose-plugin \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash agent
+    && usermod --login agent --home /home/agent --move-home node \
+    && groupmod --new-name agent node
 COPY --from=ghcr.io/astral-sh/uv:0.11.31 /uv /uvx /usr/local/bin/
 COPY --from=prod-deps --chown=agent:agent /app/node_modules ./node_modules
 COPY --from=build --chown=agent:agent /app/package.json ./package.json
