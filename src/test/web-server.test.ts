@@ -9,12 +9,15 @@ import {
   writeHostedHtml
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
+import { clearModelCache } from '../model-catalog.js'
 
 let server: Server | undefined
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  clearModelCache()
   delete process.env.WEB_DOMAIN
+  delete process.env.OPENAI_API_KEY
   await rm(HOSTED_HTML_PATH, { force: true })
   if (server) {
     await closeWebServer(server)
@@ -51,6 +54,49 @@ describe('web server', () => {
     expect(head.status).toBe(200)
     expect(await head.text()).toBe('')
     expect(Number(head.headers.get('content-length'))).toBeGreaterThan(0)
+  })
+
+  it('serves models loaded dynamically from OpenAI', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    const nativeFetch = globalThis.fetch
+    const upstreamFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+        if (String(input) === 'https://api.openai.com/v1/models') {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                data: [
+                  { id: 'provider-model-b' },
+                  { id: 'provider-model-a' },
+                  { id: 'provider-model-a' }
+                ]
+              }),
+              { status: 200 }
+            )
+          )
+        }
+        return nativeFetch(input, init)
+      })
+    const origin = await startServer()
+
+    const response = await fetch(`${origin}/models`)
+    const cachedResponse = await fetch(`${origin}/models`)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(await response.json()).toEqual({ models: ['provider-model-a', 'provider-model-b'] })
+    expect(await cachedResponse.json()).toEqual({
+      models: ['provider-model-a', 'provider-model-b']
+    })
+    expect(upstreamFetch).toHaveBeenCalledWith('https://api.openai.com/v1/models', {
+      headers: { Authorization: 'Bearer test-key' }
+    })
+    expect(
+      upstreamFetch.mock.calls.filter(
+        ([input]) => String(input) === 'https://api.openai.com/v1/models'
+      )
+    ).toHaveLength(1)
   })
 
   it('atomically publishes and serves one persistent HTML file', async () => {

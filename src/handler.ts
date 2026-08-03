@@ -71,7 +71,6 @@ import {
 } from './commands/message-store.js'
 import {
   GPT_EFFORT_SELECT_ID,
-  GPT_MODELS,
   GPT_MODEL_SELECT_ID,
   GPT_VERBOSITY_SELECT_ID,
   AGENT_COMMAND_NAME,
@@ -84,6 +83,7 @@ import {
   isGptActionComponentId,
   isGptModalId
 } from './commands/gpt.js'
+import { loadAvailableModels } from './model-catalog.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
 import { handleTttMoveButton, isTttMoveButtonId } from './commands/ttt.js'
@@ -540,12 +540,18 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           if (focused.name !== 'model') return
 
           const query = String(focused.value).toLowerCase()
-          await interaction.respond(
-            GPT_MODELS.filter(
-              ({ id, label }) =>
-                id.toLowerCase().includes(query) || label.toLowerCase().includes(query)
-            ).map(({ id, label }) => ({ name: label, value: id }))
-          )
+          try {
+            const models = await loadAvailableModels()
+            await interaction.respond(
+              models
+                .filter((model) => model.length <= 100 && model.toLowerCase().includes(query))
+                .slice(0, 25)
+                .map((model) => ({ name: model, value: model }))
+            )
+          } catch (error) {
+            console.error('could not autocomplete models', error)
+            await interaction.respond([])
+          }
           return
         }
 

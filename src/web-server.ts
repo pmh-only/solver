@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import { readHostedHtml } from './hosted-page.js'
+import { loadAvailableModels } from './model-catalog.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -122,6 +123,22 @@ export async function handleWebRequest(
   }
   if (url.pathname === '/healthz') {
     send(response, 200, 'text/plain; charset=utf-8', 'ok\n', method === 'HEAD')
+    return
+  }
+  if (url.pathname === '/models') {
+    try {
+      const body = `${JSON.stringify({ models: await loadAvailableModels() })}\n`
+      send(response, 200, 'application/json; charset=utf-8', body, method === 'HEAD')
+    } catch (error) {
+      console.error('could not load models', error)
+      send(
+        response,
+        502,
+        'application/json; charset=utf-8',
+        `${JSON.stringify({ error: 'Could not load models' })}\n`,
+        method === 'HEAD'
+      )
+    }
     return
   }
   if (url.pathname === '/mcp/spotify/callback') {

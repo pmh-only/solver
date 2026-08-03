@@ -50,14 +50,18 @@ servers. No extra MCP installation is required after deployment.
 
 ### Model Selection
 
-The optional `/a model` field accepts any model identifier. The displayed model list is autocomplete
-only: select a suggestion or keep typing and submit a value that is not listed. The selected value is
-stored for that conversation session and sent unchanged on later requests in the same session.
+The optional `/a model` field accepts any model identifier. Suggestions are loaded dynamically from
+OpenAI and exposed by the app as `GET /models`; no model catalog is hardcoded. The result is cached
+for five minutes and used only for autocomplete, so an unavailable models API does not restrict
+manual input. Select a suggestion or keep typing and submit a value that is not listed. The selected
+value is stored for that conversation session and sent unchanged on later requests in the same
+session.
 
-To test this behavior in Discord, type `/a`, fill in `prompt`, then type part of a known model in
-`model` to confirm suggestions appear. Enter an unlisted value, submit the command, and send another
-`/a` request with the same session but no `model`; both responses should display the custom model in
-their token-usage footer.
+To test this behavior, request `/models` and confirm its `models` array reflects the models available
+to `OPENAI_API_KEY`. In Discord, type `/a`, fill in `prompt`, then type part of one of those model IDs
+in `model` to confirm suggestions appear. Enter an unlisted value, submit the command, and send
+another `/a` request with the same session but no `model`; both responses should display the custom
+model in their token-usage footer.
 
 Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
 bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer

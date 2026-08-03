@@ -153,16 +153,6 @@ const googleCalendarAuthenticationTool = tool({
   }
 })
 
-export const GPT_MODELS = [
-  { id: 'gpt-5.4', label: 'GPT-5.4' },
-  { id: 'gpt-5.4-pro', label: 'GPT-5.4 pro' },
-  { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
-  { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
-  { id: 'gpt-5.2', label: 'GPT-5.2' },
-  { id: 'o3', label: 'o3' },
-  { id: 'o4-mini', label: 'o4-mini' }
-] as const
-
 const DEFAULT_MODEL = 'gpt-5.4'
 
 export const GPT_EFFORT_OPTIONS = [
@@ -1002,15 +992,6 @@ function buildGptComponents(
     )
   }
 
-  const modelRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`${GPT_MODEL_SELECT_ID}:${token}`)
-      .setPlaceholder(`Model: ${model}`)
-      .addOptions(
-        GPT_MODELS.map((m) => new StringSelectMenuOptionBuilder().setLabel(m.label).setValue(m.id))
-      )
-  )
-
   const components: GptComponent[] = [ctr]
 
   components.push(...managedComponents)
@@ -1023,7 +1004,6 @@ function buildGptComponents(
           .setLabel('Pin')
           .setStyle(ButtonStyle.Secondary)
       ),
-      modelRow,
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)

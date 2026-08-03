@@ -9,6 +9,7 @@ import {
   getStoredValue,
   resetStoredValueConnection
 } from '../helpers/kv-store.js'
+import { clearModelCache } from '../model-catalog.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
@@ -269,6 +270,7 @@ beforeEach(() => {
   responsePayloads.length = 0
   mcpToolGroups.length = 0
   mcpToolNumber.value = 0
+  clearModelCache()
   clearStoredValues()
 })
 
@@ -282,6 +284,7 @@ afterEach(async () => {
   if (previousKvStorePath === undefined) delete process.env.KV_STORE_PATH
   else process.env.KV_STORE_PATH = previousKvStorePath
   await rm(googleCalendarTestDirectory, { recursive: true, force: true })
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -314,6 +317,14 @@ describe('/a', () => {
   })
 
   it('suggests known models without requiring the submitted value to match', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: 'dynamic-large' }, { id: 'dynamic-mini' }, { id: 'unrelated-model' }]
+        }),
+        { status: 200 }
+      )
+    )
     const calls = await dispatch(agentModelAutocompleteJSON('mini'), subs)
     const body = getCallback(calls) as {
       type: number
@@ -323,12 +334,22 @@ describe('/a', () => {
     expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
     expect(body.data.choices).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'GPT-5.4 mini', value: 'gpt-5.4-mini' })
+        expect.objectContaining({ name: 'dynamic-mini', value: 'dynamic-mini' })
       ])
     )
     expect(body.data.choices).not.toContainEqual(
       expect.objectContaining({ value: 'vendor/custom-model-preview' })
     )
+  })
+
+  it('returns no suggestions when dynamic model discovery is unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 503 }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const calls = await dispatch(agentModelAutocompleteJSON('custom'), subs)
+    const body = getCallback(calls) as { data: { choices: unknown[] } }
+
+    expect(body.data.choices).toEqual([])
   })
 
   it('renders the agent JSON publicly and appends token usage', async () => {
