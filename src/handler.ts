@@ -83,7 +83,7 @@ import {
   isGptActionComponentId,
   isGptModalId
 } from './commands/gpt.js'
-import { loadAvailableModels } from './model-catalog.js'
+import { loadModelsResponse } from './model-catalog.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'
 import { handleTttMoveButton, isTttMoveButtonId } from './commands/ttt.js'
@@ -541,7 +541,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
           const query = String(focused.value).toLowerCase()
           try {
-            const models = await loadAvailableModels()
+            const { models } = await loadModelsResponse()
             await interaction.respond(
               models
                 .filter((model) => model.length <= 100 && model.toLowerCase().includes(query))

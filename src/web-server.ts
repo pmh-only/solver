@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import { readHostedHtml } from './hosted-page.js'
-import { loadAvailableModels } from './model-catalog.js'
+import { loadModelsResponse } from './model-catalog.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -127,7 +127,7 @@ export async function handleWebRequest(
   }
   if (url.pathname === '/models') {
     try {
-      const body = `${JSON.stringify({ models: await loadAvailableModels() })}\n`
+      const body = `${JSON.stringify(await loadModelsResponse())}\n`
       send(response, 200, 'application/json; charset=utf-8', body, method === 'HEAD')
     } catch (error) {
       console.error('could not load models', error)

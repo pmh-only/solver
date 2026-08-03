@@ -57,11 +57,19 @@ manual input. Select a suggestion or keep typing and submit a value that is not 
 value is stored for that conversation session and sent unchanged on later requests in the same
 session.
 
-To test this behavior, request `/models` and confirm its `models` array reflects the models available
-to `OPENAI_API_KEY`. In Discord, type `/a`, fill in `prompt`, then type part of one of those model IDs
-in `model` to confirm suggestions appear. Enter an unlisted value, submit the command, and send
-another `/a` request with the same session but no `model`; both responses should display the custom
-model in their token-usage footer.
+`GET /models` returns `application/json` with this shape:
+
+```json
+{"models":["<model-id>","<another-model-id>"]}
+```
+
+To test dynamic discovery, run `curl -sS https://<your-public-service>/models` and confirm the array
+reflects the models available to `OPENAI_API_KEY`. In Discord, type `/a`, fill in `prompt`, then type
+part of one of those model IDs in `model` to confirm suggestions appear. Enter an unlisted value such
+as `vendor/custom-model-preview`, submit the command, and send another `/a` request with the same
+session but no `model`; both responses should display that exact custom value in their token-usage
+footer. The automated coverage can be run with
+`pnpm exec vitest run src/test/gpt.test.ts src/test/web-server.test.ts`.
 
 Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
 bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer

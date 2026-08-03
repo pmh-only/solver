@@ -9,6 +9,10 @@ let cache:
     }
   | undefined
 
+export interface ModelsResponse {
+  models: string[]
+}
+
 export function clearModelCache(): void {
   cache = undefined
 }
@@ -47,4 +51,8 @@ export async function loadAvailableModels(): Promise<string[]> {
 
   cache = { apiKey, expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models }
   return [...models]
+}
+
+export async function loadModelsResponse(): Promise<ModelsResponse> {
+  return { models: await loadAvailableModels() }
 }
