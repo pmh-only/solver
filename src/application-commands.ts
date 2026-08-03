@@ -23,7 +23,10 @@ export const agentCommand = new SlashCommandBuilder()
   .setName(AGENT_COMMAND_NAME)
   .setDescription('ask an AI agent')
   .addStringOption((option) =>
-    option.setName('prompt').setDescription('what to ask').setRequired(true)
+    option
+      .setName('prompt')
+      .setDescription('what to ask, or /clear to reset session')
+      .setRequired(true)
   )
   .addStringOption((option) =>
     option.setName('session').setDescription('conversation session').setMaxLength(100)

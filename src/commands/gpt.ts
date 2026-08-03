@@ -1652,6 +1652,28 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     getStoredValue(selectedSessionKey(interaction.user.id)) ||
     DEFAULT_SESSION_NAME
   setStoredValue(selectedSessionKey(interaction.user.id), sessionName)
+
+  if (prompt === '/clear') {
+    await interaction.deferReply()
+    await runInSession(interaction.user.id, sessionName, async () => {
+      setStoredValue(sessionKey(interaction.user.id, sessionName), '[]')
+      await interaction.editReply({
+        content: null,
+        components: [
+          { type: ComponentType.TextDisplay, content: '**/clear**' },
+          { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small },
+          {
+            type: ComponentType.TextDisplay,
+            content: `Cleared history for session \`${footerSessionName(sessionName)}\`.`
+          }
+        ] as never,
+        flags: MessageFlags.IsComponentsV2,
+        allowedMentions: { parse: [] }
+      })
+    })
+    return
+  }
+
   loadConversation(interaction.user.id, sessionName)
 
   const storedSettings = loadSessionSettings(interaction.user.id, sessionName)

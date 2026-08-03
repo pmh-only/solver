@@ -806,6 +806,23 @@ describe('/a', () => {
     )
   })
 
+  it('clears the selected session history without invoking the agent', async () => {
+    await dispatch(agentCommandJSON('work question', {}, 'work'), subs)
+    expect(getStoredValue('gpt-session:666666666666666666:work')).not.toBe('[]')
+
+    const cleared = await dispatch(agentCommandJSON('/clear'), subs)
+    const clearEdit = cleared.filter((call) => call.method === 'PATCH').at(-1)?.body
+
+    expect(JSON.stringify(clearEdit)).toContain('**/clear**')
+    expect(JSON.stringify(clearEdit)).toContain('Cleared history for session `work`.')
+    expect(getStoredValue('gpt-session:666666666666666666:work')).toBe('[]')
+    expect(agentMock).toHaveBeenCalledTimes(1)
+
+    await dispatch(agentCommandJSON('start fresh'), subs)
+    expect(agentMock).toHaveBeenCalledTimes(2)
+    expect(agentMock).toHaveBeenLastCalledWith(expect.objectContaining({ messages: [] }))
+  })
+
   it('lets the agent create multiple component rows and rewrites the response on interaction', async () => {
     componentActions.push({
       action: 'set',
