@@ -273,8 +273,15 @@ describe('/a', () => {
     const defer = getCallback(calls) as { type: number; data?: { flags?: number } }
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect((defer.data?.flags ?? 0) & MessageFlags.Ephemeral).toBeFalsy()
-    const edit = getEdit(calls)
-    expect(edit).not.toBeNull()
+    const edit = getEdit(calls) as {
+      components: Array<{ type: number; content?: string; divider?: boolean }>
+      flags: number
+    }
+    expect(edit.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(edit.components.slice(0, 2)).toEqual([
+      { type: 10, content: '**explain recursion**' },
+      { type: 14, divider: true, spacing: 1 }
+    ])
     expect(JSON.stringify(calls)).toContain('hello world')
     expect(JSON.stringify(calls)).toContain('**Reasoning**')
     expect(JSON.stringify(calls)).toContain('I should look this up.')
@@ -294,7 +301,7 @@ describe('/a', () => {
         apiKey: 'test-key',
         modelId: 'gpt-5.4',
         params: {
-          reasoning: { effort: 'medium' },
+          reasoning: { effort: 'medium', summary: 'auto' },
           tools: [{ type: 'web_search' }]
         }
       })
@@ -358,19 +365,29 @@ describe('/a', () => {
       'explain recursion',
       expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
     )
+    const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: Array<{ type: number; content?: string; divider?: boolean }>
+    }
+    expect(finalEdit.components.slice(0, 2)).toEqual([
+      { type: 10, content: '**explain recursion**' },
+      { type: 14, divider: true, spacing: 1 }
+    ])
   })
 
   it('updates reasoning and tool status while the agent is generating', async () => {
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
     const progressEdits = calls
       .filter((call) => call.method === 'PATCH')
-      .slice(1, -1)
+      .slice(0, -1)
       .map((call) => JSON.stringify(call.body))
 
     expect(progressEdits.some((edit) => edit.includes('I should look this up.'))).toBe(true)
     expect(progressEdits.some((edit) => edit.includes('`docker_list`: running'))).toBe(true)
     expect(progressEdits.some((edit) => edit.includes('`docker_list`: success'))).toBe(true)
     expect(progressEdits.every((edit) => edit.includes('generating...'))).toBe(true)
+    expect(progressEdits.every((edit) => edit.includes('**inspect the system**'))).toBe(true)
+    expect(progressEdits.every((edit) => edit.includes('"type":14'))).toBe(true)
+    expect(progressEdits.every((edit) => edit.includes('"flags":32768'))).toBe(true)
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
@@ -437,6 +454,8 @@ describe('/a', () => {
     expect(edit.embeds[0]?.footer?.text).toContain('Live\nTokens used:')
     expect(edit.components).toEqual([])
     expect(edit.allowed_mentions).toEqual({ parse: [] })
+    expect(JSON.stringify(edit.content)).toContain('**show status**')
+    expect(JSON.stringify(edit.content)).toContain('-# --------------------------------')
     expect(JSON.stringify(edit.content)).toContain('I should look this up.')
     expect(JSON.stringify(edit.content)).toContain('`docker_list`: success')
   })
@@ -687,7 +706,10 @@ describe('/a', () => {
       expect.objectContaining({
         modelId: 'gpt-5.4-mini',
         maxTokens: 2048,
-        params: { reasoning: { effort: 'high' }, tools: [{ type: 'web_search' }] }
+        params: {
+          reasoning: { effort: 'high', summary: 'auto' },
+          tools: [{ type: 'web_search' }]
+        }
       })
     )
   })

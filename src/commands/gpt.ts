@@ -775,10 +775,33 @@ function formatAgentActivity(activity: AgentActivity): string {
   return summary.length > limit ? `${summary.slice(0, limit - 3)}...` : summary
 }
 
-function buildAgentProgressPayload(activity: AgentActivity): InteractionEditReplyOptions {
+function agentPromptHeaderComponents(ctx: GptContext): GptManagedComponent[] {
+  return [
+    { type: ComponentType.TextDisplay, content: `**${ctx.displayPrompt}**` },
+    { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small }
+  ]
+}
+
+function legacyAgentPromptHeader(ctx: GptContext): string {
+  return `**${ctx.displayPrompt}**\n\n-# --------------------------------\n\n`
+}
+
+function buildAgentProgressPayload(
+  ctx: GptContext,
+  activity: AgentActivity = { reasoning: '', tools: [] }
+): InteractionEditReplyOptions {
   const activityText = formatAgentActivity(activity)
   return {
-    content: `${activityText}${activityText ? '\n\n' : ''}-# generating...`,
+    content: null,
+    embeds: [],
+    components: [
+      ...agentPromptHeaderComponents(ctx),
+      ...(activityText
+        ? [{ type: ComponentType.TextDisplay, content: activityText } as GptManagedComponent]
+        : []),
+      { type: ComponentType.TextDisplay, content: '-# generating...' }
+    ] as never,
+    flags: MessageFlags.IsComponentsV2,
     allowedMentions: { parse: [] }
   }
 }
@@ -874,18 +897,18 @@ function buildAgentPayload(
     }
   }
   const flags = typeof payload.flags === 'number' ? payload.flags : 0
+  const hasLegacyOnlyContent =
+    (Array.isArray(payload.embeds) && payload.embeds.length > 0) || payload.poll != null
   const usesComponentsV2 =
     (flags & MessageFlags.IsComponentsV2) !== 0 ||
-    components.some((component) => component.type !== ComponentType.ActionRow)
+    components.some((component) => component.type !== ComponentType.ActionRow) ||
+    !hasLegacyOnlyContent
   const footer = usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage)
   const activityText = formatAgentActivity(activity)
 
   if (usesComponentsV2) {
     const content = typeof payload.content === 'string' ? payload.content : ''
-    const header: GptManagedComponent[] = [
-      { type: ComponentType.TextDisplay, content: `**${ctx.displayPrompt}**` },
-      { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small }
-    ]
+    const header = agentPromptHeaderComponents(ctx)
     if (content) header.push({ type: ComponentType.TextDisplay, content })
 
     const activityComponents = activityText
@@ -905,24 +928,26 @@ function buildAgentPayload(
     payload.flags = flags | MessageFlags.IsComponentsV2
   } else {
     payload.components = components
+    const promptHeader = legacyAgentPromptHeader(ctx)
     const embeds = Array.isArray(payload.embeds)
       ? (structuredClone(payload.embeds) as Record<string, unknown>[])
       : []
     if (embeds.length > 0) {
       appendFooterToEmbed(embeds[embeds.length - 1]!, footer)
       payload.embeds = embeds
-      if (activityText) {
-        const content = typeof payload.content === 'string' ? payload.content : ''
-        const separator = content ? '\n\n' : ''
-        const available = Math.max(0, 2000 - activityText.length - separator.length)
-        payload.content = `${content.slice(0, available)}${separator}${activityText}`
-      }
+      const content = typeof payload.content === 'string' ? payload.content : ''
+      const activity = activityText ? `\n\n${activityText}` : ''
+      const available = Math.max(0, 2000 - promptHeader.length - activity.length)
+      payload.content = `${promptHeader}${content.slice(0, available)}${activity}`
     } else {
       const content = typeof payload.content === 'string' ? payload.content : ''
       const activity = activityText ? `\n\n${activityText}` : ''
-      const separator = content ? '\n\n' : ''
-      const available = Math.max(0, 2000 - activity.length - footer.length - separator.length)
-      payload.content = `${content.slice(0, available)}${activity}${separator}${footer}`
+      const footerSection = `\n\n${footer}`
+      const available = Math.max(
+        0,
+        2000 - promptHeader.length - activity.length - footerSection.length
+      )
+      payload.content = `${promptHeader}${content.slice(0, available)}${activity}${footerSection}`
     }
     payload.flags = flags & MessageFlags.SuppressEmbeds
   }
@@ -1075,19 +1100,21 @@ async function runGptStream(
   const mcpClients: McpClient[] = []
   const managedMcpConnections = new Map<string, ManagedMcpConnection>()
   let lastProgressUpdate = 0
-  let lastProgressContent = ''
+  let lastProgressPayload = ''
 
   const updateProgress = async (force = false): Promise<void> => {
-    const payload = buildAgentProgressPayload(activity)
-    const content = String(payload.content)
+    const payload = buildAgentProgressPayload(ctx, activity)
+    const serializedPayload = JSON.stringify(payload)
     const now = Date.now()
-    if (content === lastProgressContent || (!force && now - lastProgressUpdate < 1000)) return
+    if (serializedPayload === lastProgressPayload || (!force && now - lastProgressUpdate < 1000))
+      return
     await callbacks.editPayload(payload)
-    lastProgressContent = content
+    lastProgressPayload = serializedPayload
     lastProgressUpdate = now
   }
 
   try {
+    await updateProgress(true)
     const systemInstruction = [
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
@@ -1110,7 +1137,7 @@ async function runGptStream(
       maxTokens: ctx.maxTokens,
       params: {
         tools: [{ type: 'web_search' }],
-        ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort } } : {})
+        ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort, summary: 'auto' } } : {})
       }
     })
     mcpClients.push(
@@ -1281,6 +1308,7 @@ async function runGptStream(
               event.event.delta.type === 'reasoningContentDelta' &&
               event.event.delta.text
             ) {
+              if (!activity.reasoning) forceProgressUpdate = true
               activity.reasoning += event.event.delta.text
               activityChanged = true
             } else if (
@@ -1638,7 +1666,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   await interaction.deferReply()
 
-  await interaction.editReply({ content: '-# generating...' })
+  await interaction.editReply(buildAgentProgressPayload(ctx))
 
   const callbacks = makeCallbacks(interaction, pub)
   await runInSession(interaction.user.id, sessionName, async () => {
