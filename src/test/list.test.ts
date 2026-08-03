@@ -42,6 +42,36 @@ describe('list — command', () => {
     expect(json).toContain('2 keys found')
   })
 
+  it('hides namespaced keys from the default list', async () => {
+    setStoredValue('alpha', '1')
+    setStoredValue('chess:opening', 'Sicilian')
+    setStoredValue('project:status', 'active')
+
+    const calls = await dispatch(commandJSON('list'), subs)
+    const json = JSON.stringify(getCallback(calls))
+
+    expect(json).toContain('alpha')
+    expect(json).toContain('1 key found')
+    expect(json).not.toContain('chess:opening')
+    expect(json).not.toContain('project:status')
+  })
+
+  it('lists only keys from the selected namespace', async () => {
+    setStoredValue('alpha', '1')
+    setStoredValue('project:status', 'active')
+    setStoredValue('project:release:date', 'tomorrow')
+    setStoredValue('other:status', 'inactive')
+
+    const calls = await dispatch(commandJSON('list project'), subs)
+    const json = JSON.stringify(getCallback(calls))
+
+    expect(json).toContain('project:status')
+    expect(json).toContain('project:release:date')
+    expect(json).toContain('2 keys found')
+    expect(json).not.toContain('alpha')
+    expect(json).not.toContain('other:status')
+  })
+
   it('hides system-generated keys', async () => {
     setStoredValue('alpha', '1')
     setStoredValue('command-input:token', 'list')
@@ -92,10 +122,10 @@ describe('list — command', () => {
     expect(JSON.stringify(body)).toContain('1 key found')
   })
 
-  it('keeps ordinary chess-prefixed user keys visible', async () => {
+  it('shows ordinary chess-prefixed user keys when that namespace is selected', async () => {
     setStoredValue('chess:opening', 'Sicilian')
 
-    const calls = await dispatch(commandJSON('list'), subs)
+    const calls = await dispatch(commandJSON('list chess'), subs)
 
     expect(JSON.stringify(getCallback(calls))).toContain('chess:opening')
   })

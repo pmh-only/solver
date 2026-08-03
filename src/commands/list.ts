@@ -11,11 +11,16 @@ import { isInternalStoredKey, listStoredKeys } from '../helpers/kv-store.js'
 export const subcommand: Subcommand = {
   name: 'list',
   description: 'list vars',
-  usage: 'list [--pub]',
-  examples: ['list'],
+  usage: 'list [namespace] [--pub]',
+  examples: ['list', 'list project'],
 
   async execute(interaction, args, flags) {
-    const keys = listStoredKeys().filter((key) => !isInternalStoredKey(key))
+    const namespace = args.replace(/^\S+\s*/, '').trim()
+    const keys = listStoredKeys().filter(
+      (key) =>
+        !isInternalStoredKey(key) &&
+        (namespace ? key.startsWith(`${namespace}:`) : !key.includes(':'))
+    )
 
     if (keys.length === 0) {
       await sendCommandReply(
