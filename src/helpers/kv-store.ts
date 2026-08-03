@@ -15,6 +15,7 @@ const INTERNAL_KEY_PREFIXES = [
   'constrained-command:',
   'env:',
   'gpt-ctx:',
+  'gpt-mcp-servers',
   'gpt-settings:',
   'gpt-session:',
   'gpt-session-selected:',

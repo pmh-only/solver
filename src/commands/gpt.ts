@@ -33,6 +33,15 @@ import { z } from 'zod'
 import { errorContainer, matchesInteractiveId, PIN_BUTTON_ID } from '../components.js'
 import { executeAgentShell, formatAgentShellResult } from '../helpers/agent-shell.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import {
+  loadStoredMcpServers,
+  MAX_STORED_MCP_SERVERS,
+  mcpServerNameSchema,
+  removeStoredMcpServer,
+  storedMcpServerSchema,
+  type StoredMcpServer,
+  upsertStoredMcpServer
+} from '../helpers/mcp-store.js'
 import { hostedPageUrl, writeHostedHtml } from '../hosted-page.js'
 import {
   beginGoogleCalendarAuthentication,
@@ -244,9 +253,168 @@ function replaceDuplicateTools<T extends { name: string }>(tools: T[]): T[] {
   return [...toolsByNormalizedName.values()]
 }
 
-async function loadMcpTools(clients: McpClient[]): Promise<Tool[]> {
+async function loadMcpTools(
+  clients: McpClient[],
+  onLoaded?: (client: McpClient, tools: Tool[]) => void
+): Promise<Tool[]> {
   const toolsByClient = await Promise.all(clients.map((client) => client.listTools()))
+  clients.forEach((client, index) => onLoaded?.(client, toolsByClient[index]!))
   return toolsByClient.flat()
+}
+
+function storedMcpClient(server: StoredMcpServer): McpClient {
+  const applicationName = `solver /a ${server.name}`
+  if (server.transport === 'http') {
+    return new McpClient({
+      applicationName,
+      transport: new StreamableHTTPClientTransport(
+        new URL(server.url),
+        server.headers ? { requestInit: { headers: server.headers } } : undefined
+      )
+    })
+  }
+
+  return new McpClient({
+    applicationName,
+    transport: new StdioClientTransport({
+      command: server.command,
+      ...(server.args ? { args: server.args } : {}),
+      ...(server.env ? { env: server.env } : {}),
+      ...(server.cwd ? { cwd: server.cwd } : {})
+    })
+  })
+}
+
+function publicMcpServer(server: StoredMcpServer): Record<string, unknown> {
+  if (server.transport === 'http') {
+    return {
+      name: server.name,
+      transport: server.transport,
+      url: server.url,
+      ...(server.headers ? { header_names: Object.keys(server.headers) } : {})
+    }
+  }
+  return {
+    name: server.name,
+    transport: server.transport,
+    command: server.command,
+    ...(server.args ? { args: server.args } : {}),
+    ...(server.env ? { env_names: Object.keys(server.env) } : {}),
+    ...(server.cwd ? { cwd: server.cwd } : {})
+  }
+}
+
+interface ManagedMcpConnection {
+  client: McpClient
+  tools: Tool[]
+}
+
+function mcpServerManagementTool(
+  clients: McpClient[],
+  managedConnections: Map<string, ManagedMcpConnection>,
+  getAgent: () => Agent
+) {
+  return tool({
+    name: 'manage_mcp_servers',
+    description:
+      'List, attach, replace, or remove MCP servers available to /a. The server list persists in the database. A successfully attached server and its tools are available immediately in this request. Use stdio with an executable command and separate args, or http for a Streamable HTTP MCP endpoint. Stored env and header values are redacted from list output.',
+    inputSchema: z.object({
+      action: z.enum(['list', 'attach', 'remove']),
+      name: mcpServerNameSchema.optional().describe('Stable lowercase server id'),
+      transport: z.enum(['stdio', 'http']).optional(),
+      command: z.string().optional().describe('Executable for a stdio MCP server'),
+      args: z.array(z.string()).optional().describe('Arguments for the stdio executable'),
+      env: z.record(z.string(), z.string()).optional().describe('Environment for a stdio server'),
+      cwd: z.string().optional().describe('Working directory for a stdio server'),
+      url: z.string().optional().describe('Streamable HTTP MCP endpoint'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Request headers for an HTTP server')
+    }),
+    callback: async ({ action, name, transport, command, args, env, cwd, url, headers }) => {
+      if (action === 'list') {
+        const servers = loadStoredMcpServers().map(publicMcpServer)
+        return servers.length === 0
+          ? 'No persistent MCP servers are attached.'
+          : JSON.stringify(servers)
+      }
+      if (!name) return 'name is required.'
+
+      if (action === 'remove') {
+        const removed = removeStoredMcpServer(name)
+        const connection = managedConnections.get(name)
+        if (connection) {
+          const agent = getAgent()
+          for (const registeredTool of connection.tools) {
+            if (agent.toolRegistry.get(registeredTool.name) === registeredTool) {
+              agent.toolRegistry.remove(registeredTool.name)
+            }
+          }
+          managedConnections.delete(name)
+          const clientIndex = clients.indexOf(connection.client)
+          if (clientIndex !== -1) clients.splice(clientIndex, 1)
+          await connection.client.disconnect().catch(() => {})
+        }
+        return removed ? `Removed MCP server ${name}.` : `MCP server ${name} was not attached.`
+      }
+
+      if (!transport) return 'transport is required when attaching a server.'
+      const parsed = storedMcpServerSchema.safeParse(
+        transport === 'http'
+          ? { name, transport, url, headers }
+          : { name, transport, command, args, env, cwd }
+      )
+      if (!parsed.success) return `Invalid MCP server: ${z.prettifyError(parsed.error)}`
+
+      const server = parsed.data
+      const storedServers = loadStoredMcpServers()
+      if (
+        storedServers.length >= MAX_STORED_MCP_SERVERS &&
+        !storedServers.some(({ name: storedName }) => storedName === server.name)
+      ) {
+        return `At most ${MAX_STORED_MCP_SERVERS} MCP servers may be attached.`
+      }
+      const client = storedMcpClient(server)
+      let serverTools: Tool[]
+      try {
+        serverTools = replaceDuplicateTools(await client.listTools())
+      } catch (error) {
+        await client.disconnect().catch(() => {})
+        return `Could not attach MCP server ${name}: ${error instanceof Error ? error.message : String(error)}`
+      }
+
+      const agent = getAgent()
+      const previous = managedConnections.get(name)
+      if (previous) {
+        for (const registeredTool of previous.tools) {
+          if (agent.toolRegistry.get(registeredTool.name) === registeredTool) {
+            agent.toolRegistry.remove(registeredTool.name)
+          }
+        }
+      }
+      for (const serverTool of serverTools) {
+        const normalizedName = serverTool.name.replaceAll('-', '_')
+        for (const registeredTool of agent.tools) {
+          if (registeredTool.name.replaceAll('-', '_') === normalizedName) {
+            agent.toolRegistry.remove(registeredTool.name)
+          }
+        }
+      }
+      agent.toolRegistry.addOrReplace(serverTools)
+      upsertStoredMcpServer(server)
+
+      if (previous) {
+        const previousIndex = clients.indexOf(previous.client)
+        if (previousIndex !== -1) clients.splice(previousIndex, 1)
+        await previous.client.disconnect().catch(() => {})
+      }
+      clients.push(client)
+      managedConnections.set(name, { client, tools: serverTools })
+      const toolNames = serverTools.map(({ name: toolName }) => toolName)
+      return `Attached MCP server ${name} with ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}${toolNames.length > 0 ? `: ${toolNames.join(', ')}` : ''}.`
+    }
+  })
 }
 
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
@@ -905,6 +1073,7 @@ async function runGptStream(
   let usage: Usage | undefined
   const activity: AgentActivity = { reasoning: '', tools: [] }
   const mcpClients: McpClient[] = []
+  const managedMcpConnections = new Map<string, ManagedMcpConnection>()
   let lastProgressUpdate = 0
   let lastProgressContent = ''
 
@@ -921,6 +1090,7 @@ async function runGptStream(
   try {
     const systemInstruction = [
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
+      'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
       hostedPageUrl()
         ? `The persistent single-file web page is hosted at ${hostedPageUrl()}. Use publish_html to create or replace it.`
         : 'Use publish_html to create or replace the persistent single-file web page. WEB_DOMAIN is not configured, so tell the user that its public URL is unavailable.',
@@ -1041,19 +1211,38 @@ async function runGptStream(
         })
       )
     }
+    for (const server of loadStoredMcpServers()) {
+      const client = storedMcpClient(server)
+      mcpClients.push(client)
+      managedMcpConnections.set(server.name, { client, tools: [] })
+    }
     const streamAgent = async (prompt: string, diagnosing = false, retryingToolInput = false) => {
       const modalTool = interactionModalTool(token, ctx)
+      let agent: Agent
+      const manageMcpServersTool = mcpServerManagementTool(
+        mcpClients,
+        managedMcpConnections,
+        () => agent
+      )
       const localTools = [
         shellTool,
         publishHtmlTool,
         spotifyAuthenticationTool,
         googleCalendarAuthenticationTool,
+        manageMcpServersTool,
         modalTool
       ]
       const agentTools = diagnosing
         ? localTools
-        : replaceDuplicateTools([...localTools, ...(await loadMcpTools(mcpClients))])
-      const agent = new Agent({
+        : replaceDuplicateTools([
+            ...localTools,
+            ...(await loadMcpTools(mcpClients, (client, tools) => {
+              for (const connection of managedMcpConnections.values()) {
+                if (connection.client === client) connection.tools = tools
+              }
+            }))
+          ])
+      agent = new Agent({
         model,
         messages: agentMessages(ctx.history),
         systemPrompt: diagnosing
@@ -1165,7 +1354,8 @@ async function runGptStream(
         'Playwright MCP',
         ...(spotifyConfiguration ? ['Spotify MCP'] : []),
         ...(googleCalendarConfiguration ? ['Google Calendar MCP'] : []),
-        ...(mailApiKey ? ['Mail MCP'] : [])
+        ...(mailApiKey ? ['Mail MCP'] : []),
+        ...loadStoredMcpServers().map(({ name }) => `${name} MCP`)
       ].join(' and ')
       await streamAgent(
         `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,

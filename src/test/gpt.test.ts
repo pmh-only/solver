@@ -4,7 +4,11 @@ import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
 import { GPT_ACTION_COMPONENT_ID, GPT_MODAL_ID } from '../commands/gpt.js'
-import { clearStoredValues, getStoredValue } from '../helpers/kv-store.js'
+import {
+  clearStoredValues,
+  getStoredValue,
+  resetStoredValueConnection
+} from '../helpers/kv-store.js'
 import {
   agentCommandJSON,
   autocompleteJSON,
@@ -21,31 +25,46 @@ const {
   agentMock,
   disconnectMock,
   httpTransportMock,
+  mcpActions,
+  mcpActionResults,
   mcpClientMock,
   mcpToolGroups,
   mcpToolNumber,
   modelMock,
   componentActions,
   modalActions,
+  registeredAgentTools,
   responsePayloads,
   streamMock,
   toolMock,
+  toolRegistryAddMock,
+  toolRegistryRemoveMock,
   transportMock
-} = vi.hoisted(() => ({
-  agentMock: vi.fn(),
-  disconnectMock: vi.fn().mockResolvedValue(undefined),
-  httpTransportMock: vi.fn(),
-  mcpClientMock: vi.fn(),
-  mcpToolGroups: [] as Record<string, unknown>[][],
-  mcpToolNumber: { value: 0 },
-  modelMock: vi.fn(),
-  componentActions: [] as Record<string, unknown>[],
-  modalActions: [] as Record<string, unknown>[],
-  responsePayloads: [] as Record<string, unknown>[],
-  streamMock: vi.fn(),
-  toolMock: vi.fn((options) => options),
-  transportMock: vi.fn()
-}))
+} = vi.hoisted(() => {
+  const registeredAgentTools = new Map<string, Record<string, unknown>>()
+  return {
+    agentMock: vi.fn(),
+    disconnectMock: vi.fn().mockResolvedValue(undefined),
+    httpTransportMock: vi.fn(),
+    mcpActions: [] as Record<string, unknown>[],
+    mcpActionResults: [] as unknown[],
+    mcpClientMock: vi.fn(),
+    mcpToolGroups: [] as Record<string, unknown>[][],
+    mcpToolNumber: { value: 0 },
+    modelMock: vi.fn(),
+    componentActions: [] as Record<string, unknown>[],
+    modalActions: [] as Record<string, unknown>[],
+    responsePayloads: [] as Record<string, unknown>[],
+    streamMock: vi.fn(),
+    toolMock: vi.fn((options) => options),
+    toolRegistryAddMock: vi.fn((tools: Record<string, unknown>[]) => {
+      for (const candidate of tools) registeredAgentTools.set(String(candidate.name), candidate)
+    }),
+    toolRegistryRemoveMock: vi.fn((name: string) => registeredAgentTools.delete(name)),
+    registeredAgentTools,
+    transportMock: vi.fn()
+  }
+})
 
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
   StdioClientTransport: class MockStdioClientTransport {
@@ -87,10 +106,27 @@ vi.mock('@strands-agents/sdk', () => ({
   },
   Agent: class MockAgent {
     private options: { tools?: { name?: string; callback?: (input: never) => unknown }[] }
+    toolRegistry: {
+      get: (name: string) => Record<string, unknown> | undefined
+      remove: (name: string) => void
+      addOrReplace: (tools: Record<string, unknown>[]) => void
+    }
 
     constructor(options: unknown) {
       agentMock(options)
       this.options = options as typeof this.options
+      for (const candidate of this.options.tools ?? []) {
+        if (candidate.name) registeredAgentTools.set(candidate.name, candidate)
+      }
+      this.toolRegistry = {
+        get: (name) => registeredAgentTools.get(name),
+        remove: toolRegistryRemoveMock,
+        addOrReplace: toolRegistryAddMock
+      }
+    }
+
+    get tools() {
+      return [...registeredAgentTools.values()]
     }
 
     async *stream(prompt: string, options: unknown) {
@@ -103,6 +139,13 @@ vi.mock('@strands-agents/sdk', () => ({
           (candidate) => candidate.name === 'manage_response_modals'
         )
         modalTool?.callback?.(modalAction as never)
+      }
+      const mcpAction = mcpActions.shift()
+      if (mcpAction) {
+        const mcpTool = this.options.tools?.find(
+          (candidate) => candidate.name === 'manage_mcp_servers'
+        )
+        mcpActionResults.push(await mcpTool?.callback?.(mcpAction as never))
       }
       yield {
         type: 'modelStreamUpdateEvent',
@@ -179,6 +222,9 @@ beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
   componentActions.length = 0
   modalActions.length = 0
+  mcpActions.length = 0
+  mcpActionResults.length = 0
+  registeredAgentTools.clear()
   responsePayloads.length = 0
   mcpToolGroups.length = 0
   mcpToolNumber.value = 0
@@ -301,6 +347,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
+          expect.objectContaining({ name: 'manage_mcp_servers' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
           ...Array(7).fill(expect.anything())
         ]
@@ -459,7 +506,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(12).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -479,7 +526,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(12).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -514,6 +561,57 @@ describe('/a', () => {
     expect(disconnectMock).toHaveBeenCalledTimes(8)
   })
 
+  it('lets the agent attach, list, reuse, and remove a DB-backed MCP server', async () => {
+    mcpToolGroups.push(
+      ...Array.from({ length: 7 }, (_, index) => [{ name: `built_in_${index}` }]),
+      [{ name: 'github_search', description: 'Search GitHub' }]
+    )
+    mcpActions.push({
+      action: 'attach',
+      name: 'github',
+      transport: 'http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer secret-token' }
+    })
+
+    await dispatch(agentCommandJSON('attach the GitHub MCP'), subs)
+
+    expect(JSON.parse(getStoredValue('gpt-mcp-servers')!)).toEqual([
+      {
+        name: 'github',
+        transport: 'http',
+        url: 'https://mcp.example.com/mcp',
+        headers: { Authorization: 'Bearer secret-token' }
+      }
+    ])
+    expect(httpTransportMock).toHaveBeenCalledWith(new URL('https://mcp.example.com/mcp'), {
+      requestInit: { headers: { Authorization: 'Bearer secret-token' } }
+    })
+    expect(toolRegistryAddMock).toHaveBeenCalledWith([
+      expect.objectContaining({ name: 'github_search' })
+    ])
+    expect(mcpActionResults.at(-1)).toBe('Attached MCP server github with 1 tool: github_search.')
+
+    resetStoredValueConnection()
+    mcpActions.push({ action: 'list' })
+    await dispatch(agentCommandJSON('list attached MCP servers'), subs)
+
+    expect(mcpActionResults.at(-1)).toBe(
+      '[{"name":"github","transport":"http","url":"https://mcp.example.com/mcp","header_names":["Authorization"]}]'
+    )
+    expect(String(mcpActionResults.at(-1))).not.toContain('secret-token')
+    expect(mcpClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ applicationName: 'solver /a github' })
+    )
+
+    mcpActions.push({ action: 'remove', name: 'github' })
+    await dispatch(agentCommandJSON('remove the GitHub MCP'), subs)
+
+    expect(getStoredValue('gpt-mcp-servers')).toBe('[]')
+    expect(mcpActionResults.at(-1)).toBe('Removed MCP server github.')
+    expect(toolRegistryRemoveMock).toHaveBeenCalled()
+  })
+
   it('replaces MCP tools whose names differ only by hyphens and underscores', async () => {
     mcpToolGroups.push(
       [{ name: 'get-current-time', source: 'old' }],
@@ -528,7 +626,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
-    expect(tools).toHaveLength(11)
+    expect(tools).toHaveLength(12)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
@@ -546,6 +644,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
+          expect.objectContaining({ name: 'manage_mcp_servers' }),
           expect.objectContaining({ name: 'manage_response_modals' })
         ]
       })
