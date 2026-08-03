@@ -211,6 +211,7 @@ interface ConversationTurn {
 interface AgentActivity {
   reasoning: string
   tools: Array<{ id: string; name: string; status: 'running' | 'success' | 'error' }>
+  responseStarted: boolean
 }
 
 interface GptSessionSettings {
@@ -753,6 +754,13 @@ function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usag
 }
 
 function formatAgentActivity(activity: AgentActivity): string {
+  if (activity.responseStarted) {
+    const counts = new Map<string, number>()
+    for (const { name } of activity.tools) counts.set(name, (counts.get(name) ?? 0) + 1)
+    if (counts.size === 0) return ''
+    return `-# (${[...counts].map(([name, count]) => `${name.replaceAll('`', '')} x${count}`).join(', ')})`
+  }
+
   const sections: string[] = []
   const reasoning = activity.reasoning.trim()
   if (reasoning) {
@@ -762,16 +770,14 @@ function formatAgentActivity(activity: AgentActivity): string {
     )
   }
   if (activity.tools.length > 0) {
-    const tools = activity.tools.slice(0, 20).map(({ name, status }) => {
+    const tools = activity.tools.map(({ name, status }) => {
       const label = name.replaceAll('`', '')
       return `- \`${label}\`: ${status}`
     })
-    if (activity.tools.length > tools.length)
-      tools.push(`- ${activity.tools.length - tools.length} more`)
     sections.push(`**Tools used**\n${tools.join('\n')}`)
   }
   const summary = sections.join('\n\n')
-  const limit = 1500
+  const limit = 3900
   return summary.length > limit ? `${summary.slice(0, limit - 3)}...` : summary
 }
 
@@ -788,7 +794,7 @@ function legacyAgentPromptHeader(ctx: GptContext): string {
 
 function buildAgentProgressPayload(
   ctx: GptContext,
-  activity: AgentActivity = { reasoning: '', tools: [] }
+  activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
 ): InteractionEditReplyOptions {
   const activityText = formatAgentActivity(activity)
   return {
@@ -861,7 +867,7 @@ function buildAgentPayload(
   token: string,
   ctx: GptContext,
   usage?: Usage,
-  activity: AgentActivity = { reasoning: '', tools: [] }
+  activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
 ): InteractionEditReplyOptions {
   const raw = parseJsonObject(response)
   const allowed = new Set([
@@ -1096,7 +1102,7 @@ async function runGptStream(
 
   let responseContent = ''
   let usage: Usage | undefined
-  const activity: AgentActivity = { reasoning: '', tools: [] }
+  const activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
   const mcpClients: McpClient[] = []
   const managedMcpConnections = new Map<string, ManagedMcpConnection>()
   let lastProgressUpdate = 0
@@ -1290,6 +1296,7 @@ async function runGptStream(
         tools: agentTools,
         printer: false
       })
+      let contentBlockStarted = false
 
       for await (const event of agent.stream(prompt, {
         cancelSignal: controller.signal,
@@ -1303,12 +1310,21 @@ async function runGptStream(
         if (event.type === 'modelStreamUpdateEvent') {
           if (event.event.type === 'modelContentBlockDeltaEvent') {
             if (event.event.delta.type === 'textDelta') {
+              contentBlockStarted = false
+              if (!activity.responseStarted) {
+                activity.responseStarted = true
+                activityChanged = true
+                forceProgressUpdate = true
+              }
               responseContent += event.event.delta.text
             } else if (
               event.event.delta.type === 'reasoningContentDelta' &&
               event.event.delta.text
             ) {
-              if (!activity.reasoning) forceProgressUpdate = true
+              if (contentBlockStarted) activity.reasoning = ''
+              contentBlockStarted = false
+              if (!activity.reasoning || activity.responseStarted) forceProgressUpdate = true
+              activity.responseStarted = false
               activity.reasoning += event.event.delta.text
               activityChanged = true
             } else if (
@@ -1324,17 +1340,19 @@ async function runGptStream(
               activityChanged = true
               forceProgressUpdate = true
             }
-          } else if (
-            event.event.type === 'modelContentBlockStartEvent' &&
-            event.event.start?.type === 'toolUseStart'
-          ) {
-            activity.tools.push({
-              id: event.event.start.toolUseId,
-              name: event.event.start.name,
-              status: 'running'
-            })
-            activityChanged = true
-            forceProgressUpdate = true
+          } else if (event.event.type === 'modelContentBlockStartEvent') {
+            if (event.event.start?.type === 'toolUseStart') {
+              contentBlockStarted = false
+              activity.tools.push({
+                id: event.event.start.toolUseId,
+                name: event.event.start.name,
+                status: 'running'
+              })
+              activityChanged = true
+              forceProgressUpdate = true
+            } else {
+              contentBlockStarted = true
+            }
           }
         }
         if (event.type === 'toolResultEvent') {
@@ -1372,6 +1390,7 @@ async function runGptStream(
       usage = undefined
       activity.reasoning = ''
       activity.tools = []
+      activity.responseStarted = false
       const integrations = [
         'Docker MCP (`uvx mcp-server-docker`)',
         'Filesystem MCP',

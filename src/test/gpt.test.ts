@@ -149,9 +149,17 @@ vi.mock('@strands-agents/sdk', () => ({
       }
       yield {
         type: 'modelStreamUpdateEvent',
+        event: { type: 'modelContentBlockStartEvent' }
+      }
+      yield {
+        type: 'modelStreamUpdateEvent',
         event: {
           type: 'modelContentBlockDeltaEvent',
-          delta: { type: 'reasoningContentDelta', text: 'I should look this up.' }
+          delta: {
+            type: 'reasoningContentDelta',
+            text:
+              streamResult === 'multipleActivity' ? 'Earlier reasoning.' : 'I should look this up.'
+          }
         }
       }
       yield {
@@ -186,6 +194,32 @@ vi.mock('@strands-agents/sdk', () => ({
       if (streamResult === 'throwAfterActivity') {
         throw new Error('unable to parse tool input JSON')
       }
+      if (streamResult === 'multipleActivity') {
+        yield {
+          type: 'modelStreamUpdateEvent',
+          event: { type: 'modelContentBlockStartEvent' }
+        }
+        yield {
+          type: 'modelStreamUpdateEvent',
+          event: {
+            type: 'modelContentBlockDeltaEvent',
+            delta: { type: 'reasoningContentDelta', text: 'Latest reasoning.' }
+          }
+        }
+        for (let index = 0; index < 3; index++) {
+          yield {
+            type: 'modelStreamUpdateEvent',
+            event: {
+              type: 'modelContentBlockStartEvent',
+              start: { type: 'toolUseStart', name: 'search', toolUseId: `search-${index}` }
+            }
+          }
+          yield {
+            type: 'toolResultEvent',
+            result: { toolUseId: `search-${index}`, status: 'success', content: [] }
+          }
+        }
+      }
       if (streamResult !== 'noResponse') {
         const response = JSON.stringify(
           responsePayloads.shift() ?? {
@@ -195,6 +229,10 @@ vi.mock('@strands-agents/sdk', () => ({
               : {})
           }
         )
+        yield {
+          type: 'modelStreamUpdateEvent',
+          event: { type: 'modelContentBlockStartEvent' }
+        }
         for (const text of [response.slice(0, 10), response.slice(10)]) {
           yield {
             type: 'modelStreamUpdateEvent',
@@ -393,6 +431,28 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
+  it('shows only the latest reasoning, every tool use, then compact tool counts', async () => {
+    streamMock.mockReturnValueOnce('multipleActivity')
+
+    const calls = await dispatch(agentCommandJSON('research this'), subs)
+    const progressEdits = calls
+      .filter((call) => call.method === 'PATCH')
+      .slice(0, -1)
+      .map((call) => JSON.stringify(call.body))
+    const latestReasoningEdit = [...progressEdits]
+      .reverse()
+      .find((edit) => edit.includes('Latest reasoning.') && edit.includes('`search`: success'))!
+    const compactEdit = progressEdits.find((edit) => edit.includes('search x3'))!
+
+    expect(latestReasoningEdit).not.toContain('Earlier reasoning.')
+    expect(latestReasoningEdit).toContain('`docker_list`: success')
+    expect(latestReasoningEdit).toContain('`web_search`: success')
+    expect(latestReasoningEdit.match(/`search`: success/g)).toHaveLength(3)
+    expect(compactEdit).toContain('(docker_list x1, web_search x1, search x3)')
+    expect(compactEdit).not.toContain('**Reasoning**')
+    expect(compactEdit).not.toContain('Latest reasoning.')
+  })
+
   it('renders a valid fallback when the agent emits no response text', async () => {
     streamMock.mockReturnValueOnce('noResponse')
 
@@ -471,8 +531,8 @@ describe('/a', () => {
     expect(edit.allowed_mentions).toEqual({ parse: [] })
     expect(JSON.stringify(edit.content)).toContain('**show status**')
     expect(JSON.stringify(edit.content)).toContain('-# --------------------------------')
-    expect(JSON.stringify(edit.content)).toContain('I should look this up.')
-    expect(JSON.stringify(edit.content)).toContain('`docker_list`: success')
+    expect(JSON.stringify(edit.content)).toContain('(docker_list x1, web_search x1)')
+    expect(JSON.stringify(edit.content)).not.toContain('**Reasoning**')
   })
 
   it('renders content inside Components V2 after the request prompt and a divider', async () => {
@@ -498,8 +558,8 @@ describe('/a', () => {
       { type: 10, content: 'Additional context' }
     ])
     expect(edit.components.at(-1)?.content).toContain('Tokens used:')
-    expect(edit.components.at(-2)?.content).toContain('I should look this up.')
-    expect(edit.components.at(-2)?.content).toContain('`docker_list`: success')
+    expect(edit.components.at(-2)?.content).toContain('(docker_list x1, web_search x1)')
+    expect(edit.components.at(-2)?.content).not.toContain('**Reasoning**')
   })
 
   it('accepts raw Discord API poll JSON', async () => {
