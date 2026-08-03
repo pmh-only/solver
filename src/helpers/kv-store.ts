@@ -23,7 +23,9 @@ const INTERNAL_KEY_PREFIXES = [
   'message-render-',
   'message-store-',
   'poll:',
-  'pub-content:'
+  'pub-content:',
+  'web-oidc-settings',
+  'web-rate:'
 ]
 
 export function isInternalStoredKey(key: string): boolean {

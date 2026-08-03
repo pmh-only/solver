@@ -32,5 +32,6 @@ export async function writeHostedHtml(html: string, path = HOSTED_HTML_PATH): Pr
 export function hostedPageUrl(): string | null {
   const domain = process.env.WEB_DOMAIN?.trim()
   if (!domain) return null
-  return /^https?:\/\//i.test(domain) ? domain : `https://${domain}`
+  const origin = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`
+  return new URL('/hosted', origin).href
 }

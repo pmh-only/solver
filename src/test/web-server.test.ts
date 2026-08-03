@@ -10,6 +10,8 @@ import {
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 import { clearModelCache } from '../model-catalog.js'
+import { deleteStoredValue } from '../helpers/kv-store.js'
+import { resetWebAuthForTests } from '../web-auth.js'
 
 let server: Server | undefined
 
@@ -18,6 +20,10 @@ afterEach(async () => {
   clearModelCache()
   delete process.env.WEB_DOMAIN
   delete process.env.OPENAI_API_KEY
+  delete process.env.WEB_SESSION_SECRET
+  delete process.env.WEB_ADMIN_BOOTSTRAP_SECRET
+  resetWebAuthForTests()
+  deleteStoredValue('web-oidc-settings')
   await rm(HOSTED_HTML_PATH, { force: true })
   if (server) {
     await closeWebServer(server)
@@ -32,7 +38,7 @@ async function startServer(): Promise<string> {
 }
 
 describe('web server', () => {
-  it('serves the responsive Hello World page', async () => {
+  it('serves the responsive chat application', async () => {
     const origin = await startServer()
     const response = await fetch(`${origin}/`)
     const html = await response.text()
@@ -40,7 +46,8 @@ describe('web server', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(response.headers.get('content-security-policy')).toContain('frame-ancestors')
-    expect(html).toContain('<h1>Hello, World!</h1>')
+    expect(html).toContain('<h1>Ask Solver from anywhere.</h1>')
+    expect(html).toContain('id="composer"')
     expect(html).toContain('name="viewport"')
   })
 
@@ -105,11 +112,12 @@ describe('web server', () => {
     await writeHostedHtml(html)
     const origin = await startServer()
 
-    const response = await fetch(`${origin}/`)
+    const response = await fetch(`${origin}/hosted`)
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe(html)
-    expect(response.headers.get('content-security-policy')).toBeNull()
+    expect(response.headers.get('content-security-policy')).toContain('sandbox')
+    expect(response.headers.get('content-security-policy')).not.toContain('allow-same-origin')
     expect(await readFile(HOSTED_HTML_PATH, 'utf8')).toBe(html)
   })
 
@@ -120,9 +128,55 @@ describe('web server', () => {
     )
 
     process.env.WEB_DOMAIN = 'pages.example.com'
-    expect(hostedPageUrl()).toBe('https://pages.example.com')
+    expect(hostedPageUrl()).toBe('https://pages.example.com/hosted')
     process.env.WEB_DOMAIN = 'http://localhost:3000'
-    expect(hostedPageUrl()).toBe('http://localhost:3000')
+    expect(hostedPageUrl()).toBe('http://localhost:3000/hosted')
+  })
+
+  it('protects chat and lets a bootstrap administrator configure OIDC without exposing secrets', async () => {
+    process.env.WEB_SESSION_SECRET = 'test-session-secret-that-is-at-least-32-characters'
+    process.env.WEB_ADMIN_BOOTSTRAP_SECRET = 'test-bootstrap-secret'
+    const origin = await startServer()
+
+    const unauthorized = await fetch(`${origin}/api/chat/history`)
+    expect(unauthorized.status).toBe(401)
+
+    const login = await fetch(`${origin}/api/auth/bootstrap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: 'test-bootstrap-secret' })
+    })
+    const loginBody = (await login.json()) as { csrfToken: string }
+    const cookie = login.headers.get('set-cookie')!.split(';', 1)[0]!
+    expect(login.status).toBe(200)
+
+    const saved = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookie,
+        'X-CSRF-Token': loginBody.csrfToken
+      },
+      body: JSON.stringify({
+        enabled: true,
+        issuerUrl: 'https://identity.example.com',
+        clientId: 'solver',
+        clientSecret: 'confidential-test-value',
+        redirectUri: 'https://solver.example.com/auth/callback',
+        scopes: 'openid profile email',
+        allowedSubjects: 'trusted-user',
+        adminSubjects: 'trusted-admin',
+        automaticLogin: false,
+        postLogoutRedirectUri: 'https://solver.example.com/'
+      })
+    })
+    const savedBody = (await saved.json()) as Record<string, unknown>
+    expect(saved.status).toBe(200)
+    expect(savedBody.hasClientSecret).toBe(true)
+    expect(savedBody).not.toHaveProperty('clientSecret')
+
+    const loaded = await fetch(`${origin}/api/admin/oidc`, { headers: { Cookie: cookie } })
+    expect(await loaded.text()).not.toContain('confidential-test-value')
   })
 
   it('rejects unknown routes and unsupported methods', async () => {

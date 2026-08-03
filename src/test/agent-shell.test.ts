@@ -22,4 +22,14 @@ describe('agent shell', () => {
     expect(result.timedOut).toBe(true)
     expect(result.exitCode).toBeNull()
   })
+
+  it('terminates commands when the request is aborted', async () => {
+    const controller = new AbortController()
+    const startedAt = Date.now()
+    const result = executeAgentShell('sleep 10 & wait', 60_000, controller.signal)
+    controller.abort()
+
+    await expect(result).resolves.toMatchObject({ exitCode: null, timedOut: false })
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
 })

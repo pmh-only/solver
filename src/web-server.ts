@@ -1,94 +1,257 @@
+import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { join } from 'node:path'
+import { runWebAgent, loadWebConversation, clearWebConversation } from './commands/gpt.js'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
-import { handleSpotifyCallback } from './spotify-auth.js'
+import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
+import { handleSpotifyCallback } from './spotify-auth.js'
+import {
+  beginOidcLogin,
+  bootstrapLogin,
+  clearSessionCookie,
+  completeOidcLogin,
+  getWebSession,
+  loadOidcSettings,
+  logoutUrl,
+  publicOidcSettings,
+  requireCsrf,
+  saveOidcSettings
+} from './web-auth.js'
+import { WEB_CSS, WEB_HTML, WEB_JS } from './web-ui.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
+const MAX_BODY_BYTES = 64 * 1024
 
-const HOME_HTML = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
-    <title>Hello World</title>
-    <style>
-      :root {
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: #f7f8ff;
-        background: #0e1020;
-      }
-      * { box-sizing: border-box; }
-      body {
-        min-height: 100vh;
-        margin: 0;
-        display: grid;
-        place-items: center;
-        overflow: hidden;
-        background:
-          radial-gradient(circle at 18% 22%, rgba(88, 101, 242, 0.42), transparent 34rem),
-          radial-gradient(circle at 82% 78%, rgba(235, 69, 158, 0.28), transparent 30rem),
-          #0e1020;
-      }
-      main {
-        width: min(42rem, calc(100vw - 2rem));
-        padding: clamp(2rem, 8vw, 5rem);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 2rem;
-        text-align: center;
-        background: rgba(20, 23, 45, 0.76);
-        box-shadow: 0 2rem 6rem rgba(0, 0, 0, 0.42);
-        backdrop-filter: blur(1.25rem);
-      }
-      p {
-        margin: 0 0 1rem;
-        color: #aeb5d6;
-        font-size: 0.8rem;
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-      }
-      h1 {
-        margin: 0;
-        font-size: clamp(3rem, 12vw, 7rem);
-        line-height: 0.92;
-        letter-spacing: -0.065em;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <p>Solver Web Server</p>
-      <h1>Hello, World!</h1>
-    </main>
-  </body>
-</html>
-`
+function securityHeaders(contentSecurityPolicy = true): Record<string, string> {
+  return {
+    'Cache-Control': 'no-store',
+    ...(contentSecurityPolicy
+      ? {
+          'Content-Security-Policy':
+            "default-src 'self'; connect-src 'self'; font-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        }
+      : {}),
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+  }
+}
 
 function send(
   response: ServerResponse,
   statusCode: number,
   contentType: string,
   body: string,
-  headOnly: boolean,
+  headOnly = false,
   contentSecurityPolicy = true
 ): void {
   response.writeHead(statusCode, {
+    ...securityHeaders(contentSecurityPolicy),
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store',
-    ...(contentSecurityPolicy
-      ? {
-          'Content-Security-Policy':
-            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'"
-        }
-      : {}),
-    'Referrer-Policy': 'no-referrer',
-    'X-Content-Type-Options': 'nosniff'
+    'Content-Length': Buffer.byteLength(body)
   })
   response.end(headOnly ? undefined : body)
+}
+
+function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
+  send(response, statusCode, 'application/json; charset=utf-8', `${JSON.stringify(value)}\n`)
+}
+
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buffer.length
+    if (size > MAX_BODY_BYTES) throw new Error('Request body is too large')
+    chunks.push(buffer)
+  }
+  const contentType = request.headers['content-type'] ?? ''
+  if (!contentType.toLowerCase().startsWith('application/json')) {
+    throw new Error('Content-Type must be application/json')
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+function remoteId(request: IncomingMessage): string {
+  if (process.env.WEB_TRUST_PROXY === 'true') {
+    const forwarded = request.headers['x-forwarded-for']
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+    if (first) return first
+  }
+  return request.socket.remoteAddress ?? 'unknown'
+}
+
+function authenticated(request: IncomingMessage, response: ServerResponse) {
+  const session = getWebSession(request)
+  if (!session) sendJson(response, 401, { error: 'Authentication required' })
+  return session
+}
+
+function mutationAllowed(request: IncomingMessage, response: ServerResponse) {
+  const session = authenticated(request, response)
+  if (!session) return null
+  if (!requireCsrf(request, session)) {
+    sendJson(response, 403, { error: 'Invalid CSRF token' })
+    return null
+  }
+  return session
+}
+
+function safeError(error: unknown): string {
+  if (!(error instanceof Error)) return 'Request failed'
+  if (error.name === 'ZodError' || error instanceof SyntaxError) return 'Invalid request data'
+  const safe = [
+    'Prompt must',
+    'Session name',
+    'Invalid reasoning effort',
+    'Token limit',
+    'Model must',
+    'OIDC redirect URI',
+    'OIDC scopes',
+    'Content-Type',
+    'Request body'
+  ]
+  return safe.some((prefix) => error.message.startsWith(prefix)) ? error.message : 'Request failed'
+}
+
+async function handleApiRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL
+): Promise<boolean> {
+  const method = request.method ?? 'GET'
+  if (url.pathname === '/api/session' && method === 'GET') {
+    const session = getWebSession(request)
+    let settings = null
+    try {
+      settings = loadOidcSettings()
+    } catch {
+      // Invalid configuration is visible only as disabled until an administrator replaces it.
+    }
+    sendJson(response, 200, {
+      user: session?.user ?? null,
+      csrfToken: session?.csrfToken ?? null,
+      oidcEnabled: settings?.enabled ?? false,
+      automaticLogin: settings?.automaticLogin ?? false
+    })
+    return true
+  }
+  if (url.pathname === '/api/auth/bootstrap' && method === 'POST') {
+    if (
+      hasStoredValue('web-oidc-settings') &&
+      process.env.WEB_ENABLE_BOOTSTRAP_RECOVERY !== 'true'
+    ) {
+      sendJson(response, 403, { error: 'Bootstrap setup is already complete' })
+      return true
+    }
+    if (!consumeStoredRateLimit(`web-rate:bootstrap:${remoteId(request)}`, 5, 15 * 60_000)) {
+      sendJson(response, 429, { error: 'Too many attempts' })
+      return true
+    }
+    const body = (await readJson(request)) as { secret?: unknown }
+    const session = bootstrapLogin(request, response, body.secret)
+    if (!session) sendJson(response, 401, { error: 'Invalid bootstrap credentials' })
+    else sendJson(response, 200, { user: session.user, csrfToken: session.csrfToken })
+    return true
+  }
+  if (url.pathname === '/api/admin/oidc' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.admin) {
+      sendJson(response, 403, { error: 'Administrator access required' })
+      return true
+    }
+    sendJson(response, 200, publicOidcSettings())
+    return true
+  }
+  if (url.pathname === '/api/admin/oidc' && method === 'PUT') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.admin) {
+      sendJson(response, 403, { error: 'Administrator access required' })
+      return true
+    }
+    sendJson(response, 200, saveOidcSettings(await readJson(request)))
+    return true
+  }
+  if (url.pathname === '/api/chat/history' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(
+      response,
+      200,
+      loadWebConversation(session.user.id, url.searchParams.get('session') || 'default')
+    )
+    return true
+  }
+  if (url.pathname === '/api/chat/clear' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    const body = (await readJson(request)) as { sessionName?: unknown }
+    const sessionName = typeof body.sessionName === 'string' ? body.sessionName : 'default'
+    await clearWebConversation(session.user.id, sessionName)
+    sendJson(response, 200, { ok: true })
+    return true
+  }
+  if (url.pathname === '/api/chat' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    if (!consumeStoredRateLimit(`web-rate:chat:${session.user.id}`, 20, 60_000)) {
+      sendJson(response, 429, { error: 'Rate limit exceeded' })
+      return true
+    }
+    const body = (await readJson(request)) as Record<string, unknown>
+    response.writeHead(200, {
+      ...securityHeaders(),
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive'
+    })
+    const write = (value: unknown) => {
+      if (!response.destroyed) response.write(`${JSON.stringify(value)}\n`)
+    }
+    const controller = new AbortController()
+    response.once('close', () => {
+      if (!response.writableEnded) controller.abort()
+    })
+    try {
+      await runWebAgent(
+        {
+          userId: session.user.id,
+          prompt: typeof body.prompt === 'string' ? body.prompt : '',
+          sessionName: typeof body.sessionName === 'string' ? body.sessionName : undefined,
+          model: typeof body.model === 'string' ? body.model : undefined,
+          effort: typeof body.effort === 'string' ? body.effort : undefined,
+          maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined
+        },
+        async (payload) => write({ payload }),
+        controller.signal
+      )
+    } catch (error) {
+      write({ error: safeError(error) })
+    } finally {
+      response.end()
+    }
+    return true
+  }
+  return false
 }
 
 export async function handleWebRequest(
@@ -96,12 +259,6 @@ export async function handleWebRequest(
   response: ServerResponse
 ): Promise<void> {
   const method = request.method ?? 'GET'
-  if (method !== 'GET' && method !== 'HEAD') {
-    response.setHeader('Allow', 'GET, HEAD')
-    send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', false)
-    return
-  }
-
   let url: URL
   try {
     url = new URL(request.url ?? '/', 'http://web.local')
@@ -109,66 +266,125 @@ export async function handleWebRequest(
     send(response, 400, 'text/plain; charset=utf-8', 'Bad Request\n', method === 'HEAD')
     return
   }
-  if (url.pathname === '/') {
-    const hostedHtml = await readHostedHtml()
-    send(
-      response,
-      200,
-      'text/html; charset=utf-8',
-      hostedHtml ?? HOME_HTML,
-      method === 'HEAD',
-      hostedHtml === null
-    )
-    return
-  }
-  if (url.pathname === '/healthz') {
-    send(response, 200, 'text/plain; charset=utf-8', 'ok\n', method === 'HEAD')
-    return
-  }
-  if (url.pathname === '/models') {
-    try {
-      const body = `${JSON.stringify(await loadModelsResponse())}\n`
-      send(response, 200, 'application/json; charset=utf-8', body, method === 'HEAD')
-    } catch (error) {
-      console.error('could not load models', error)
-      send(
+
+  try {
+    if (url.pathname.startsWith('/api/') && (await handleApiRequest(request, response, url))) return
+    if (url.pathname === '/auth/login' && method === 'GET') {
+      if (!consumeStoredRateLimit(`web-rate:oidc:${remoteId(request)}`, 20, 15 * 60_000)) {
+        sendJson(response, 429, { error: 'Too many login attempts' })
+        return
+      }
+      const target = await beginOidcLogin(
+        request,
         response,
-        502,
-        'application/json; charset=utf-8',
-        `${JSON.stringify({ error: 'Could not load models' })}\n`,
-        method === 'HEAD'
+        url.searchParams.get('returnTo') || '/'
       )
-    }
-    return
-  }
-  if (url.pathname === '/mcp/spotify/callback') {
-    if (method === 'HEAD') {
-      response.setHeader('Allow', 'GET')
-      send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', true)
+      response.writeHead(302, { ...securityHeaders(), Location: target.href })
+      response.end()
       return
     }
-    const result = await handleSpotifyCallback(url)
-    send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`, false)
-    return
-  }
-  if (url.pathname === '/mcp/google-calendar/callback') {
-    if (method === 'HEAD') {
-      response.setHeader('Allow', 'GET')
-      send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n', true)
+    if (url.pathname === '/auth/callback' && method === 'GET') {
+      const settings = loadOidcSettings()
+      if (!settings) throw new Error('OIDC is not configured')
+      const callback = new URL(settings.redirectUri)
+      callback.search = url.search
+      const returnTo = await completeOidcLogin(request, response, callback)
+      response.writeHead(302, { ...securityHeaders(), Location: returnTo })
+      response.end()
       return
     }
-    const result = await handleGoogleCalendarCallback(url)
-    send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`, false)
-    return
+    if (url.pathname === '/api/auth/logout' && method === 'POST') {
+      const session = mutationAllowed(request, response)
+      if (!session) return
+      const target = await logoutUrl(request)
+      clearSessionCookie(request, response)
+      sendJson(response, 200, { location: target?.href ?? '/' })
+      return
+    }
+    if (method !== 'GET' && method !== 'HEAD') {
+      response.setHeader('Allow', 'GET, HEAD')
+      send(response, 405, 'text/plain; charset=utf-8', 'Method Not Allowed\n')
+      return
+    }
+    const head = method === 'HEAD'
+    if (url.pathname === '/') {
+      send(response, 200, 'text/html; charset=utf-8', WEB_HTML, head)
+      return
+    }
+    if (url.pathname === '/app.css') {
+      send(response, 200, 'text/css; charset=utf-8', WEB_CSS, head)
+      return
+    }
+    if (url.pathname === '/app.js') {
+      send(response, 200, 'text/javascript; charset=utf-8', WEB_JS, head)
+      return
+    }
+    if (url.pathname === '/favicon.ico') {
+      response.writeHead(204, securityHeaders())
+      response.end()
+      return
+    }
+    if (/^\/fonts\/gg-sans-(400|700)\.woff2$/.test(url.pathname)) {
+      const body = await readFile(join(process.cwd(), 'assets', url.pathname))
+      response.writeHead(200, {
+        ...securityHeaders(),
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Content-Type': 'font/woff2',
+        'Content-Length': body.length
+      })
+      response.end(head ? undefined : body)
+      return
+    }
+    if (url.pathname === '/hosted') {
+      const hosted = await readHostedHtml()
+      if (!hosted)
+        send(response, 404, 'text/plain; charset=utf-8', 'No page has been published.\n', head)
+      else {
+        response.writeHead(200, {
+          ...securityHeaders(false),
+          'Content-Security-Policy':
+            "sandbox allow-scripts allow-forms allow-modals allow-popups; default-src * data: blob:; script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; style-src * data: blob: 'unsafe-inline'; connect-src *; frame-ancestors 'none'",
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Length': Buffer.byteLength(hosted)
+        })
+        response.end(head ? undefined : hosted)
+      }
+      return
+    }
+    if (url.pathname === '/healthz') {
+      send(response, 200, 'text/plain; charset=utf-8', 'ok\n', head)
+      return
+    }
+    if (url.pathname === '/models') {
+      try {
+        sendJson(response, 200, await loadModelsResponse())
+      } catch (error) {
+        console.error('could not load models', error)
+        sendJson(response, 502, { error: 'Could not load models' })
+      }
+      return
+    }
+    if (url.pathname === '/mcp/spotify/callback' && method === 'GET') {
+      const result = await handleSpotifyCallback(url)
+      send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`)
+      return
+    }
+    if (url.pathname === '/mcp/google-calendar/callback' && method === 'GET') {
+      const result = await handleGoogleCalendarCallback(url)
+      send(response, result.status, 'text/plain; charset=utf-8', `${result.body}\n`)
+      return
+    }
+    send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', head)
+  } catch (error) {
+    console.error('web request failed', error instanceof Error ? error.message : error)
+    if (!response.headersSent) sendJson(response, 400, { error: safeError(error) })
+    else response.end()
   }
-  send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', method === 'HEAD')
 }
 
 export function createWebServer(): Server {
-  const server = createServer((request, response) => {
-    void handleWebRequest(request, response)
-  })
-  server.requestTimeout = 10_000
+  const server = createServer((request, response) => void handleWebRequest(request, response))
+  server.requestTimeout = 30_000
   server.headersTimeout = 10_000
   server.keepAliveTimeout = 5_000
   server.maxHeadersCount = 100
@@ -186,15 +402,11 @@ function parsePort(value: string | undefined): number {
 }
 
 export async function startWebServer(
-  options: {
-    host?: string
-    port?: number
-  } = {}
+  options: { host?: string; port?: number } = {}
 ): Promise<Server> {
   const host = options.host ?? process.env.WEB_HOST ?? DEFAULT_HOST
   const port = options.port ?? parsePort(process.env.PORT)
   const server = createWebServer()
-
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
       server.off('listening', onListening)
@@ -208,13 +420,12 @@ export async function startWebServer(
     server.once('listening', onListening)
     server.listen(port, host)
   })
-
   return server
 }
 
 export async function closeWebServer(server: Server): Promise<void> {
   if (!server.listening) return
-  await new Promise<void>((resolve, reject) => {
+  await new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve()))
-  })
+  )
 }

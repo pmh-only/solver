@@ -90,23 +90,25 @@ const PLAYWRIGHT_MCP_PATH = fileURLToPath(
 const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
 const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
-const shellTool = tool({
-  name: 'shell',
-  description:
-    'Run an unrestricted Bash command in the application container as the agent user. The user has passwordless sudo access for commands that require root privileges.',
-  inputSchema: z.object({
-    command: z.string().min(1).describe('Complete Bash command to execute'),
-    timeoutSeconds: z
-      .number()
-      .int()
-      .min(1)
-      .max(600)
-      .default(600)
-      .describe('Maximum execution time in seconds')
-  }),
-  callback: async ({ command, timeoutSeconds }) =>
-    formatAgentShellResult(await executeAgentShell(command, timeoutSeconds * 1000))
-})
+function shellTool(signal: AbortSignal) {
+  return tool({
+    name: 'shell',
+    description:
+      'Run an unrestricted Bash command in the application container as the agent user. The user has passwordless sudo access for commands that require root privileges.',
+    inputSchema: z.object({
+      command: z.string().min(1).describe('Complete Bash command to execute'),
+      timeoutSeconds: z
+        .number()
+        .int()
+        .min(1)
+        .max(600)
+        .default(600)
+        .describe('Maximum execution time in seconds')
+    }),
+    callback: async ({ command, timeoutSeconds }) =>
+      formatAgentShellResult(await executeAgentShell(command, timeoutSeconds * 1000, signal))
+  })
+}
 const publishHtmlTool = tool({
   name: 'publish_html',
   description:
@@ -1063,7 +1065,8 @@ function makeCallbacks(
 async function runGptStream(
   callbacks: StreamCallbacks,
   ctx: GptContext,
-  token: string
+  token: string,
+  externalSignal?: AbortSignal
 ): Promise<void> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
@@ -1077,6 +1080,9 @@ async function runGptStream(
   existing?.abort()
 
   const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (externalSignal?.aborted) controller.abort()
+  else externalSignal?.addEventListener('abort', abort, { once: true })
   activeStreams.set(token, controller)
 
   let responseContent = ''
@@ -1237,7 +1243,7 @@ async function runGptStream(
         () => agent
       )
       const localTools = [
-        shellTool,
+        shellTool(controller.signal),
         publishHtmlTool,
         spotifyAuthenticationTool,
         googleCalendarAuthenticationTool,
@@ -1413,6 +1419,7 @@ async function runGptStream(
       )
     )
   } finally {
+    externalSignal?.removeEventListener('abort', abort)
     await Promise.all(mcpClients.map((client) => client.disconnect().catch(() => {})))
     activeStreams.delete(token)
   }
@@ -1696,5 +1703,95 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
         deleteGptContext(token)
       else storeGptContext(token, ctx)
     }
+  })
+}
+
+export interface WebAgentRequest {
+  userId: string
+  prompt: string
+  sessionName?: string
+  model?: string
+  effort?: string
+  maxTokens?: number
+}
+
+export interface WebConversationTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export function loadWebConversation(
+  userId: string,
+  sessionName = DEFAULT_SESSION_NAME
+): WebConversationTurn[] {
+  return loadConversation(userId, sessionName)
+}
+
+export async function clearWebConversation(
+  userId: string,
+  sessionName = DEFAULT_SESSION_NAME
+): Promise<void> {
+  await runInSession(userId, sessionName, async () => {
+    setStoredValue(sessionKey(userId, sessionName), '[]')
+  })
+}
+
+export async function runWebAgent(
+  request: WebAgentRequest,
+  onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>,
+  signal?: AbortSignal
+): Promise<void> {
+  const prompt = request.prompt.trim()
+  if (!prompt || prompt.length > 32_000)
+    throw new Error('Prompt must contain 1 to 32,000 characters')
+  const sessionName = request.sessionName?.trim() || DEFAULT_SESSION_NAME
+  if (sessionName.length > 100) throw new Error('Session name must not exceed 100 characters')
+
+  const storedSettings = loadSessionSettings(request.userId, sessionName)
+  const effort = request.effort ?? storedSettings.effort
+  if (!GPT_EFFORT_OPTIONS.some(({ id }) => id === effort))
+    throw new Error('Invalid reasoning effort')
+  const maxTokens = request.maxTokens ?? storedSettings.maxTokens
+  if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 16_384) {
+    throw new Error('Token limit must be an integer between 256 and 16384')
+  }
+  const settings: GptSessionSettings = {
+    model: request.model?.trim() || storedSettings.model,
+    effort: effort as EffortLevel,
+    maxTokens
+  }
+  if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
+  storeSessionSettings(request.userId, sessionName, settings)
+
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  const ctx: GptContext = {
+    prompt,
+    displayPrompt: prompt,
+    pub: true,
+    model: settings.model,
+    effort: settings.effort,
+    maxTokens: settings.maxTokens,
+    verbosity: 'normal',
+    userId: request.userId,
+    sessionName,
+    history: [],
+    components: [],
+    senderOnlyComponentIds: [],
+    modals: {},
+    expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
+  }
+  const callbacks: StreamCallbacks = {
+    editMain: async (components) =>
+      onUpdate({
+        content: null,
+        components: components as never,
+        flags: MessageFlags.IsComponentsV2
+      }),
+    editPayload: onUpdate
+  }
+
+  await runInSession(request.userId, sessionName, async () => {
+    ctx.history = loadConversation(request.userId, sessionName)
+    await runGptStream(callbacks, ctx, token, signal)
   })
 }

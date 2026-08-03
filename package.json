@@ -37,6 +37,7 @@
     "imapflow": "^1.2.18",
     "mailparser": "^3.9.6",
     "openai": "^6.49.0",
+    "openid-client": "6.8.4",
     "spotify-mcp": "^0.1.4",
     "turndown": "^7.2.4",
     "zod": "^4.4.3"
