@@ -186,18 +186,20 @@ vi.mock('@strands-agents/sdk', () => ({
       if (streamResult === 'throwAfterActivity') {
         throw new Error('unable to parse tool input JSON')
       }
-      const response = JSON.stringify(
-        responsePayloads.shift() ?? {
-          content: 'hello world',
-          ...(typeof componentAction?.components_json === 'string'
-            ? { components: JSON.parse(componentAction.components_json) }
-            : {})
-        }
-      )
-      for (const text of [response.slice(0, 10), response.slice(10)]) {
-        yield {
-          type: 'modelStreamUpdateEvent',
-          event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } }
+      if (streamResult !== 'noResponse') {
+        const response = JSON.stringify(
+          responsePayloads.shift() ?? {
+            content: 'hello world',
+            ...(typeof componentAction?.components_json === 'string'
+              ? { components: JSON.parse(componentAction.components_json) }
+              : {})
+          }
+        )
+        for (const text of [response.slice(0, 10), response.slice(10)]) {
+          yield {
+            type: 'modelStreamUpdateEvent',
+            event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } }
+          }
         }
       }
       yield {
@@ -389,6 +391,19 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => edit.includes('"type":14'))).toBe(true)
     expect(progressEdits.every((edit) => edit.includes('"flags":32768'))).toBe(true)
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
+  })
+
+  it('renders a valid fallback when the agent emits no response text', async () => {
+    streamMock.mockReturnValueOnce('noResponse')
+
+    const calls = await dispatch(agentCommandJSON('do the work'), subs)
+    const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
+
+    expect(JSON.stringify(finalEdit)).toContain('(no response)')
+    expect(JSON.stringify(finalEdit)).not.toContain('Unexpected token')
+    expect(getStoredValue('gpt-session:666666666666666666:default')).toContain(
+      '{\\"content\\":\\"(no response)\\"}'
+    )
   })
 
   it('retries malformed tool input JSON with stricter tool guidance', async () => {

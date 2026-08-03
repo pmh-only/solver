@@ -1392,7 +1392,7 @@ async function runGptStream(
     }
 
     if (!controller.signal.aborted) {
-      const response = responseContent || '(no response)'
+      const response = responseContent || JSON.stringify({ content: '(no response)' })
       await callbacks.editPayload(buildAgentPayload(response, token, ctx, usage, activity))
       storeConversation(ctx, response)
     }
