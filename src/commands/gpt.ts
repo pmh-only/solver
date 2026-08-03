@@ -180,7 +180,6 @@ const VERBOSITY_OPTIONS = [
   { id: 'detailed', label: 'Detailed' }
 ] as const
 
-type ModelId = (typeof GPT_MODELS)[number]['id']
 type EffortLevel = (typeof GPT_EFFORT_OPTIONS)[number]['id']
 type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 
@@ -188,7 +187,7 @@ interface GptContext {
   prompt: string
   displayPrompt: string
   pub: boolean
-  model: ModelId
+  model: string
   effort: EffortLevel
   maxTokens: number
   verbosity: VerbosityLevel
@@ -215,7 +214,7 @@ interface AgentActivity {
 }
 
 interface GptSessionSettings {
-  model: ModelId
+  model: string
   effort: EffortLevel
   maxTokens: number
 }
@@ -658,7 +657,7 @@ function loadSessionSettings(userId: string, sessionName: string): GptSessionSet
     const model = settings.model
     const effort = settings.effort
     return {
-      model: model && GPT_MODELS.some(({ id }) => id === model) ? model : defaults.model,
+      model: typeof model === 'string' && model.trim() ? model : defaults.model,
       effort:
         effort && GPT_EFFORT_OPTIONS.some(({ id }) => id === effort) ? effort : defaults.effort,
       maxTokens:
@@ -1674,7 +1673,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   loadConversation(interaction.user.id, sessionName)
 
   const storedSettings = loadSessionSettings(interaction.user.id, sessionName)
-  const requestedModel = interaction.options.getString('model') as ModelId | null
+  const requestedModel = interaction.options.getString('model')
   const requestedEffort = interaction.options.getString('effort') as EffortLevel | null
   const requestedMaxTokens = interaction.options.getInteger('tokens')
   const settings: GptSessionSettings = {

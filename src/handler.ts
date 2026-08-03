@@ -71,6 +71,7 @@ import {
 } from './commands/message-store.js'
 import {
   GPT_EFFORT_SELECT_ID,
+  GPT_MODELS,
   GPT_MODEL_SELECT_ID,
   GPT_VERBOSITY_SELECT_ID,
   AGENT_COMMAND_NAME,
@@ -534,6 +535,20 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (interaction.isAutocomplete()) {
+        if (interaction.commandName === AGENT_COMMAND_NAME) {
+          const focused = interaction.options.getFocused(true)
+          if (focused.name !== 'model') return
+
+          const query = String(focused.value).toLowerCase()
+          await interaction.respond(
+            GPT_MODELS.filter(
+              ({ id, label }) =>
+                id.toLowerCase().includes(query) || label.toLowerCase().includes(query)
+            ).map(({ id, label }) => ({ name: label, value: id }))
+          )
+          return
+        }
+
         if (interaction.commandName !== 'c') return
 
         const focused = interaction.options.getFocused()

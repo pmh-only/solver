@@ -48,6 +48,17 @@ Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/d
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
 servers. No extra MCP installation is required after deployment.
 
+### Model Selection
+
+The optional `/a model` field accepts any model identifier. The displayed model list is autocomplete
+only: select a suggestion or keep typing and submit a value that is not listed. The selected value is
+stored for that conversation session and sent unchanged on later requests in the same session.
+
+To test this behavior in Discord, type `/a`, fill in `prompt`, then type part of a known model in
+`model` to confirm suggestions appear. Enter an unlisted value, submit the command, and send another
+`/a` request with the same session but no `model`; both responses should display the custom model in
+their token-usage footer.
+
 Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
 bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer
 token.

@@ -11,6 +11,7 @@ import {
 } from '../helpers/kv-store.js'
 import {
   agentCommandJSON,
+  agentModelAutocompleteJSON,
   autocompleteJSON,
   buttonJSON,
   dispatch,
@@ -298,7 +299,11 @@ describe('/a', () => {
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({ name: 'session', required: false })
-    expect(command.options?.[2]).toMatchObject({ name: 'model', required: false })
+    expect(command.options?.[2]).toMatchObject({
+      name: 'model',
+      required: false,
+      autocomplete: true
+    })
     expect(command.options?.[3]).toMatchObject({ name: 'effort', required: false })
     expect(command.options?.[4]).toMatchObject({
       name: 'tokens',
@@ -306,6 +311,24 @@ describe('/a', () => {
       min_value: 256,
       max_value: 16384
     })
+  })
+
+  it('suggests known models without requiring the submitted value to match', async () => {
+    const calls = await dispatch(agentModelAutocompleteJSON('mini'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { choices: Array<{ name: string; value: string }> }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'GPT-5.4 mini', value: 'gpt-5.4-mini' })
+      ])
+    )
+    expect(body.data.choices).not.toContainEqual(
+      expect.objectContaining({ value: 'vendor/custom-model-preview' })
+    )
   })
 
   it('renders the agent JSON publicly and appends token usage', async () => {
@@ -787,6 +810,28 @@ describe('/a', () => {
           tools: [{ type: 'web_search' }]
         }
       })
+    )
+  })
+
+  it('passes through and persists a model outside the suggestion list', async () => {
+    await dispatch(
+      agentCommandJSON('configure custom model', {}, 'custom', {
+        model: 'vendor/custom-model-preview'
+      }),
+      subs
+    )
+    await dispatch(agentCommandJSON('reuse custom model', {}, 'custom'), subs)
+
+    expect(modelMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ modelId: 'vendor/custom-model-preview' })
+    )
+    expect(modelMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ modelId: 'vendor/custom-model-preview' })
+    )
+    expect(getStoredValue('gpt-settings:666666666666666666:custom')).toContain(
+      '"model":"vendor/custom-model-preview"'
     )
   })
 
