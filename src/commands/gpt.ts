@@ -977,14 +977,14 @@ async function runGptStream(
         applicationName: 'solver /a Fetch',
         transport: new StdioClientTransport({
           command: 'uvx',
-          args: ['mcp-server-fetch==2026.7.10']
+          args: ['--with', 'mcp==1.29.0', 'mcp-server-fetch==2026.7.10']
         })
       }),
       new McpClient({
         applicationName: 'solver /a Time',
         transport: new StdioClientTransport({
           command: 'uvx',
-          args: ['mcp-server-time==2026.7.10']
+          args: ['--with', 'mcp==1.29.0', 'mcp-server-time==2026.7.10']
         })
       }),
       new McpClient({
