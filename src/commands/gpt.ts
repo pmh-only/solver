@@ -1298,10 +1298,7 @@ async function runGptStream(
       })
       let contentBlockStarted = false
 
-      for await (const event of agent.stream(prompt, {
-        cancelSignal: controller.signal,
-        limits: { turns: 8, outputTokens: ctx.maxTokens }
-      })) {
+      for await (const event of agent.stream(prompt, { cancelSignal: controller.signal })) {
         if (controller.signal.aborted) break
 
         let activityChanged = false

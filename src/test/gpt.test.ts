@@ -403,8 +403,9 @@ describe('/a', () => {
     expect(disconnectMock).toHaveBeenCalledTimes(7)
     expect(streamMock).toHaveBeenCalledWith(
       'explain recursion',
-      expect.objectContaining({ limits: { turns: 8, outputTokens: 4096 } })
+      expect.objectContaining({ cancelSignal: expect.any(AbortSignal) })
     )
+    expect(streamMock.mock.calls[0]?.[1]).not.toHaveProperty('limits')
     const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
       components: Array<{ type: number; content?: string; divider?: boolean }>
     }
