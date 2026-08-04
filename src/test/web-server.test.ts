@@ -83,6 +83,11 @@ describe('web server', () => {
     expect(script).toContain('componentEmoji')
     expect(script).toContain('Unsupported Discord component')
     expect(script).toContain("api('/api/chat/interaction'")
+    expect(html).toContain('id="jump-bottom"')
+    expect(script).toContain('bottomThreshold=72')
+    expect(script).toContain('new MutationObserver(')
+    expect(script).toContain('new ResizeObserver(contentChanged)')
+    expect(script).toContain("messages.addEventListener('scroll'")
   })
 
   it('serves health checks and HEAD requests', async () => {
