@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import {
   runWebAgent,
   runWebComponentInteraction,
+  runWebInteraction,
   loadWebConversation,
   clearWebConversation
 } from './commands/gpt.js'
@@ -147,7 +148,15 @@ function safeError(error: unknown): string {
     'Only the user who sent',
     'This component requires',
     'Content-Type',
-    'Request body'
+    'Request body',
+    'Invalid interaction',
+    'Interaction expired',
+    'Interaction already',
+    'Only the user',
+    'This interaction belongs',
+    'Invalid modal',
+    'Modal field',
+    'Unsupported modal'
   ]
   return safe.some((prefix) => error.message.startsWith(prefix)) ? error.message : 'Request failed'
 }
@@ -262,6 +271,50 @@ async function handleApiRequest(
     const sessionName = typeof body.sessionName === 'string' ? body.sessionName : 'default'
     await clearWebConversation(session.user.id, sessionName)
     sendJson(response, 200, { ok: true })
+    return true
+  }
+  if (url.pathname === '/api/chat/interaction' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    if (!consumeStoredRateLimit(`web-rate:interaction:${session.user.id}`, 40, 60_000)) {
+      sendJson(response, 429, { error: 'Rate limit exceeded' })
+      return true
+    }
+    const body = (await readJson(request)) as Record<string, unknown>
+    response.writeHead(200, {
+      ...securityHeaders(),
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive'
+    })
+    const write = (value: unknown) => {
+      if (!response.destroyed) response.write(`${JSON.stringify(value)}\n`)
+    }
+    const controller = new AbortController()
+    response.once('close', () => {
+      if (!response.writableEnded) controller.abort()
+    })
+    try {
+      const result = await runWebInteraction(
+        {
+          userId: session.user.id,
+          customId: typeof body.customId === 'string' ? body.customId : '',
+          values: body.values as string[] | undefined,
+          fields: body.fields as never
+        },
+        async (payload) => write({ payload }),
+        controller.signal
+      )
+      if ('modal' in result) write({ modal: result.modal })
+    } catch (error) {
+      write({ error: safeError(error) })
+    } finally {
+      response.end()
+    }
     return true
   }
   if (url.pathname === '/api/chat' && method === 'POST') {

@@ -221,6 +221,7 @@ const GPT_SETTINGS_KEY = 'gpt-settings'
 const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
 const sessionQueues = new Map<string, Promise<void>>()
+const activeWebInteractions = new Set<string>()
 
 function isMcpConnectionClosed(error: unknown): boolean {
   let current = error
@@ -1561,6 +1562,24 @@ function hasComponentId(value: unknown, customId: string): boolean {
   )
 }
 
+function findComponent(value: unknown, customId: string): GptManagedComponent | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findComponent(item, customId)
+      if (found) return found
+    }
+    return null
+  }
+  if (!value || typeof value !== 'object') return null
+  const component = value as GptManagedComponent
+  if (component.custom_id === customId) return component
+  for (const child of Object.values(component)) {
+    const found = findComponent(child, customId)
+    if (found) return found
+  }
+  return null
+}
+
 async function rejectUnauthorizedGptInteraction(
   interaction: MessageComponentInteraction | ModalSubmitInteraction,
   ctx: GptContext,
@@ -1741,6 +1760,22 @@ export interface WebAgentRequest {
   maxTokens?: number
 }
 
+export interface WebInteractionField {
+  custom_id: string
+  type: number
+  value?: string | boolean | null
+  values?: string[]
+}
+
+export interface WebInteractionRequest {
+  userId: string
+  customId: string
+  values?: string[]
+  fields?: WebInteractionField[]
+}
+
+export type WebInteractionResult = { modal: GptManagedComponent } | { updated: true }
+
 export interface WebConversationTurn {
   role: 'user' | 'assistant'
   content: string
@@ -1846,6 +1881,286 @@ export async function runWebAgent(
   })
 }
 
+function webCallbacks(
+  onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>
+): StreamCallbacks {
+  return {
+    editMain: async (components) =>
+      onUpdate({
+        content: null,
+        components: components as never,
+        flags: MessageFlags.IsComponentsV2
+      }),
+    editPayload: onUpdate
+  }
+}
+
+function webInteractionError(message: string): never {
+  const error = new Error(message)
+  error.name = 'WebInteractionError'
+  throw error
+}
+
+function parseWebInteractionId(customId: string): {
+  kind: 'component' | 'modal'
+  token: string
+  stableId: string
+} {
+  const match = /^(gpt-action|gpt-modal):([^:]+):([a-z0-9_-]{1,32})$/.exec(customId)
+  if (!match) webInteractionError('Invalid interaction identifier')
+  return {
+    kind: match[1] === GPT_MODAL_ID ? 'modal' : 'component',
+    token: match[2]!,
+    stableId: match[3]!
+  }
+}
+
+function modalFields(value: unknown): GptManagedComponent[] {
+  if (Array.isArray(value)) return value.flatMap(modalFields)
+  if (!value || typeof value !== 'object') return []
+  const component = value as GptManagedComponent
+  const own = typeof component.custom_id === 'string' ? [component] : []
+  return own.concat(modalFields(component.components), modalFields(component.component))
+}
+
+function normalizeWebModalFields(
+  modal: GptManagedComponent,
+  submitted: WebInteractionField[] | undefined
+): WebInteractionField[] {
+  if (!Array.isArray(submitted) || submitted.length > 25) {
+    webInteractionError('Invalid modal fields')
+  }
+  const definitions = new Map(
+    modalFields(modal)
+      .filter((field) => field.custom_id !== modal.custom_id)
+      .map((field) => [field.custom_id as string, field])
+  )
+  const seen = new Set<string>()
+  const fields = submitted.map((field) => {
+    if (!field || typeof field !== 'object' || seen.has(field.custom_id)) {
+      webInteractionError('Invalid modal fields')
+    }
+    const definition = definitions.get(field.custom_id)
+    if (!definition || definition.type !== field.type) webInteractionError('Invalid modal fields')
+    seen.add(field.custom_id)
+    if (field.type === ComponentType.TextInput) {
+      if (typeof field.value !== 'string') webInteractionError('Invalid modal fields')
+      const min =
+        typeof definition.min_length === 'number'
+          ? definition.min_length
+          : definition.required === false
+            ? 0
+            : 1
+      const max = typeof definition.max_length === 'number' ? definition.max_length : 4000
+      if (field.value.length < min || field.value.length > max) {
+        webInteractionError('Modal field validation failed')
+      }
+      return { custom_id: field.custom_id, type: field.type, value: field.value }
+    }
+    if (field.type === ComponentType.RadioGroup) {
+      if (typeof field.value !== 'string' && field.value !== null) {
+        webInteractionError('Invalid modal fields')
+      }
+      if (definition.required !== false && field.value === null) {
+        webInteractionError('Modal field validation failed')
+      }
+      const allowed = new Set(
+        Array.isArray(definition.options)
+          ? definition.options.flatMap((option) =>
+              option && typeof option === 'object' && typeof option.value === 'string'
+                ? [option.value]
+                : []
+            )
+          : []
+      )
+      if (typeof field.value === 'string' && !allowed.has(field.value)) {
+        webInteractionError('Modal field validation failed')
+      }
+      return { custom_id: field.custom_id, type: field.type, value: field.value }
+    }
+    if (
+      field.type === ComponentType.StringSelect ||
+      field.type === ComponentType.UserSelect ||
+      field.type === ComponentType.RoleSelect ||
+      field.type === ComponentType.MentionableSelect ||
+      field.type === ComponentType.ChannelSelect ||
+      field.type === ComponentType.CheckboxGroup
+    ) {
+      if (!Array.isArray(field.values) || !field.values.every((item) => typeof item === 'string')) {
+        webInteractionError('Invalid modal fields')
+      }
+      const min =
+        typeof definition.min_values === 'number'
+          ? definition.min_values
+          : definition.required === false
+            ? 0
+            : 1
+      const max =
+        typeof definition.max_values === 'number'
+          ? definition.max_values
+          : field.type === ComponentType.CheckboxGroup && Array.isArray(definition.options)
+            ? definition.options.length
+            : 1
+      if (
+        field.values.length < min ||
+        field.values.length > max ||
+        new Set(field.values).size !== field.values.length ||
+        field.values.some((value) => value.length > 100)
+      ) {
+        webInteractionError('Modal field validation failed')
+      }
+      if (field.type === ComponentType.StringSelect || field.type === ComponentType.CheckboxGroup) {
+        const allowed = new Set(
+          Array.isArray(definition.options)
+            ? definition.options.flatMap((option) =>
+                option && typeof option === 'object' && typeof option.value === 'string'
+                  ? [option.value]
+                  : []
+              )
+            : []
+        )
+        if (!field.values.every((value) => allowed.has(value))) {
+          webInteractionError('Modal field validation failed')
+        }
+      } else if (!field.values.every((value) => /^\d{17,20}$/.test(value))) {
+        webInteractionError('Modal field validation failed')
+      }
+      return { custom_id: field.custom_id, type: field.type, values: field.values }
+    }
+    if (field.type === ComponentType.Checkbox) {
+      if (typeof field.value !== 'boolean') webInteractionError('Invalid modal fields')
+      return { custom_id: field.custom_id, type: field.type, value: field.value }
+    }
+    webInteractionError('Unsupported modal field type')
+  })
+  for (const definition of definitions.values()) {
+    if (definition.required !== false && !seen.has(definition.custom_id as string)) {
+      webInteractionError('Modal field validation failed')
+    }
+  }
+  return fields
+}
+
+function validateWebComponentValues(component: GptManagedComponent, values: string[]): void {
+  if (component.disabled === true) webInteractionError('Interaction is disabled')
+  const type = component.type as ComponentType
+  if (type === ComponentType.Button) {
+    if (values.length !== 0) webInteractionError('Invalid interaction values')
+    return
+  }
+  const selectTypes = new Set<ComponentType>([
+    ComponentType.StringSelect,
+    ComponentType.UserSelect,
+    ComponentType.RoleSelect,
+    ComponentType.MentionableSelect,
+    ComponentType.ChannelSelect
+  ])
+  if (!selectTypes.has(type)) webInteractionError('Unsupported interaction component')
+  const min = typeof component.min_values === 'number' ? component.min_values : 1
+  const max = typeof component.max_values === 'number' ? component.max_values : 1
+  if (values.length < min || values.length > max || new Set(values).size !== values.length) {
+    webInteractionError('Invalid interaction values')
+  }
+  if (type === ComponentType.StringSelect) {
+    const allowed = new Set(
+      Array.isArray(component.options)
+        ? component.options.flatMap((option) =>
+            option && typeof option === 'object' && typeof option.value === 'string'
+              ? [option.value]
+              : []
+          )
+        : []
+    )
+    if (!values.every((value) => allowed.has(value)))
+      webInteractionError('Invalid interaction values')
+  } else if (!values.every((value) => /^\d{17,20}$/.test(value))) {
+    webInteractionError('Invalid interaction values')
+  }
+}
+
+export async function runWebInteraction(
+  request: WebInteractionRequest,
+  onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>,
+  signal?: AbortSignal
+): Promise<WebInteractionResult> {
+  const parsed = parseWebInteractionId(request.customId)
+  let ctx = loadGptContext(parsed.token)
+  if (!ctx) webInteractionError('Interaction expired')
+  if (ctx.senderOnlyComponentIds.includes(parsed.stableId) && request.userId !== ctx.userId) {
+    webInteractionError('Only the user who sent this request can use this component')
+  }
+  if (request.userId !== ctx.userId) {
+    webInteractionError('This interaction belongs to another user')
+  }
+  const interactionKey = `${request.userId}:${request.customId}`
+  if (activeWebInteractions.has(interactionKey))
+    webInteractionError('Interaction already in progress')
+  activeWebInteractions.add(interactionKey)
+  try {
+    if (parsed.kind === 'component') {
+      const component = findComponent(ctx.components, request.customId)
+      if (!component) webInteractionError('Interaction expired')
+      const modal = ctx.modals[parsed.stableId]
+      if (modal && component.type === ComponentType.Button) return { modal }
+      const values = request.values ?? []
+      if (
+        !Array.isArray(values) ||
+        values.length > 25 ||
+        !values.every((value) => typeof value === 'string' && value.length <= 100)
+      ) {
+        webInteractionError('Invalid interaction values')
+      }
+      validateWebComponentValues(component, values)
+      await runInSession(ctx.userId, ctx.sessionName, async () => {
+        const latest = loadGptContext(parsed.token)
+        const latestComponent = latest && findComponent(latest.components, request.customId)
+        if (!latest || !latestComponent) webInteractionError('Interaction expired')
+        ctx = latest
+        validateWebComponentValues(latestComponent, values)
+        ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+        ctx.prompt = JSON.stringify({
+          type: 'discord_component',
+          custom_id: parsed.stableId,
+          values
+        })
+        storeGptContext(parsed.token, ctx)
+        await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
+        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+          deleteGptContext(parsed.token)
+        else storeGptContext(parsed.token, ctx)
+      })
+      return { updated: true }
+    }
+
+    const modal = ctx.modals[parsed.stableId]
+    if (!modal || modal.custom_id !== request.customId) webInteractionError('Interaction expired')
+    const fields = normalizeWebModalFields(modal, request.fields)
+    await runInSession(ctx.userId, ctx.sessionName, async () => {
+      const latest = loadGptContext(parsed.token)
+      const latestModal = latest?.modals[parsed.stableId]
+      if (!latest || !latestModal || latestModal.custom_id !== request.customId) {
+        webInteractionError('Interaction expired')
+      }
+      ctx = latest
+      normalizeWebModalFields(latestModal, request.fields)
+      ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+      ctx.prompt = JSON.stringify({
+        type: 'discord_modal_submit',
+        trigger_id: parsed.stableId,
+        fields
+      })
+      storeGptContext(parsed.token, ctx)
+      await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
+      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+        deleteGptContext(parsed.token)
+      else storeGptContext(parsed.token, ctx)
+    })
+    return { updated: true }
+  } finally {
+    activeWebInteractions.delete(interactionKey)
+  }
+}
+
 export interface WebComponentInteractionRequest {
   userId: string
   customId: string
@@ -1857,33 +2172,6 @@ export async function runWebComponentInteraction(
   onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>,
   signal?: AbortSignal
 ): Promise<void> {
-  const match = /^gpt-action:([^:]+):([a-z0-9_-]{1,32})$/.exec(request.customId)
-  if (!match) throw new Error('Invalid component interaction')
-  const token = match[1]!
-  const componentId = match[2]!
-  const ctx = loadGptContext(token)
-  if (!ctx || !hasComponentId(ctx.components, request.customId)) {
-    throw new Error('Component interaction expired')
-  }
-  if (ctx.senderOnlyComponentIds.includes(componentId) && request.userId !== ctx.userId) {
-    throw new Error('Only the user who sent this request can use this component')
-  }
-  if (ctx.modals[componentId]) throw new Error('This component requires a Discord modal')
-
-  await continueGptComponentInteraction(
-    ctx,
-    token,
-    componentId,
-    request.values ?? [],
-    {
-      editMain: async (components) =>
-        onUpdate({
-          content: null,
-          components: components as never,
-          flags: MessageFlags.IsComponentsV2
-        }),
-      editPayload: onUpdate
-    },
-    signal
-  )
+  const result = await runWebInteraction(request, onUpdate, signal)
+  if ('modal' in result) throw new Error('This component requires a Web modal')
 }

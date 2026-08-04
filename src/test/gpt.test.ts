@@ -8,7 +8,8 @@ import {
   GPT_MODAL_ID,
   loadWebConversation,
   runWebAgent,
-  runWebComponentInteraction
+  runWebComponentInteraction,
+  runWebInteraction
 } from '../commands/gpt.js'
 import {
   clearStoredValues,
@@ -1211,6 +1212,315 @@ describe('/a', () => {
       }),
       expect.anything()
     )
+  })
+
+  it('routes web buttons and every select family through the Discord interaction protocol', async () => {
+    const webComponents = [
+      {
+        type: 1,
+        components: [
+          { type: 2, custom_id: 'continue', label: 'Continue', style: 1 },
+          {
+            type: 3,
+            custom_id: 'format',
+            placeholder: 'Format',
+            min_values: 1,
+            max_values: 2,
+            options: [
+              { label: 'PDF', value: 'pdf', default: true },
+              { label: 'HTML', value: 'html' }
+            ]
+          }
+        ]
+      },
+      {
+        type: 1,
+        components: [
+          {
+            type: 5,
+            custom_id: 'user',
+            default_values: [{ id: '111111111111111111', type: 'user' }]
+          }
+        ]
+      },
+      { type: 1, components: [{ type: 6, custom_id: 'role' }] },
+      { type: 1, components: [{ type: 7, custom_id: 'mentionable' }] },
+      { type: 1, components: [{ type: 8, custom_id: 'channel' }] }
+    ]
+    componentActions.push({
+      action: 'set',
+      components_json: JSON.stringify(webComponents)
+    })
+    const updates: unknown[] = []
+    await runWebAgent({ userId: 'web-owner', prompt: 'build controls' }, async (payload) => {
+      updates.push(payload)
+    })
+    const rendered = JSON.stringify(updates.at(-1))
+
+    for (const [stableId, values] of [
+      ['continue', []],
+      ['format', ['pdf', 'html']],
+      ['user', ['111111111111111111']],
+      ['role', ['222222222222222222']],
+      ['mentionable', ['333333333333333333']],
+      ['channel', ['444444444444444444']]
+    ] as const) {
+      const customId = rendered.match(new RegExp(`gpt-action:[^"\\\\]+:${stableId}`))?.[0]
+      expect(customId).toBeTruthy()
+      responsePayloads.push({ content: 'updated', components: webComponents })
+      await runWebInteraction(
+        { userId: 'web-owner', customId: customId!, values: [...values] },
+        async () => {}
+      )
+      expect(streamMock).toHaveBeenLastCalledWith(
+        JSON.stringify({ type: 'discord_component', custom_id: stableId, values }),
+        expect.anything()
+      )
+    }
+  })
+
+  it('opens and validates web modals before sending Discord-shaped fields', async () => {
+    modalActions.push({
+      action: 'set',
+      trigger_id: 'configure',
+      modal_json: JSON.stringify({
+        title: 'Configure report',
+        components: [
+          {
+            type: 1,
+            components: [
+              {
+                type: 4,
+                custom_id: 'topic',
+                label: 'Topic',
+                style: 1,
+                min_length: 3,
+                required: true
+              }
+            ]
+          }
+        ]
+      })
+    })
+    responsePayloads.push({
+      content: 'Choose settings',
+      components: [
+        {
+          type: 1,
+          components: [{ type: 2, custom_id: 'configure', label: 'Configure', style: 1 }]
+        }
+      ]
+    })
+    const updates: unknown[] = []
+    await runWebAgent({ userId: 'web-owner', prompt: 'configure' }, async (payload) => {
+      updates.push(payload)
+    })
+    const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:configure/)?.[0]
+    const opened = await runWebInteraction(
+      { userId: 'web-owner', customId: actionId! },
+      async () => {}
+    )
+    expect(opened).toMatchObject({ modal: { title: 'Configure report' } })
+    const modalId = 'modal' in opened ? String(opened.modal.custom_id) : ''
+
+    await expect(
+      runWebInteraction(
+        {
+          userId: 'web-owner',
+          customId: modalId,
+          fields: [{ custom_id: 'topic', type: 4, value: 'no' }]
+        },
+        async () => {}
+      )
+    ).rejects.toThrow('Modal field validation failed')
+
+    await expect(
+      runWebInteraction(
+        {
+          userId: 'web-owner',
+          customId: modalId,
+          fields: [{ custom_id: 'topic', type: 4, value: '' }]
+        },
+        async () => {}
+      )
+    ).rejects.toThrow('Modal field validation failed')
+
+    responsePayloads.push({ content: 'configured' })
+    await runWebInteraction(
+      {
+        userId: 'web-owner',
+        customId: modalId,
+        fields: [{ custom_id: 'topic', type: 4, value: 'quarterly revenue' }]
+      },
+      async () => {}
+    )
+    expect(streamMock).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        type: 'discord_modal_submit',
+        trigger_id: 'configure',
+        fields: [{ custom_id: 'topic', type: 4, value: 'quarterly revenue' }]
+      }),
+      expect.anything()
+    )
+  })
+
+  it('uses Discord modal value shapes for optional radio and checkbox groups', async () => {
+    modalActions.push({
+      action: 'set',
+      trigger_id: 'preferences',
+      modal_json: JSON.stringify({
+        title: 'Preferences',
+        components: [
+          {
+            type: 18,
+            label: 'Frequency',
+            component: {
+              type: 21,
+              custom_id: 'frequency',
+              required: false,
+              options: [
+                { label: 'Daily', value: 'daily' },
+                { label: 'Weekly', value: 'weekly' }
+              ]
+            }
+          },
+          {
+            type: 18,
+            label: 'Sections',
+            component: {
+              type: 22,
+              custom_id: 'sections',
+              required: false,
+              min_values: 0,
+              max_values: 2,
+              options: [
+                { label: 'Summary', value: 'summary' },
+                { label: 'Details', value: 'details' }
+              ]
+            }
+          }
+        ]
+      })
+    })
+    responsePayloads.push({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 2, custom_id: 'preferences', label: 'Preferences', style: 1 }]
+        }
+      ]
+    })
+    const updates: unknown[] = []
+    await runWebAgent({ userId: 'web-owner', prompt: 'preferences' }, async (payload) => {
+      updates.push(payload)
+    })
+    const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:preferences/)?.[0]
+    const opened = await runWebInteraction(
+      { userId: 'web-owner', customId: actionId! },
+      async () => {}
+    )
+    const modalId = 'modal' in opened ? String(opened.modal.custom_id) : ''
+
+    responsePayloads.push({ content: 'saved' })
+    await runWebInteraction(
+      {
+        userId: 'web-owner',
+        customId: modalId,
+        fields: [
+          { custom_id: 'frequency', type: 21, value: null },
+          { custom_id: 'sections', type: 22, values: [] }
+        ]
+      },
+      async () => {}
+    )
+    expect(streamMock).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        type: 'discord_modal_submit',
+        trigger_id: 'preferences',
+        fields: [
+          { custom_id: 'frequency', type: 21, value: null },
+          { custom_id: 'sections', type: 22, values: [] }
+        ]
+      }),
+      expect.anything()
+    )
+  })
+
+  it('rejects a non-owner using a sender-only web component', async () => {
+    responsePayloads.push({
+      content: 'Private action',
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              custom_id: 'private-action',
+              label: 'Private action',
+              style: 1,
+              sender_only: true
+            }
+          ]
+        }
+      ]
+    })
+    const updates: unknown[] = []
+    await runWebAgent({ userId: 'web-owner', prompt: 'private control' }, async (payload) => {
+      updates.push(payload)
+    })
+    const customId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:private-action/)?.[0]
+
+    await expect(
+      runWebInteraction({ userId: 'another-user', customId: customId! }, async () => {})
+    ).rejects.toThrow('Only the user who sent this request can use this component')
+    expect(streamMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects unsupported web modal field submissions without running the agent', async () => {
+    modalActions.push({
+      action: 'set',
+      trigger_id: 'upload',
+      modal_json: JSON.stringify({
+        title: 'Upload a file',
+        components: [
+          {
+            type: 18,
+            label: 'Attachment',
+            component: { type: 19, custom_id: 'attachment', required: false }
+          }
+        ]
+      })
+    })
+    responsePayloads.push({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 2, custom_id: 'upload', label: 'Upload', style: 1 }]
+        }
+      ]
+    })
+    const updates: unknown[] = []
+    await runWebAgent({ userId: 'web-owner', prompt: 'upload' }, async (payload) => {
+      updates.push(payload)
+    })
+    const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:upload/)?.[0]
+    const opened = await runWebInteraction(
+      { userId: 'web-owner', customId: actionId! },
+      async () => {}
+    )
+    const modalId = 'modal' in opened ? String(opened.modal.custom_id) : ''
+
+    await expect(
+      runWebInteraction(
+        {
+          userId: 'web-owner',
+          customId: modalId,
+          fields: [{ custom_id: 'attachment', type: 19 }]
+        },
+        async () => {}
+      )
+    ).rejects.toThrow('Unsupported modal field type')
+    expect(streamMock).toHaveBeenCalledTimes(1)
   })
 
   it('switches to a new session and keeps it selected', async () => {

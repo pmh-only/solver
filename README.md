@@ -6,10 +6,42 @@ The bot serves a browser chat application from `/` and a health check from `/hea
 (default `3000`). Set `WEB_HOST` to control the listening interface and `WEB_DOMAIN` to the public
 origin. The web app uses the same `/a` agent, tools, model settings, per-user conversation storage,
 and session serialization as Discord. Responses stream into the browser and render text, common
-Markdown, embeds, reasoning/tool status, errors, and Discord buttons. Link buttons open their target;
-custom-ID buttons preserve their label, style, emoji, disabled state, and sender-only policy while
-routing clicks through the same agent interaction flow. Other Discord component types remain visible
-where supported by the renderer but are not interactive in the Web UI yet.
+Markdown, embeds, link buttons, reasoning/tool status, errors, and the supported Discord
+interactions described below.
+
+### Web Discord Component Compatibility
+
+Web interactions use the same namespaced `custom_id`, persisted context, session serialization, and
+agent event payloads as Discord. The server derives the user from the OIDC session, enforces
+`sender_only`, rejects controls owned by another Web user, and prevents a duplicate interaction from
+running concurrently within an application process. Controls display disabled and pending states.
+Finalized controls loaded from conversation history remain interactive until their persisted context
+expires. Legacy history without finalized namespaced IDs remains visible but disabled.
+
+Supported message components:
+
+- Buttons, including label, emoji, style, disabled state, link buttons, and buttons that open a
+  registered modal.
+- String selects, including options, descriptions, emoji, placeholder, `min_values`, `max_values`,
+  disabled state, and default selections.
+- User, role, mentionable, and channel selects, including placeholder, limits, disabled state, and
+  Discord `default_values`. The Web UI accepts Discord IDs as comma-separated values because an OIDC
+  browser session has no Discord guild directory from which to enumerate entities.
+- Action rows, text displays, separators, sections, and containers as layout/content wrappers.
+
+Supported modal fields:
+
+- Text inputs (single-line and paragraph), including label, placeholder, initial value, required,
+  minimum length, and maximum length.
+- String, user, role, mentionable, and channel selects with the same Web behavior as message selects.
+- Radio groups, checkbox groups, and individual checkboxes.
+- Components V2 labels and text displays.
+
+File-upload modal fields and other unknown component types are not interactive on Web. They render a
+visible unsupported-component fallback instead of breaking the response. Media galleries,
+thumbnails, attached-file components, and other display-only Discord components also currently use
+that fallback. Adding support requires registering another renderer in `componentRenderers` and, for
+modal inputs, adding its Discord-shaped serialization and server validation branch.
 
 Ask `/a` to publish a complete single-file HTML document to create a unique URL shaped like
 `/shared/<random_uuid>`. Each page is stored persistently under `data/shared/`; publishing another

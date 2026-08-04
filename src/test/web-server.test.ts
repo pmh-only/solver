@@ -72,9 +72,13 @@ describe('web server', () => {
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
     expect(script).toContain("api('/api/admin/system-prompt')")
-    expect(script).toContain("api('/api/interactions/components'")
-    expect(script).toContain('data-component-kind="button"')
+    expect(html).toContain('id="interaction-modal"')
+    expect(script).toContain('const componentRenderers=')
+    expect(script).toContain('3:c=>stringSelect(c)')
+    expect(script).toContain('5:c=>entitySelect(c)')
     expect(script).toContain('componentEmoji')
+    expect(script).toContain('Unsupported Discord component')
+    expect(script).toContain("api('/api/chat/interaction'")
   })
 
   it('serves health checks and HEAD requests', async () => {
@@ -200,6 +204,12 @@ describe('web server', () => {
 
     const unauthorized = await fetch(`${origin}/api/chat/history`)
     expect(unauthorized.status).toBe(401)
+    const unauthorizedInteraction = await fetch(`${origin}/api/chat/interaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customId: 'gpt-action:token:button' })
+    })
+    expect(unauthorizedInteraction.status).toBe(401)
 
     const session = await fetch(`${origin}/api/session`)
     expect(await session.json()).toMatchObject({ oidcSetupRequired: true, oidcEnabled: false })
