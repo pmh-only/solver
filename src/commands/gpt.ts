@@ -32,7 +32,12 @@ import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { errorContainer, matchesInteractiveId, PIN_BUTTON_ID } from '../components.js'
 import { executeAgentShell, formatAgentShellResult } from '../helpers/agent-shell.js'
-import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import {
+  deleteStoredValue,
+  getStoredValue,
+  listStoredKeys,
+  setStoredValue
+} from '../helpers/kv-store.js'
 import {
   loadStoredMcpServers,
   MAX_STORED_MCP_SERVERS,
@@ -218,6 +223,7 @@ const GPT_CONTEXT_KEY = 'gpt-ctx'
 const GPT_SESSION_KEY = 'gpt-session'
 const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
 const GPT_SETTINGS_KEY = 'gpt-settings'
+const GPT_SESSIONS_KEY = 'gpt-sessions'
 const GPT_WEB_SESSIONS_KEY = 'gpt-web-sessions'
 const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
@@ -634,6 +640,57 @@ function selectedSessionKey(userId: string): string {
 
 function sessionKey(userId: string, sessionName: string): string {
   return `${GPT_SESSION_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function sessionsKey(userId: string): string {
+  return `${GPT_SESSIONS_KEY}:${encodeURIComponent(userId)}`
+}
+
+function legacyWebSessionsKey(userId: string): string {
+  return `${GPT_WEB_SESSIONS_KEY}:${encodeURIComponent(userId)}`
+}
+
+function addStoredSessionNames(sessions: Set<string>, stored: string | undefined): void {
+  try {
+    const names = JSON.parse(stored ?? '[]') as unknown
+    if (!Array.isArray(names)) return
+    for (const name of names) {
+      if (typeof name === 'string' && name.trim() && name.length <= 100) sessions.add(name)
+    }
+  } catch {
+    // Invalid indexes are rebuilt from valid persisted conversations.
+  }
+}
+
+export function loadAgentSessionNames(userId: string): string[] {
+  const sessions = new Set([DEFAULT_SESSION_NAME])
+  addStoredSessionNames(sessions, getStoredValue(sessionsKey(userId)))
+  addStoredSessionNames(sessions, getStoredValue(legacyWebSessionsKey(userId)))
+
+  const prefix = `${GPT_SESSION_KEY}:${userId}:`
+  for (const key of listStoredKeys()) {
+    if (!key.startsWith(prefix)) continue
+    try {
+      const name = decodeURIComponent(key.slice(prefix.length))
+      if (name.trim() && name.length <= 100) sessions.add(name)
+    } catch {
+      // Ignore malformed legacy keys.
+    }
+  }
+
+  return [...sessions].sort((left, right) =>
+    left === DEFAULT_SESSION_NAME
+      ? -1
+      : right === DEFAULT_SESSION_NAME
+        ? 1
+        : left.localeCompare(right)
+  )
+}
+
+function registerAgentSession(userId: string, sessionName: string): void {
+  const sessions = new Set(loadAgentSessionNames(userId))
+  sessions.add(sessionName)
+  setStoredValue(sessionsKey(userId), JSON.stringify([...sessions]))
 }
 
 function settingsKey(userId: string, sessionName: string): string {
@@ -1681,6 +1738,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     getStoredValue(selectedSessionKey(interaction.user.id)) ||
     DEFAULT_SESSION_NAME
   setStoredValue(selectedSessionKey(interaction.user.id), sessionName)
+  registerAgentSession(interaction.user.id, sessionName)
 
   if (prompt === '/clear') {
     await interaction.deferReply()
@@ -1794,44 +1852,13 @@ function validateWebSessionName(sessionName: string): string {
   return name
 }
 
-function webSessionsKey(userId: string): string {
-  return `${GPT_WEB_SESSIONS_KEY}:${encodeURIComponent(userId)}`
-}
-
-function loadWebSessionNames(userId: string): string[] {
-  const sessions = new Set([DEFAULT_SESSION_NAME])
-  try {
-    const stored = JSON.parse(getStoredValue(webSessionsKey(userId)) ?? '[]') as unknown
-    if (Array.isArray(stored)) {
-      for (const name of stored) {
-        if (typeof name === 'string' && name.trim() && name.length <= 100) sessions.add(name)
-      }
-    }
-  } catch {
-    // Invalid session indexes safely fall back to the default session.
-  }
-  return [...sessions].sort((left, right) =>
-    left === DEFAULT_SESSION_NAME
-      ? -1
-      : right === DEFAULT_SESSION_NAME
-        ? 1
-        : left.localeCompare(right)
-  )
-}
-
-function registerWebSession(userId: string, sessionName: string): void {
-  const sessions = new Set(loadWebSessionNames(userId))
-  sessions.add(sessionName)
-  setStoredValue(webSessionsKey(userId), JSON.stringify([...sessions]))
-}
-
 export function loadWebSessionState(
   userId: string,
   sessionName = DEFAULT_SESSION_NAME
 ): WebSessionState {
   const name = validateWebSessionName(sessionName)
   return {
-    sessions: loadWebSessionNames(userId),
+    sessions: loadAgentSessionNames(userId),
     settings: loadSessionSettings(userId, name)
   }
 }
@@ -1839,7 +1866,7 @@ export function loadWebSessionState(
 export function createWebSession(userId: string, sessionName: string): WebSessionState {
   const name = validateWebSessionName(sessionName)
   loadConversation(userId, name)
-  registerWebSession(userId, name)
+  registerAgentSession(userId, name)
   return loadWebSessionState(userId, name)
 }
 
@@ -1902,7 +1929,7 @@ export async function runWebAgent(
   }
   if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
   storeSessionSettings(request.userId, sessionName, settings)
-  registerWebSession(request.userId, sessionName)
+  registerAgentSession(request.userId, sessionName)
 
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {

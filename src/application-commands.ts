@@ -29,7 +29,11 @@ export const agentCommand = new SlashCommandBuilder()
       .setRequired(true)
   )
   .addStringOption((option) =>
-    option.setName('session').setDescription('conversation session').setMaxLength(100)
+    option
+      .setName('session')
+      .setDescription('conversation session')
+      .setMaxLength(100)
+      .setAutocomplete(true)
   )
   .addStringOption((option) =>
     option.setName('model').setDescription('model for this session').setAutocomplete(true)

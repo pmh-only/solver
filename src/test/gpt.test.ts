@@ -16,13 +16,15 @@ import {
 import {
   clearStoredValues,
   getStoredValue,
-  resetStoredValueConnection
+  resetStoredValueConnection,
+  setStoredValue
 } from '../helpers/kv-store.js'
 import { clearModelCache } from '../model-catalog.js'
 import { updateSystemPrompt } from '../system-prompt.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
+  agentSessionAutocompleteJSON,
   autocompleteJSON,
   buttonJSON,
   dispatch,
@@ -311,7 +313,11 @@ describe('/a', () => {
       'tokens'
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
-    expect(command.options?.[1]).toMatchObject({ name: 'session', required: false })
+    expect(command.options?.[1]).toMatchObject({
+      name: 'session',
+      required: false,
+      autocomplete: true
+    })
     expect(command.options?.[2]).toMatchObject({
       name: 'model',
       required: false,
@@ -881,6 +887,32 @@ describe('/a', () => {
       settings: { model: 'gpt-5.4-mini', effort: 'high', maxTokens: 2048 }
     })
     expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
+  })
+
+  it('shares session discovery between Discord and the web UI', async () => {
+    await dispatch(agentCommandJSON('from Discord', {}, 'discord session'), subs)
+    createWebSession('666666666666666666', 'web session')
+
+    expect(loadWebSessionState('666666666666666666').sessions).toEqual([
+      'default',
+      'discord session',
+      'web session'
+    ])
+
+    const calls = await dispatch(agentSessionAutocompleteJSON('web'), subs)
+    const body = getCallback(calls) as { data: { choices: Array<{ name: string; value: string }> } }
+    expect(body.data.choices).toEqual([{ name: 'web session', value: 'web session' }])
+  })
+
+  it('includes sessions from legacy web indexes and persisted conversations', () => {
+    setStoredValue('gpt-web-sessions:shared-user', JSON.stringify(['legacy web']))
+    setStoredValue('gpt-session:shared-user:legacy%20discord', '[]')
+
+    expect(loadWebSessionState('shared-user').sessions).toEqual([
+      'default',
+      'legacy discord',
+      'legacy web'
+    ])
   })
 
   it('passes through and persists a model outside the suggestion list', async () => {

@@ -4,10 +4,11 @@
 
 The bot serves a browser chat application from `/` and a health check from `/healthz` on `PORT`
 (default `3000`). Set `WEB_HOST` to control the listening interface and `WEB_DOMAIN` to the public
-origin. The web app uses the same `/a` agent, tools, model settings, per-user conversation storage,
-and session serialization as Discord. Responses stream into the browser and render text, common
-Markdown, embeds, link buttons, reasoning/tool status, errors, and the supported Discord
-interactions described below.
+origin. The web app uses the same `/a` agent, tools, model settings, per-user session pool,
+conversation storage, and session serialization as Discord. Use the same Discord user ID as the OIDC
+`sub` claim to access the same sessions from both clients. Responses stream into the browser and
+render text, common Markdown, embeds, link buttons, reasoning/tool status, errors, and the supported
+Discord interactions described below.
 
 ### Web Discord Component Compatibility
 

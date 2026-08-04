@@ -81,7 +81,8 @@ import {
   handleGptModalSubmit,
   handleGptVerbositySelect,
   isGptActionComponentId,
-  isGptModalId
+  isGptModalId,
+  loadAgentSessionNames
 } from './commands/gpt.js'
 import { loadModelsResponse } from './model-catalog.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
@@ -537,9 +538,18 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       if (interaction.isAutocomplete()) {
         if (interaction.commandName === AGENT_COMMAND_NAME) {
           const focused = interaction.options.getFocused(true)
+          const query = String(focused.value).toLowerCase()
+          if (focused.name === 'session') {
+            await interaction.respond(
+              loadAgentSessionNames(interaction.user.id)
+                .filter((session) => session.toLowerCase().includes(query))
+                .slice(0, 25)
+                .map((session) => ({ name: session, value: session }))
+            )
+            return
+          }
           if (focused.name !== 'model') return
 
-          const query = String(focused.value).toLowerCase()
           try {
             const { models } = await loadModelsResponse()
             await interaction.respond(

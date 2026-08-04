@@ -277,6 +277,23 @@ export function agentModelAutocompleteJSON(
   })
 }
 
+/** Minimal raw JSON for autocomplete on the dedicated /a session option. */
+export function agentSessionAutocompleteJSON(
+  value: string,
+  overrides: Partial<RawInteraction> = {}
+): RawInteraction {
+  return commandJSON('', {
+    type: 4,
+    data: {
+      id: '888888888888888887',
+      name: 'a',
+      type: 1,
+      options: [{ name: 'session', value, type: 3, focused: true }]
+    },
+    ...overrides
+  })
+}
+
 /** Minimal raw JSON for a /c <value> autocomplete interaction */
 export function autocompleteJSON(
   value: string,
