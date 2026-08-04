@@ -218,6 +218,7 @@ const GPT_CONTEXT_KEY = 'gpt-ctx'
 const GPT_SESSION_KEY = 'gpt-session'
 const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
 const GPT_SETTINGS_KEY = 'gpt-settings'
+const GPT_WEB_SESSIONS_KEY = 'gpt-web-sessions'
 const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
 const sessionQueues = new Map<string, Promise<void>>()
@@ -1781,6 +1782,67 @@ export interface WebConversationTurn {
   content: string
 }
 
+export interface WebSessionState {
+  sessions: string[]
+  settings: GptSessionSettings
+}
+
+function validateWebSessionName(sessionName: string): string {
+  const name = sessionName.trim()
+  if (!name) throw new Error('Session name must not be empty')
+  if (name.length > 100) throw new Error('Session name must not exceed 100 characters')
+  return name
+}
+
+function webSessionsKey(userId: string): string {
+  return `${GPT_WEB_SESSIONS_KEY}:${encodeURIComponent(userId)}`
+}
+
+function loadWebSessionNames(userId: string): string[] {
+  const sessions = new Set([DEFAULT_SESSION_NAME])
+  try {
+    const stored = JSON.parse(getStoredValue(webSessionsKey(userId)) ?? '[]') as unknown
+    if (Array.isArray(stored)) {
+      for (const name of stored) {
+        if (typeof name === 'string' && name.trim() && name.length <= 100) sessions.add(name)
+      }
+    }
+  } catch {
+    // Invalid session indexes safely fall back to the default session.
+  }
+  return [...sessions].sort((left, right) =>
+    left === DEFAULT_SESSION_NAME
+      ? -1
+      : right === DEFAULT_SESSION_NAME
+        ? 1
+        : left.localeCompare(right)
+  )
+}
+
+function registerWebSession(userId: string, sessionName: string): void {
+  const sessions = new Set(loadWebSessionNames(userId))
+  sessions.add(sessionName)
+  setStoredValue(webSessionsKey(userId), JSON.stringify([...sessions]))
+}
+
+export function loadWebSessionState(
+  userId: string,
+  sessionName = DEFAULT_SESSION_NAME
+): WebSessionState {
+  const name = validateWebSessionName(sessionName)
+  return {
+    sessions: loadWebSessionNames(userId),
+    settings: loadSessionSettings(userId, name)
+  }
+}
+
+export function createWebSession(userId: string, sessionName: string): WebSessionState {
+  const name = validateWebSessionName(sessionName)
+  loadConversation(userId, name)
+  registerWebSession(userId, name)
+  return loadWebSessionState(userId, name)
+}
+
 export function loadWebConversation(
   userId: string,
   sessionName = DEFAULT_SESSION_NAME
@@ -1840,6 +1902,7 @@ export async function runWebAgent(
   }
   if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
   storeSessionSettings(request.userId, sessionName, settings)
+  registerWebSession(request.userId, sessionName)
 
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {

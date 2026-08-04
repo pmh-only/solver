@@ -6,7 +6,9 @@ import { agentCommand } from '../application-commands.js'
 import {
   GPT_ACTION_COMPONENT_ID,
   GPT_MODAL_ID,
+  createWebSession,
   loadWebConversation,
+  loadWebSessionState,
   runWebAgent,
   runWebComponentInteraction,
   runWebInteraction
@@ -852,6 +854,33 @@ describe('/a', () => {
         }
       })
     )
+  })
+
+  it('creates and lists web sessions with their persisted settings', async () => {
+    const created = createWebSession('web-user', 'project notes')
+
+    expect(created).toEqual({
+      sessions: ['default', 'project notes'],
+      settings: { model: 'gpt-5.4', effort: 'medium', maxTokens: 4096 }
+    })
+
+    await runWebAgent(
+      {
+        userId: 'web-user',
+        sessionName: 'project notes',
+        prompt: 'remember this',
+        model: 'gpt-5.4-mini',
+        effort: 'high',
+        maxTokens: 2048
+      },
+      async () => undefined
+    )
+
+    expect(loadWebSessionState('web-user', 'project notes')).toEqual({
+      sessions: ['default', 'project notes'],
+      settings: { model: 'gpt-5.4-mini', effort: 'high', maxTokens: 2048 }
+    })
+    expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
   })
 
   it('passes through and persists a model outside the suggestion list', async () => {

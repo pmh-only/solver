@@ -6,7 +6,9 @@ import {
   runWebComponentInteraction,
   runWebInteraction,
   loadWebConversation,
-  clearWebConversation
+  clearWebConversation,
+  createWebSession,
+  loadWebSessionState
 } from './commands/gpt.js'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
@@ -257,6 +259,38 @@ async function handleApiRequest(
       response,
       200,
       loadWebConversation(session.user.id, url.searchParams.get('session') || 'default')
+    )
+    return true
+  }
+  if (url.pathname === '/api/chat/sessions' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(
+      response,
+      200,
+      loadWebSessionState(session.user.id, url.searchParams.get('session') || 'default')
+    )
+    return true
+  }
+  if (url.pathname === '/api/chat/sessions' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    const body = (await readJson(request)) as { sessionName?: unknown }
+    sendJson(
+      response,
+      201,
+      createWebSession(
+        session.user.id,
+        typeof body.sessionName === 'string' ? body.sessionName : ''
+      )
     )
     return true
   }

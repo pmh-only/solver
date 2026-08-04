@@ -19,6 +19,7 @@ const INTERNAL_KEY_PREFIXES = [
   'gpt-settings:',
   'gpt-session:',
   'gpt-session-selected:',
+  'gpt-web-sessions:',
   'global-system-prompt',
   'message-input:',
   'message-render-',
