@@ -41,7 +41,6 @@ export interface WebUser {
   email?: string
   admin: boolean
   allowed: boolean
-  bootstrap: boolean
 }
 
 interface WebSession {
@@ -206,23 +205,6 @@ function equalSecret(actual: string, expected: string): boolean {
   return timingSafeEqual(actualHash, expectedHash)
 }
 
-export function bootstrapLogin(
-  request: IncomingMessage,
-  response: ServerResponse,
-  secret: unknown
-): WebSession | null {
-  const expected = process.env.WEB_ADMIN_BOOTSTRAP_SECRET?.trim()
-  if (!expected || typeof secret !== 'string' || !equalSecret(secret, expected)) return null
-  return createSession(request, response, {
-    id: 'web:bootstrap-admin',
-    subject: 'bootstrap-admin',
-    name: 'Bootstrap administrator',
-    admin: true,
-    allowed: true,
-    bootstrap: true
-  })
-}
-
 export function requireCsrf(request: IncomingMessage, session: WebSession): boolean {
   const token = request.headers['x-csrf-token']
   return typeof token === 'string' && equalSecret(token, session.csrfToken)
@@ -323,8 +305,7 @@ export async function completeOidcLogin(
       name,
       email,
       admin,
-      allowed: admin || allowedSubjects.has(subject) || allowedSubjects.has('*'),
-      bootstrap: false
+      allowed: admin || allowedSubjects.has(subject) || allowedSubjects.has('*')
     },
     tokens.id_token
   )

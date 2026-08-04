@@ -19,25 +19,27 @@ Web chat always requires a server-side session. Configure these deployment value
 
 - `WEB_SESSION_SECRET`: a random value of at least 32 characters, used to encrypt the stored OIDC
   client secret. Keep it stable across restarts or the saved OIDC configuration cannot be read.
-- `WEB_ADMIN_BOOTSTRAP_SECRET`: a separate random value used only to unlock initial web setup.
 - `WEB_ADMIN_OIDC_SUBJECTS`: comma- or whitespace-separated OIDC `sub` claims allowed to open the
   settings page. Ordinary authenticated users can chat but cannot read or change settings.
 - `WEB_SECURE_COOKIES`: defaults to secure cookies. Set it to `false` only for local HTTP testing.
 - `WEB_TRUST_PROXY`: set to `true` when a trusted reverse proxy overwrites `X-Forwarded-For`, so
   authentication rate limits apply per client rather than to the proxy itself.
 
-Open `/`, expand **Administrator setup**, and enter the bootstrap value. In **OIDC settings**, enter
-the issuer URL, client ID, client secret, exact redirect URI ending in `/auth/callback`, scopes
+Open `/`. If OIDC has not been configured, the **OIDC settings** screen opens immediately without an
+initial secret or unlock step. Enter the issuer URL, client ID, client secret, exact redirect URI
+ending in `/auth/callback`, scopes
 (including `openid`), automatic-login preference, and optional post-logout redirect URI. Add the
 exact OIDC `sub` claims authorized for chat and administration. Because `/a` has privileged shell,
 filesystem, Docker, and integration tools, authenticated identities are denied chat access unless
 explicitly listed; `*` is supported only when every account in the provider is fully trusted.
-Register the same redirect and post-logout URIs with the provider, save, then enable OIDC. The
+Register the same redirect and post-logout URIs with the provider, then save with OIDC enabled. The
 settings and client secret are stored in `data/kv.sqlite`; the secret is AES-256-GCM encrypted and
 is never returned by the settings API. Leaving the secret field blank preserves the existing value.
-After the first settings save, bootstrap login is disabled. Remove `WEB_ADMIN_BOOTSTRAP_SECRET` from
-the deployment. Emergency recovery requires the operator to temporarily set
-`WEB_ENABLE_BOOTSTRAP_RECOVERY=true`; disable it immediately after repairing the configuration.
+The first successful save permanently closes unauthenticated setup access; later settings access
+requires an OIDC subject listed as an administrator and CSRF validation. Because any network client
+can claim an unconfigured instance, keep a new deployment private or network-restricted until this
+first save completes. Initial setup requires OIDC login to be enabled and at least one administrator
+subject in the form or `WEB_ADMIN_OIDC_SUBJECTS` so the configuration remains manageable.
 
 OIDC uses discovery, Authorization Code with PKCE, browser-bound state, nonce, HttpOnly SameSite
 cookies, CSRF tokens on mutations, subject allowlisting, request limits, and login/chat rate limits.

@@ -21,7 +21,7 @@ afterEach(async () => {
   delete process.env.WEB_DOMAIN
   delete process.env.OPENAI_API_KEY
   delete process.env.WEB_SESSION_SECRET
-  delete process.env.WEB_ADMIN_BOOTSTRAP_SECRET
+  delete process.env.WEB_ADMIN_OIDC_SUBJECTS
   resetWebAuthForTests()
   deleteStoredValue('web-oidc-settings')
   await rm(HOSTED_HTML_PATH, { force: true })
@@ -49,6 +49,7 @@ describe('web server', () => {
     expect(html).toContain('<h1>Ask Solver from anywhere.</h1>')
     expect(html).toContain('id="composer"')
     expect(html).toContain('name="viewport"')
+    expect(html).not.toContain('Bootstrap secret')
   })
 
   it('serves health checks and HEAD requests', async () => {
@@ -133,29 +134,24 @@ describe('web server', () => {
     expect(hostedPageUrl()).toBe('http://localhost:3000/hosted')
   })
 
-  it('protects chat and lets a bootstrap administrator configure OIDC without exposing secrets', async () => {
+  it('protects chat and exposes OIDC setup only until the first successful save', async () => {
     process.env.WEB_SESSION_SECRET = 'test-session-secret-that-is-at-least-32-characters'
-    process.env.WEB_ADMIN_BOOTSTRAP_SECRET = 'test-bootstrap-secret'
     const origin = await startServer()
 
     const unauthorized = await fetch(`${origin}/api/chat/history`)
     expect(unauthorized.status).toBe(401)
 
-    const login = await fetch(`${origin}/api/auth/bootstrap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: 'test-bootstrap-secret' })
-    })
-    const loginBody = (await login.json()) as { csrfToken: string }
-    const cookie = login.headers.get('set-cookie')!.split(';', 1)[0]!
-    expect(login.status).toBe(200)
+    const session = await fetch(`${origin}/api/session`)
+    expect(await session.json()).toMatchObject({ oidcSetupRequired: true, oidcEnabled: false })
+
+    const initialSettings = await fetch(`${origin}/api/admin/oidc`)
+    expect(initialSettings.status).toBe(200)
+    expect(await initialSettings.json()).toBeNull()
 
     const saved = await fetch(`${origin}/api/admin/oidc`, {
       method: 'PUT',
       headers: {
-        'Content-Type': 'application/json',
-        Cookie: cookie,
-        'X-CSRF-Token': loginBody.csrfToken
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         enabled: true,
@@ -175,8 +171,61 @@ describe('web server', () => {
     expect(savedBody.hasClientSecret).toBe(true)
     expect(savedBody).not.toHaveProperty('clientSecret')
 
-    const loaded = await fetch(`${origin}/api/admin/oidc`, { headers: { Cookie: cookie } })
+    const configuredSession = await fetch(`${origin}/api/session`)
+    expect(await configuredSession.json()).toMatchObject({
+      oidcSetupRequired: false,
+      oidcEnabled: true
+    })
+
+    const loaded = await fetch(`${origin}/api/admin/oidc`)
+    expect(loaded.status).toBe(401)
     expect(await loaded.text()).not.toContain('confidential-test-value')
+
+    const secondSave = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    })
+    expect(secondSave.status).toBe(401)
+  })
+
+  it('requires enabled OIDC and an administrator for initial setup', async () => {
+    process.env.WEB_SESSION_SECRET = 'test-session-secret-that-is-at-least-32-characters'
+    const origin = await startServer()
+    const settings = {
+      enabled: false,
+      issuerUrl: 'https://identity.example.com',
+      clientId: 'solver',
+      clientSecret: 'confidential-test-value',
+      redirectUri: 'https://solver.example.com/auth/callback',
+      scopes: 'openid',
+      allowedSubjects: '',
+      adminSubjects: '',
+      automaticLogin: false,
+      postLogoutRedirectUri: ''
+    }
+
+    const disabled = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    })
+    expect(disabled.status).toBe(400)
+    expect(await disabled.json()).toEqual({ error: 'Initial OIDC setup must enable login' })
+
+    const noAdministrator = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...settings, enabled: true })
+    })
+    expect(noAdministrator.status).toBe(400)
+    expect(await noAdministrator.json()).toEqual({
+      error: 'Initial OIDC setup requires an administrator subject'
+    })
+
+    expect(await (await fetch(`${origin}/api/session`)).json()).toMatchObject({
+      oidcSetupRequired: true
+    })
   })
 
   it('rejects unknown routes and unsupported methods', async () => {

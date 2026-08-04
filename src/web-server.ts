@@ -9,7 +9,6 @@ import { loadModelsResponse } from './model-catalog.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import {
   beginOidcLogin,
-  bootstrapLogin,
   clearSessionCookie,
   completeOidcLogin,
   getWebSession,
@@ -113,6 +112,7 @@ function safeError(error: unknown): string {
     'Model must',
     'OIDC redirect URI',
     'OIDC scopes',
+    'Initial OIDC setup',
     'Content-Type',
     'Request body'
   ]
@@ -136,47 +136,55 @@ async function handleApiRequest(
     sendJson(response, 200, {
       user: session?.user ?? null,
       csrfToken: session?.csrfToken ?? null,
+      oidcSetupRequired: !hasStoredValue('web-oidc-settings'),
       oidcEnabled: settings?.enabled ?? false,
       automaticLogin: settings?.automaticLogin ?? false
     })
     return true
   }
-  if (url.pathname === '/api/auth/bootstrap' && method === 'POST') {
-    if (
-      hasStoredValue('web-oidc-settings') &&
-      process.env.WEB_ENABLE_BOOTSTRAP_RECOVERY !== 'true'
-    ) {
-      sendJson(response, 403, { error: 'Bootstrap setup is already complete' })
-      return true
-    }
-    if (!consumeStoredRateLimit(`web-rate:bootstrap:${remoteId(request)}`, 5, 15 * 60_000)) {
-      sendJson(response, 429, { error: 'Too many attempts' })
-      return true
-    }
-    const body = (await readJson(request)) as { secret?: unknown }
-    const session = bootstrapLogin(request, response, body.secret)
-    if (!session) sendJson(response, 401, { error: 'Invalid bootstrap credentials' })
-    else sendJson(response, 200, { user: session.user, csrfToken: session.csrfToken })
-    return true
-  }
   if (url.pathname === '/api/admin/oidc' && method === 'GET') {
-    const session = authenticated(request, response)
-    if (!session) return true
-    if (!session.user.admin) {
-      sendJson(response, 403, { error: 'Administrator access required' })
-      return true
+    if (hasStoredValue('web-oidc-settings')) {
+      const session = authenticated(request, response)
+      if (!session) return true
+      if (!session.user.admin) {
+        sendJson(response, 403, { error: 'Administrator access required' })
+        return true
+      }
     }
     sendJson(response, 200, publicOidcSettings())
     return true
   }
   if (url.pathname === '/api/admin/oidc' && method === 'PUT') {
-    const session = mutationAllowed(request, response)
-    if (!session) return true
-    if (!session.user.admin) {
-      sendJson(response, 403, { error: 'Administrator access required' })
+    const initialSetup = !hasStoredValue('web-oidc-settings')
+    if (initialSetup) {
+      if (!consumeStoredRateLimit(`web-rate:oidc-setup:${remoteId(request)}`, 5, 15 * 60_000)) {
+        sendJson(response, 429, { error: 'Too many setup attempts' })
+        return true
+      }
+    } else {
+      const session = mutationAllowed(request, response)
+      if (!session) return true
+      if (!session.user.admin) {
+        sendJson(response, 403, { error: 'Administrator access required' })
+        return true
+      }
+    }
+    const body = await readJson(request)
+    if (initialSetup && hasStoredValue('web-oidc-settings')) {
+      sendJson(response, 409, { error: 'OIDC setup was completed by another request' })
       return true
     }
-    sendJson(response, 200, saveOidcSettings(await readJson(request)))
+    if (initialSetup) {
+      const candidate = body as Record<string, unknown>
+      if (candidate.enabled !== true) throw new Error('Initial OIDC setup must enable login')
+      if (
+        typeof candidate.adminSubjects !== 'string' ||
+        (!candidate.adminSubjects.trim() && !process.env.WEB_ADMIN_OIDC_SUBJECTS?.trim())
+      ) {
+        throw new Error('Initial OIDC setup requires an administrator subject')
+      }
+    }
+    sendJson(response, 200, saveOidcSettings(body))
     return true
   }
   if (url.pathname === '/api/chat/history' && method === 'GET') {
