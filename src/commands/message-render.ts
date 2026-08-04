@@ -49,6 +49,10 @@ const AVATAR_SIZE = 40
 const CONTENT_X = PADDING_X + AVATAR_SIZE + 16
 const BODY_FONT_SIZE = 16
 const BODY_LINE_HEIGHT = 20
+const SUBTEXT_FONT_SIZE = 13
+const SUBTEXT_LINE_HEIGHT = 16
+const HEADING_FONT_SIZE = 20
+const HEADING_LINE_HEIGHT = 24
 const HEADER_FONT_SIZE = 16
 const HEADER_LINE_HEIGHT = 20
 const TIMESTAMP_FONT_SIZE = 12
@@ -73,13 +77,65 @@ type StoredCollection = {
 }
 
 type MessageLayout = {
-  bodyLines: string[]
+  bodyLines: MessageBodyLine[]
   contentWidth: number
   height: number
   locale: LocaleKind
   displayName: string
   nameWidth: number
   timestamp: string
+}
+
+type MessageBodyLine = {
+  text: string
+  style: MessageLineStyle
+}
+
+type MessageLineStyle = 'body' | 'heading' | 'quote' | 'subtext'
+
+export function formatMessageContentLine(value: string, markdown = true): MessageBodyLine {
+  if (!markdown) return { text: value, style: 'body' }
+
+  const subtext = value.match(/^\s*-#\s+(.*)$/)
+  if (subtext) return { text: subtext[1]!, style: 'subtext' }
+
+  const heading = value.match(/^\s{0,3}#{1,3}\s+(.*)$/)
+  if (heading) return { text: heading[1]!, style: 'heading' }
+
+  const task = value.match(/^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$/)
+  if (task) {
+    return {
+      text: `${task[1]}${task[2]?.toLowerCase() === 'x' ? '☑' : '☐'} ${task[3]}`,
+      style: 'body'
+    }
+  }
+
+  const bullet = value.match(/^(\s*)[-*+]\s+(.*)$/)
+  if (bullet) return { text: `${bullet[1]}• ${bullet[2]}`, style: 'body' }
+
+  const quote = value.match(/^\s*>\s?(.*)$/)
+  if (quote) return { text: `▎ ${quote[1]}`, style: 'quote' }
+
+  if (/^\s*(?:-{3,}|_{3,}|\*{3,})\s*$/.test(value)) {
+    return { text: '────────────────', style: 'subtext' }
+  }
+
+  return { text: value, style: 'body' }
+}
+
+function lineFont(style: MessageLineStyle) {
+  switch (style) {
+    case 'subtext':
+      return { size: SUBTEXT_FONT_SIZE, height: SUBTEXT_LINE_HEIGHT, weight: 400 as const }
+    case 'heading':
+      return { size: HEADING_FONT_SIZE, height: HEADING_LINE_HEIGHT, weight: 700 as const }
+    default:
+      return { size: BODY_FONT_SIZE, height: BODY_LINE_HEIGHT, weight: 400 as const }
+  }
+}
+
+function lineColor(style: MessageLineStyle) {
+  return style === 'subtext' ? '#949ba4' : style === 'quote' ? '#b5bac1' : '#dbdee1'
 }
 
 function collectionKey(contextId: string, userId: string) {
@@ -208,17 +264,28 @@ function buildMessageLayout(
 ): MessageLayout {
   const bodyText = message.content.trim() || '[no text content]'
   const detectedLocale = detectLocale(locale, `${message.displayName}\n${bodyText}`)
-  setFont(measure, 400, BODY_FONT_SIZE, fontFamilyForText(bodyText, detectedLocale))
-  const bodyLines = wrapText(measure, bodyText, CONTENT_WIDTH)
-  const bodyHeight = bodyLines.length * BODY_LINE_HEIGHT
+  let fenced = false
+  const bodyLines = bodyText.split(/\r?\n/).flatMap((value) => {
+    const fence = /^\s*```/.test(value)
+    const formatted = formatMessageContentLine(value, !fenced && !fence)
+    if (fence) fenced = !fenced
+    const font = lineFont(formatted.style)
+    setFont(measure, font.weight, font.size, fontFamilyForText(formatted.text, detectedLocale))
+    return wrapText(measure, formatted.text, CONTENT_WIDTH).map((text) => ({
+      text,
+      style: formatted.style
+    }))
+  })
+  const bodyHeight = bodyLines.reduce((sum, line) => sum + lineFont(line.style).height, 0)
   setFont(measure, 500, HEADER_FONT_SIZE, fontFamilyForText(message.displayName, detectedLocale))
   const nameWidth = measureCanvasText(measure, message.displayName)
   const timestamp = formatTimestamp(new Date(message.createdTimestamp))
   setFont(measure, 400, TIMESTAMP_FONT_SIZE, GG_SANS_FAMILY)
   const timestampWidth = measureCanvasText(measure, timestamp)
   const bodyWidth = bodyLines.reduce((max, line) => {
-    setFont(measure, 400, BODY_FONT_SIZE, fontFamilyForText(line, detectedLocale))
-    return Math.max(max, measureCanvasText(measure, line || ' '))
+    const font = lineFont(line.style)
+    setFont(measure, font.weight, font.size, fontFamilyForText(line.text, detectedLocale))
+    return Math.max(max, measureCanvasText(measure, line.text || ' '))
   }, 0)
   return {
     bodyLines,
@@ -292,12 +359,15 @@ async function renderMessagesPng(
     ctx.fillStyle = '#949ba4'
     setFont(ctx, 400, TIMESTAMP_FONT_SIZE, GG_SANS_FAMILY)
     drawCanvasText(ctx, layout.timestamp, CONTENT_X + layout.nameWidth + 8, cursorY + PADDING_Y + 4)
-    ctx.fillStyle = message.content.trim() ? '#dbdee1' : '#949ba4'
     const bodyY = cursorY + PADDING_Y + HEADER_LINE_HEIGHT + 2
-    layout.bodyLines.forEach((line, lineIndex) => {
-      setFont(ctx, 400, BODY_FONT_SIZE, fontFamilyForText(line, layout.locale))
-      drawCanvasText(ctx, line || ' ', CONTENT_X, bodyY + lineIndex * BODY_LINE_HEIGHT)
-    })
+    let lineY = bodyY
+    for (const line of layout.bodyLines) {
+      const font = lineFont(line.style)
+      ctx.fillStyle = message.content.trim() ? lineColor(line.style) : '#949ba4'
+      setFont(ctx, font.weight, font.size, fontFamilyForText(line.text, layout.locale))
+      drawCanvasText(ctx, line.text || ' ', CONTENT_X, lineY)
+      lineY += font.height
+    }
     cursorY += layout.height
   }
 
