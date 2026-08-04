@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { runWebAgent, loadWebConversation, clearWebConversation } from './commands/gpt.js'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
-import { readHostedHtml } from './hosted-page.js'
+import { readHostedHtml, readSharedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import {
@@ -59,6 +59,17 @@ function send(
 
 function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
   send(response, statusCode, 'application/json; charset=utf-8', `${JSON.stringify(value)}\n`)
+}
+
+function sendSandboxedHtml(response: ServerResponse, html: string, headOnly: boolean): void {
+  response.writeHead(200, {
+    ...securityHeaders(false),
+    'Content-Security-Policy':
+      "sandbox allow-scripts allow-forms allow-modals allow-popups; default-src * data: blob:; script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; style-src * data: blob: 'unsafe-inline'; connect-src *; frame-ancestors 'none'",
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html)
+  })
+  response.end(headOnly ? undefined : html)
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -348,16 +359,14 @@ export async function handleWebRequest(
       const hosted = await readHostedHtml()
       if (!hosted)
         send(response, 404, 'text/plain; charset=utf-8', 'No page has been published.\n', head)
-      else {
-        response.writeHead(200, {
-          ...securityHeaders(false),
-          'Content-Security-Policy':
-            "sandbox allow-scripts allow-forms allow-modals allow-popups; default-src * data: blob:; script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; style-src * data: blob: 'unsafe-inline'; connect-src *; frame-ancestors 'none'",
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Length': Buffer.byteLength(hosted)
-        })
-        response.end(head ? undefined : hosted)
-      }
+      else sendSandboxedHtml(response, hosted, head)
+      return
+    }
+    const sharedMatch = url.pathname.match(/^\/shared\/([^/]+)$/)
+    if (sharedMatch) {
+      const shared = await readSharedHtml(sharedMatch[1]!)
+      if (!shared) send(response, 404, 'text/plain; charset=utf-8', 'Not Found\n', head)
+      else sendSandboxedHtml(response, shared, head)
       return
     }
     if (url.pathname === '/healthz') {

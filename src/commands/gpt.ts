@@ -42,7 +42,7 @@ import {
   type StoredMcpServer,
   upsertStoredMcpServer
 } from '../helpers/mcp-store.js'
-import { hostedPageUrl, writeHostedHtml } from '../hosted-page.js'
+import { sharedPageUrl, writeSharedHtml } from '../hosted-page.js'
 import {
   beginGoogleCalendarAuthentication,
   getGoogleCalendarMcpEnvironment,
@@ -112,16 +112,17 @@ function shellTool(signal: AbortSignal) {
 const publishHtmlTool = tool({
   name: 'publish_html',
   description:
-    'Publish a complete single-file HTML page at the configured web domain. Include all CSS and JavaScript in the HTML. Publishing replaces the previously hosted page and persists across restarts.',
+    'Publish a complete single-file HTML page at a new unique /shared/<uuid> URL. Include all CSS and JavaScript in the HTML. Each published page persists across restarts.',
   inputSchema: z.object({
     html: z.string().describe('Complete HTML document to publish, up to 1 MiB')
   }),
   callback: async ({ html }) => {
-    await writeHostedHtml(html)
-    const url = hostedPageUrl()
+    const id = await writeSharedHtml(html)
+    const path = `/shared/${id}`
+    const url = sharedPageUrl(id)
     return url
       ? `Published the persistent HTML page at ${url}`
-      : 'Published the persistent HTML page. WEB_DOMAIN is not configured, so no public URL is available.'
+      : `Published the persistent HTML page at ${path}. WEB_DOMAIN is not configured, so no public absolute URL is available.`
   }
 })
 const spotifyAuthenticationTool = tool({
@@ -1109,9 +1110,9 @@ async function runGptStream(
     const systemInstruction = [
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
-      hostedPageUrl()
-        ? `The persistent single-file web page is hosted at ${hostedPageUrl()}. Use publish_html to create or replace it.`
-        : 'Use publish_html to create or replace the persistent single-file web page. WEB_DOMAIN is not configured, so tell the user that its public URL is unavailable.',
+      process.env.WEB_DOMAIN?.trim()
+        ? 'Use publish_html to create a persistent single-file web page at a new unique URL under the configured web domain.'
+        : 'Use publish_html to create a persistent single-file web page at a new unique /shared/<uuid> path. WEB_DOMAIN is not configured, so tell the user that its public absolute URL is unavailable.',
       ctx.verbosity === 'brief'
         ? 'Be concise and to the point. Keep responses short.'
         : ctx.verbosity === 'detailed'

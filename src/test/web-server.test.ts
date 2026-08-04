@@ -5,7 +5,11 @@ import type { Server } from 'node:http'
 import {
   HOSTED_HTML_PATH,
   MAX_HOSTED_HTML_BYTES,
+  SHARED_HTML_DIRECTORY,
   hostedPageUrl,
+  readSharedHtml,
+  sharedPageUrl,
+  writeSharedHtml,
   writeHostedHtml
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
@@ -26,6 +30,7 @@ afterEach(async () => {
   deleteStoredValue('web-oidc-settings')
   deleteStoredValue('web-session-secret')
   await rm(HOSTED_HTML_PATH, { force: true })
+  await rm(SHARED_HTML_DIRECTORY, { force: true, recursive: true })
   if (server) {
     await closeWebServer(server)
     server = undefined
@@ -140,6 +145,42 @@ describe('web server', () => {
     expect(hostedPageUrl()).toBe('https://pages.example.com/hosted')
     process.env.WEB_DOMAIN = 'http://localhost:3000'
     expect(hostedPageUrl()).toBe('http://localhost:3000/hosted')
+  })
+
+  it('publishes independent persistent HTML pages at UUID paths', async () => {
+    const firstHtml = '<!doctype html><title>First</title>'
+    const secondHtml = '<!doctype html><title>Second</title>'
+    const firstId = await writeSharedHtml(firstHtml)
+    const secondId = await writeSharedHtml(secondHtml)
+    const origin = await startServer()
+
+    expect(firstId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(secondId).not.toBe(firstId)
+    expect(await (await fetch(`${origin}/shared/${firstId}`)).text()).toBe(firstHtml)
+    expect(await (await fetch(`${origin}/shared/${secondId}`)).text()).toBe(secondHtml)
+    expect(await readSharedHtml(firstId)).toBe(firstHtml)
+
+    const head = await fetch(`${origin}/shared/${firstId}`, { method: 'HEAD' })
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+    expect(head.headers.get('content-security-policy')).toContain('sandbox')
+    expect(head.headers.get('content-security-policy')).not.toContain('allow-same-origin')
+  })
+
+  it('rejects malformed and missing shared page IDs', async () => {
+    const origin = await startServer()
+
+    expect((await fetch(`${origin}/shared/not-a-uuid`)).status).toBe(404)
+    expect((await fetch(`${origin}/shared/00000000-0000-4000-8000-000000000000`)).status).toBe(404)
+    expect(await readSharedHtml('../hosted')).toBeNull()
+    expect(sharedPageUrl('../hosted')).toBeNull()
+  })
+
+  it('builds shared page URLs from WEB_DOMAIN', () => {
+    process.env.WEB_DOMAIN = 'pages.example.com/base'
+    expect(sharedPageUrl('00000000-0000-4000-8000-000000000000')).toBe(
+      'https://pages.example.com/shared/00000000-0000-4000-8000-000000000000'
+    )
   })
 
   it('protects chat and exposes OIDC setup only until the first successful save', async () => {

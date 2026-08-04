@@ -550,7 +550,7 @@ describe('/a', () => {
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         systemPrompt: expect.stringContaining(
-          'persistent single-file web page is hosted at https://pages.example.com'
+          'persistent single-file web page at a new unique URL under the configured web domain'
         ),
         tools: expect.arrayContaining([expect.objectContaining({ name: 'publish_html' })])
       })

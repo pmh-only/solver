@@ -9,9 +9,15 @@ and session serialization as Discord. Responses stream into the browser and rend
 Markdown, embeds, link buttons, reasoning/tool status, and errors. Discord-only interactive
 components are shown as disabled controls; continue those interactions in Discord.
 
-Published single-file pages created by the agent are available at `/hosted` and remain stored at
-`data/hosted.html`. The chat UI always owns `/`. Published HTML receives an opaque-origin CSP
-sandbox: scripts can run, but cannot access the chat application's cookies or same-origin APIs.
+Ask `/a` to publish a complete single-file HTML document to create a unique URL shaped like
+`/shared/<random_uuid>`. Each page is stored persistently under `data/shared/`; publishing another
+page does not replace earlier pages. For example: `Publish this HTML as a shared page: <!doctype
+html><title>Hello</title><h1>Hello</h1>`. The returned URL uses `WEB_DOMAIN` when configured, or a
+relative `/shared/<random_uuid>` path otherwise. The legacy single page at `/hosted`, backed by
+`data/hosted.html`, remains available for existing deployments.
+
+The chat UI always owns `/`. All published HTML receives an opaque-origin CSP sandbox: scripts can
+run, but cannot access the chat application's cookies or same-origin APIs.
 
 ### Web Authentication and OIDC
 
@@ -88,8 +94,8 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Spotify search, library, playlist, and playback control after authentication
 - Received-mail search and reading, plus outgoing mail scheduling, when `MAIL_API_KEY` is configured
 - Google Calendar search, availability, and event management after authentication
-- Publishing a complete single-file HTML page at `WEB_DOMAIN/hosted`; the page is stored at
-  `data/hosted.html` and survives bot restarts
+- Publishing complete single-file HTML pages at unique `WEB_DOMAIN/shared/<random_uuid>` URLs; pages
+  are stored under `data/shared/` and survive bot restarts
 
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
