@@ -7,6 +7,7 @@ import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml, readSharedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
+import { loadSystemPromptSetting, resetSystemPrompt, updateSystemPrompt } from './system-prompt.js'
 import {
   beginOidcLogin,
   clearSessionCookie,
@@ -113,6 +114,16 @@ function mutationAllowed(request: IncomingMessage, response: ServerResponse) {
   return session
 }
 
+function administrator(request: IncomingMessage, response: ServerResponse, mutation = false) {
+  const session = mutation ? mutationAllowed(request, response) : authenticated(request, response)
+  if (!session) return null
+  if (!session.user.admin) {
+    sendJson(response, 403, { error: 'Administrator access required' })
+    return null
+  }
+  return session
+}
+
 function safeError(error: unknown): string {
   if (!(error instanceof Error)) return 'Request failed'
   if (error.name === 'ZodError' || error instanceof SyntaxError) return 'Invalid request data'
@@ -125,6 +136,7 @@ function safeError(error: unknown): string {
     'OIDC redirect URI',
     'OIDC scopes',
     'Initial OIDC setup',
+    'System prompt must',
     'Content-Type',
     'Request body'
   ]
@@ -197,6 +209,23 @@ async function handleApiRequest(
       }
     }
     sendJson(response, 200, saveOidcSettings(body))
+    return true
+  }
+  if (url.pathname === '/api/admin/system-prompt' && method === 'GET') {
+    if (!administrator(request, response)) return true
+    sendJson(response, 200, loadSystemPromptSetting())
+    return true
+  }
+  if (url.pathname === '/api/admin/system-prompt' && method === 'PUT') {
+    const session = administrator(request, response, true)
+    if (!session) return true
+    sendJson(response, 200, updateSystemPrompt(await readJson(request), session.user.id))
+    return true
+  }
+  if (url.pathname === '/api/admin/system-prompt/reset' && method === 'POST') {
+    const session = administrator(request, response, true)
+    if (!session) return true
+    sendJson(response, 200, resetSystemPrompt(session.user.id))
     return true
   }
   if (url.pathname === '/api/chat/history' && method === 'GET') {

@@ -14,7 +14,12 @@ import {
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 import { clearModelCache } from '../model-catalog.js'
-import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import {
+  deleteStoredValue,
+  getStoredValue,
+  listStoredKeys,
+  setStoredValue
+} from '../helpers/kv-store.js'
 import { resetWebAuthForTests } from '../web-auth.js'
 
 let server: Server | undefined
@@ -29,6 +34,8 @@ afterEach(async () => {
   resetWebAuthForTests()
   deleteStoredValue('web-oidc-settings')
   deleteStoredValue('web-session-secret')
+  deleteStoredValue('global-system-prompt')
+  for (const key of listStoredKeys()) if (key.startsWith('web-rate:')) deleteStoredValue(key)
   await rm(HOSTED_HTML_PATH, { force: true })
   await rm(SHARED_HTML_DIRECTORY, { force: true, recursive: true })
   if (server) {
@@ -63,6 +70,8 @@ describe('web server', () => {
     expect(html).not.toContain('id="model"')
     expect(html).not.toContain('id="effort"')
     expect(html).not.toContain('Bootstrap secret')
+    expect(html).toContain('id="prompt-settings-view"')
+    expect(script).toContain("api('/api/admin/system-prompt')")
   })
 
   it('serves health checks and HEAD requests', async () => {
@@ -235,6 +244,24 @@ describe('web server', () => {
       body: '{}'
     })
     expect(secondSave.status).toBe(401)
+  })
+
+  it('never exposes global system prompt management without an administrator session', async () => {
+    const origin = await startServer()
+    const options = {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Unauthorized replacement' })
+    }
+
+    const read = await fetch(`${origin}/api/admin/system-prompt`)
+    const update = await fetch(`${origin}/api/admin/system-prompt`, options)
+    const reset = await fetch(`${origin}/api/admin/system-prompt/reset`, { method: 'POST' })
+
+    expect(read.status).toBe(401)
+    expect(update.status).toBe(401)
+    expect(reset.status).toBe(401)
+    expect(getStoredValue('global-system-prompt')).toBeUndefined()
   })
 
   it('generates and reuses a persisted web session secret across restarts', async () => {

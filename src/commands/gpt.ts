@@ -43,6 +43,7 @@ import {
   upsertStoredMcpServer
 } from '../helpers/mcp-store.js'
 import { sharedPageUrl, writeSharedHtml } from '../hosted-page.js'
+import { loadSystemPrompt } from '../system-prompt.js'
 import {
   beginGoogleCalendarAuthentication,
   getGoogleCalendarMcpEnvironment,
@@ -1108,6 +1109,7 @@ async function runGptStream(
   try {
     await updateProgress(true)
     const systemInstruction = [
+      loadSystemPrompt(),
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
       process.env.WEB_DOMAIN?.trim()

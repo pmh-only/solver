@@ -60,6 +60,25 @@ Terminate TLS at the reverse proxy and preserve streaming responses (proxy buffe
 Sessions and in-flight OIDC login state are process-local, so a multi-replica deployment requires
 sticky routing; restarting the process signs web users out without deleting conversations.
 
+### Global System Prompt
+
+An authenticated web administrator can open **System prompt** from the chat screen to view and
+replace the global base system prompt or reset it to the built-in default. The setting applies to
+every future Discord and web agent request, including requests in existing conversation sessions;
+saved conversation history is unchanged. Solver appends its response-protocol, tool-recovery, and
+request-specific verbosity instructions separately so prompt edits do not break product output.
+
+The setting is stored as the internal `global-system-prompt` record in `data/kv.sqlite` (or the
+configured `KV_STORE_PATH`) with `updatedAt` and `updatedBy` audit fields. The equivalent API is:
+
+- `GET /api/admin/system-prompt` to read the effective global prompt and metadata.
+- `PUT /api/admin/system-prompt` with JSON `{ "prompt": "..." }` to replace it.
+- `POST /api/admin/system-prompt/reset` to restore the built-in default.
+
+All three endpoints require a current OIDC session whose server-derived `admin` flag is true.
+Mutations additionally require the session CSRF token in `X-CSRF-Token`. The server does not trust
+an administrator flag, subject, or user ID supplied by the request body.
+
 ## Interaction Access
 
 Set `ADMIN_USER_IDS` to a comma- or whitespace-separated list of Discord user IDs. Private

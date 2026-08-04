@@ -10,6 +10,7 @@ import {
   resetStoredValueConnection
 } from '../helpers/kv-store.js'
 import { clearModelCache } from '../model-catalog.js'
+import { updateSystemPrompt } from '../system-prompt.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
@@ -553,6 +554,18 @@ describe('/a', () => {
           'persistent single-file web page at a new unique URL under the configured web domain'
         ),
         tools: expect.arrayContaining([expect.objectContaining({ name: 'publish_html' })])
+      })
+    )
+  })
+
+  it('loads the persistent global system prompt for each request', async () => {
+    updateSystemPrompt({ prompt: 'Always explain the key tradeoff.' }, 'admin')
+
+    await dispatch(agentCommandJSON('design this'), subs)
+
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('Always explain the key tradeoff.')
       })
     )
   })
