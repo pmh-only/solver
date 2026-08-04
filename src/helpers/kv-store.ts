@@ -25,6 +25,7 @@ const INTERNAL_KEY_PREFIXES = [
   'poll:',
   'pub-content:',
   'web-oidc-settings',
+  'web-session-secret',
   'web-rate:'
 ]
 
@@ -56,6 +57,17 @@ export function getStoredValue(key: string): string | undefined {
     | { value: string }
     | undefined
   return row?.value
+}
+
+export function getOrCreateStoredValue(key: string, value: string): string {
+  const database = getDatabase()
+  database
+    .prepare('INSERT INTO kv_store (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING')
+    .run(key, value)
+  const stored = database.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as {
+    value: string
+  }
+  return stored.value
 }
 
 export function hasStoredValue(key: string): boolean {

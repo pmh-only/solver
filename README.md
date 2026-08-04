@@ -15,10 +15,15 @@ sandbox: scripts can run, but cannot access the chat application's cookies or sa
 
 ### Web Authentication and OIDC
 
-Web chat always requires a server-side session. Configure these deployment values before first use:
+Web chat always requires a server-side session. These optional deployment values control web
+authentication:
 
-- `WEB_SESSION_SECRET`: a random value of at least 32 characters, used to encrypt the stored OIDC
-  client secret. Keep it stable across restarts or the saved OIDC configuration cannot be read.
+- `WEB_SESSION_SECRET`: optional override of at least 32 characters for encrypting the stored OIDC
+  client secret. When omitted, the application generates a cryptographically secure secret at
+  startup, atomically stores it in `data/kv.sqlite`, and reuses it across restarts and replicas that
+  share that database. An explicit value always takes priority. Keep it unchanged after saving OIDC
+  settings. Existing deployments that already set this value remain compatible and should leave the
+  same override configured; changing or removing it makes the saved OIDC configuration unreadable.
 - `WEB_ADMIN_OIDC_SUBJECTS`: comma- or whitespace-separated OIDC `sub` claims allowed to open the
   settings page. Ordinary authenticated users can chat but cannot read or change settings.
 - `WEB_SECURE_COOKIES`: defaults to secure cookies. Set it to `false` only for local HTTP testing.
@@ -33,8 +38,10 @@ exact OIDC `sub` claims authorized for chat and administration. Because `/a` has
 filesystem, Docker, and integration tools, authenticated identities are denied chat access unless
 explicitly listed; `*` is supported only when every account in the provider is fully trusted.
 Register the same redirect and post-logout URIs with the provider, then save with OIDC enabled. The
-settings and client secret are stored in `data/kv.sqlite`; the secret is AES-256-GCM encrypted and
-is never returned by the settings API. Leaving the secret field blank preserves the existing value.
+settings, generated encryption key, and client secret are stored in `data/kv.sqlite`; the client
+secret is AES-256-GCM encrypted and is never returned by the settings API. Leaving the secret field
+blank preserves the existing value. Persist `data/kv.sqlite` and use one shared database file when
+running multiple instances.
 The first successful save permanently closes unauthenticated setup access; later settings access
 requires an OIDC subject listed as an administrator and CSRF validation. Because any network client
 can claim an unconfigured instance, keep a new deployment private or network-restricted until this

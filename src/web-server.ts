@@ -12,6 +12,7 @@ import {
   clearSessionCookie,
   completeOidcLogin,
   getWebSession,
+  initializeWebAuth,
   loadOidcSettings,
   logoutUrl,
   publicOidcSettings,
@@ -414,6 +415,7 @@ export async function startWebServer(
 ): Promise<Server> {
   const host = options.host ?? process.env.WEB_HOST ?? DEFAULT_HOST
   const port = options.port ?? parsePort(process.env.PORT)
+  initializeWebAuth()
   const server = createWebServer()
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {

@@ -10,7 +10,7 @@ import {
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 import { clearModelCache } from '../model-catalog.js'
-import { deleteStoredValue } from '../helpers/kv-store.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { resetWebAuthForTests } from '../web-auth.js'
 
 let server: Server | undefined
@@ -24,6 +24,7 @@ afterEach(async () => {
   delete process.env.WEB_ADMIN_OIDC_SUBJECTS
   resetWebAuthForTests()
   deleteStoredValue('web-oidc-settings')
+  deleteStoredValue('web-session-secret')
   await rm(HOSTED_HTML_PATH, { force: true })
   if (server) {
     await closeWebServer(server)
@@ -135,7 +136,6 @@ describe('web server', () => {
   })
 
   it('protects chat and exposes OIDC setup only until the first successful save', async () => {
-    process.env.WEB_SESSION_SECRET = 'test-session-secret-that-is-at-least-32-characters'
     const origin = await startServer()
 
     const unauthorized = await fetch(`${origin}/api/chat/history`)
@@ -189,8 +189,80 @@ describe('web server', () => {
     expect(secondSave.status).toBe(401)
   })
 
+  it('generates and reuses a persisted web session secret across restarts', async () => {
+    const origin = await startServer()
+    const generatedSecret = getStoredValue('web-session-secret')
+    expect(generatedSecret).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    const saved = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        issuerUrl: 'https://identity.example.com',
+        clientId: 'solver',
+        clientSecret: 'confidential-test-value',
+        redirectUri: 'https://solver.example.com/auth/callback',
+        scopes: 'openid',
+        allowedSubjects: '',
+        adminSubjects: 'trusted-admin',
+        automaticLogin: false,
+        postLogoutRedirectUri: ''
+      })
+    })
+    expect(saved.status).toBe(200)
+
+    await closeWebServer(server!)
+    server = undefined
+    resetWebAuthForTests()
+    const restartedOrigin = await startServer()
+
+    expect(getStoredValue('web-session-secret')).toBe(generatedSecret)
+    expect(await (await fetch(`${restartedOrigin}/api/session`)).json()).toMatchObject({
+      oidcSetupRequired: false,
+      oidcEnabled: true
+    })
+  })
+
+  it('keeps an explicit WEB_SESSION_SECRET as the highest-priority key', async () => {
+    setStoredValue(
+      'web-session-secret',
+      'different-persisted-secret-that-is-at-least-32-characters'
+    )
+    process.env.WEB_SESSION_SECRET = 'explicit-session-secret-that-is-at-least-32-characters'
+    const origin = await startServer()
+
+    const saved = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        issuerUrl: 'https://identity.example.com',
+        clientId: 'solver',
+        clientSecret: 'confidential-test-value',
+        redirectUri: 'https://solver.example.com/auth/callback',
+        scopes: 'openid',
+        allowedSubjects: '',
+        adminSubjects: 'trusted-admin',
+        automaticLogin: false,
+        postLogoutRedirectUri: ''
+      })
+    })
+
+    expect(saved.status).toBe(200)
+    expect(getStoredValue('web-session-secret')).toBe(
+      'different-persisted-secret-that-is-at-least-32-characters'
+    )
+  })
+
+  it('rejects a short explicit WEB_SESSION_SECRET before listening', async () => {
+    process.env.WEB_SESSION_SECRET = 'too-short'
+    await expect(startWebServer({ host: '127.0.0.1', port: 0 })).rejects.toThrow(
+      'WEB_SESSION_SECRET must contain at least 32 characters'
+    )
+  })
+
   it('requires enabled OIDC and an administrator for initial setup', async () => {
-    process.env.WEB_SESSION_SECRET = 'test-session-secret-that-is-at-least-32-characters'
     const origin = await startServer()
     const settings = {
       enabled: false,

@@ -8,9 +8,10 @@ import {
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as oidc from 'openid-client'
 import { z } from 'zod'
-import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { getOrCreateStoredValue, getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 const SETTINGS_KEY = 'web-oidc-settings'
+const SESSION_SECRET_KEY = 'web-session-secret'
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const OIDC_FLOW_TTL_MS = 10 * 60 * 1000
 const SESSION_COOKIE = 'solver_web_session'
@@ -60,13 +61,22 @@ interface OidcFlow {
 
 const sessions = new Map<string, WebSession>()
 const flows = new Map<string, OidcFlow>()
+let sessionSecret: string | undefined
 
-function encryptionKey(): Buffer {
-  const secret = process.env.WEB_SESSION_SECRET?.trim()
-  if (!secret || secret.length < 32) {
+export function initializeWebAuth(): void {
+  if (sessionSecret) return
+  const configured = process.env.WEB_SESSION_SECRET?.trim()
+  if (configured && configured.length < 32) {
     throw new Error('WEB_SESSION_SECRET must contain at least 32 characters')
   }
-  return createHash('sha256').update(secret).digest()
+  sessionSecret =
+    configured || getOrCreateStoredValue(SESSION_SECRET_KEY, randomBytes(32).toString('base64url'))
+  if (sessionSecret.length < 32) throw new Error('Stored web session secret is invalid')
+}
+
+function encryptionKey(): Buffer {
+  initializeWebAuth()
+  return createHash('sha256').update(sessionSecret!).digest()
 }
 
 function encrypt(value: string): string {
@@ -332,4 +342,5 @@ export async function logoutUrl(request: IncomingMessage): Promise<URL | null> {
 export function resetWebAuthForTests(): void {
   sessions.clear()
   flows.clear()
+  sessionSecret = undefined
 }
