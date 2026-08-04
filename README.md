@@ -6,8 +6,10 @@ The bot serves a browser chat application from `/` and a health check from `/hea
 (default `3000`). Set `WEB_HOST` to control the listening interface and `WEB_DOMAIN` to the public
 origin. The web app uses the same `/a` agent, tools, model settings, per-user conversation storage,
 and session serialization as Discord. Responses stream into the browser and render text, common
-Markdown, embeds, link buttons, reasoning/tool status, and errors. Discord-only interactive
-components are shown as disabled controls; continue those interactions in Discord.
+Markdown, embeds, reasoning/tool status, errors, and Discord buttons. Link buttons open their target;
+custom-ID buttons preserve their label, style, emoji, disabled state, and sender-only policy while
+routing clicks through the same agent interaction flow. Other Discord component types remain visible
+where supported by the renderer but are not interactive in the Web UI yet.
 
 Ask `/a` to publish a complete single-file HTML document to create a unique URL shaped like
 `/shared/<random_uuid>`. Each page is stored persistently under `data/shared/`; publishing another

@@ -72,6 +72,9 @@ describe('web server', () => {
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
     expect(script).toContain("api('/api/admin/system-prompt')")
+    expect(script).toContain("api('/api/interactions/components'")
+    expect(script).toContain('data-component-kind="button"')
+    expect(script).toContain('componentEmoji')
   })
 
   it('serves health checks and HEAD requests', async () => {

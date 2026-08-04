@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
-import { runWebAgent, loadWebConversation, clearWebConversation } from './commands/gpt.js'
+import {
+  runWebAgent,
+  runWebComponentInteraction,
+  loadWebConversation,
+  clearWebConversation
+} from './commands/gpt.js'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml, readSharedHtml } from './hosted-page.js'
@@ -137,6 +142,10 @@ function safeError(error: unknown): string {
     'OIDC scopes',
     'Initial OIDC setup',
     'System prompt must',
+    'Invalid component interaction',
+    'Component interaction expired',
+    'Only the user who sent',
+    'This component requires',
     'Content-Type',
     'Request body'
   ]
@@ -290,6 +299,48 @@ async function handleApiRequest(
           effort: typeof body.effort === 'string' ? body.effort : undefined,
           maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined
         },
+        async (payload) => write({ payload }),
+        controller.signal
+      )
+    } catch (error) {
+      write({ error: safeError(error) })
+    } finally {
+      response.end()
+    }
+    return true
+  }
+  if (url.pathname === '/api/interactions/components' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    if (!consumeStoredRateLimit(`web-rate:component:${session.user.id}`, 60, 60_000)) {
+      sendJson(response, 429, { error: 'Rate limit exceeded' })
+      return true
+    }
+    const body = (await readJson(request)) as Record<string, unknown>
+    const customId = typeof body.customId === 'string' ? body.customId : ''
+    const values = Array.isArray(body.values)
+      ? body.values.filter((value): value is string => typeof value === 'string')
+      : undefined
+    response.writeHead(200, {
+      ...securityHeaders(),
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive'
+    })
+    const write = (value: unknown) => {
+      if (!response.destroyed) response.write(`${JSON.stringify(value)}\n`)
+    }
+    const controller = new AbortController()
+    response.once('close', () => {
+      if (!response.writableEnded) controller.abort()
+    })
+    try {
+      await runWebComponentInteraction(
+        { userId: session.user.id, customId, values },
         async (payload) => write({ payload }),
         controller.signal
       )

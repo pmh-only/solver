@@ -3,7 +3,13 @@ import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
-import { GPT_ACTION_COMPONENT_ID, GPT_MODAL_ID } from '../commands/gpt.js'
+import {
+  GPT_ACTION_COMPONENT_ID,
+  GPT_MODAL_ID,
+  loadWebConversation,
+  runWebAgent,
+  runWebComponentInteraction
+} from '../commands/gpt.js'
 import {
   clearStoredValues,
   getStoredValue,
@@ -1029,6 +1035,79 @@ describe('/a', () => {
       type: InteractionResponseType.DeferredMessageUpdate
     })
     expect(streamMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists web button payloads and routes custom-id clicks through the agent interaction flow', async () => {
+    responsePayloads.push({
+      content: 'Choose an action',
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              custom_id: 'continue',
+              label: 'Continue',
+              style: 1,
+              emoji: { name: '▶️' },
+              sender_only: true
+            },
+            {
+              type: 2,
+              label: 'Documentation',
+              style: 5,
+              url: 'https://example.com/docs'
+            },
+            {
+              type: 2,
+              custom_id: 'disabled',
+              label: 'Unavailable',
+              style: 4,
+              disabled: true
+            }
+          ]
+        }
+      ]
+    })
+    const updates: unknown[] = []
+    await runWebAgent(
+      { userId: 'web-user', prompt: 'give me choices' },
+      async (payload) => void updates.push(payload)
+    )
+
+    const rendered = updates.at(-1) as { components: unknown[] }
+    const renderedJson = JSON.stringify(rendered)
+    const customId = renderedJson.match(/gpt-action:[^"]+:continue/)?.[0]
+    expect(customId).toBeTruthy()
+    expect(renderedJson).toContain('https://example.com/docs')
+    expect(renderedJson).toContain('▶️')
+    expect(renderedJson).toContain('Unavailable')
+    expect(renderedJson).not.toContain('sender_only')
+    expect(loadWebConversation('web-user').at(-1)?.content).toBe(renderedJson)
+
+    await expect(
+      runWebComponentInteraction(
+        { userId: 'other-user', customId: customId! },
+        async () => undefined
+      )
+    ).rejects.toThrow('Only the user who sent this request')
+
+    responsePayloads.push({ content: 'Continued from the button' })
+    const interactionUpdates: unknown[] = []
+    await runWebComponentInteraction(
+      { userId: 'web-user', customId: customId! },
+      async (payload) => void interactionUpdates.push(payload)
+    )
+
+    expect(streamMock).toHaveBeenLastCalledWith(
+      JSON.stringify({ type: 'discord_component', custom_id: 'continue', values: [] }),
+      expect.anything()
+    )
+    expect(JSON.stringify(interactionUpdates.at(-1))).toContain('Continued from the button')
+    expect(loadWebConversation('web-user')).toEqual([
+      { role: 'user', content: 'give me choices' },
+      expect.objectContaining({ role: 'assistant', content: expect.stringContaining('Continued') })
+    ])
   })
 
   it('accepts every Discord message component type', async () => {

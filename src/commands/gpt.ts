@@ -199,6 +199,7 @@ type GptManagedComponent = Record<string, unknown>
 interface ConversationTurn {
   role: 'user' | 'assistant'
   content: string
+  webContent?: string
 }
 
 interface AgentActivity {
@@ -689,7 +690,9 @@ function loadConversation(userId: string, sessionName: string): ConversationTurn
       !Array.isArray(turns) ||
       !turns.every(
         (turn) =>
-          (turn.role === 'user' || turn.role === 'assistant') && typeof turn.content === 'string'
+          (turn.role === 'user' || turn.role === 'assistant') &&
+          typeof turn.content === 'string' &&
+          (turn.webContent === undefined || typeof turn.webContent === 'string')
       )
     ) {
       return []
@@ -700,13 +703,13 @@ function loadConversation(userId: string, sessionName: string): ConversationTurn
   }
 }
 
-function storeConversation(ctx: GptContext, response: string): void {
+function storeConversation(ctx: GptContext, response: string, webContent?: string): void {
   setStoredValue(
     sessionKey(ctx.userId, ctx.sessionName),
     JSON.stringify([
       ...ctx.history,
       { role: 'user', content: ctx.prompt },
-      { role: 'assistant', content: response }
+      { role: 'assistant', content: response, ...(webContent ? { webContent } : {}) }
     ])
   )
 }
@@ -1398,8 +1401,9 @@ async function runGptStream(
 
     if (!controller.signal.aborted) {
       const response = responseContent || JSON.stringify({ content: '(no response)' })
-      await callbacks.editPayload(buildAgentPayload(response, token, ctx, usage, activity))
-      storeConversation(ctx, response)
+      const payload = buildAgentPayload(response, token, ctx, usage, activity)
+      await callbacks.editPayload(payload)
+      storeConversation(ctx, response, JSON.stringify(payload))
     }
   } catch (error) {
     if (
@@ -1521,6 +1525,32 @@ export function isGptModalId(customId: string): boolean {
   return customId.startsWith(`${GPT_MODAL_ID}:`)
 }
 
+async function continueGptComponentInteraction(
+  ctx: GptContext,
+  token: string,
+  componentId: string,
+  values: string[],
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  await runInSession(ctx.userId, ctx.sessionName, async () => {
+    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+    ctx.prompt = JSON.stringify({
+      type: 'discord_component',
+      custom_id: componentId,
+      values
+    })
+    storeGptContext(token, ctx)
+    try {
+      await runGptStream(callbacks, ctx, token, signal)
+    } finally {
+      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+        deleteGptContext(token)
+      else storeGptContext(token, ctx)
+    }
+  })
+}
+
 function hasComponentId(value: unknown, customId: string): boolean {
   if (Array.isArray(value)) return value.some((item) => hasComponentId(item, customId))
   if (!value || typeof value !== 'object') return false
@@ -1567,21 +1597,13 @@ export async function handleGptActionComponent(
   }
 
   await interaction.deferUpdate()
-  await runInSession(ctx.userId, ctx.sessionName, async () => {
-    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
-    const values = interaction.isAnySelectMenu() ? interaction.values : []
-    ctx.prompt = JSON.stringify({
-      type: 'discord_component',
-      custom_id: componentId,
-      values
-    })
-    storeGptContext(token, ctx)
-
-    const callbacks = makeCallbacks(interaction, ctx.pub)
-    await runGptStream(callbacks, ctx, token)
-    if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) deleteGptContext(token)
-    else storeGptContext(token, ctx)
-  })
+  await continueGptComponentInteraction(
+    ctx,
+    token,
+    componentId,
+    interaction.isAnySelectMenu() ? interaction.values : [],
+    makeCallbacks(interaction, ctx.pub)
+  )
 }
 
 export async function handleGptModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
@@ -1728,7 +1750,24 @@ export function loadWebConversation(
   userId: string,
   sessionName = DEFAULT_SESSION_NAME
 ): WebConversationTurn[] {
-  return loadConversation(userId, sessionName)
+  const visible: WebConversationTurn[] = []
+  for (const { role, content, webContent } of loadConversation(userId, sessionName)) {
+    let interaction = false
+    if (role === 'user') {
+      try {
+        const parsed = JSON.parse(content) as { type?: unknown }
+        interaction = parsed.type === 'discord_component' || parsed.type === 'discord_modal_submit'
+      } catch {
+        // Ordinary user messages are not JSON interaction envelopes.
+      }
+    }
+    if (interaction) {
+      if (visible.at(-1)?.role === 'assistant') visible.pop()
+      continue
+    }
+    visible.push({ role, content: role === 'assistant' ? (webContent ?? content) : content })
+  }
+  return visible
 }
 
 export async function clearWebConversation(
@@ -1796,6 +1835,55 @@ export async function runWebAgent(
 
   await runInSession(request.userId, sessionName, async () => {
     ctx.history = loadConversation(request.userId, sessionName)
-    await runGptStream(callbacks, ctx, token, signal)
+    storeGptContext(token, ctx)
+    try {
+      await runGptStream(callbacks, ctx, token, signal)
+    } finally {
+      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+        deleteGptContext(token)
+      else storeGptContext(token, ctx)
+    }
   })
+}
+
+export interface WebComponentInteractionRequest {
+  userId: string
+  customId: string
+  values?: string[]
+}
+
+export async function runWebComponentInteraction(
+  request: WebComponentInteractionRequest,
+  onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>,
+  signal?: AbortSignal
+): Promise<void> {
+  const match = /^gpt-action:([^:]+):([a-z0-9_-]{1,32})$/.exec(request.customId)
+  if (!match) throw new Error('Invalid component interaction')
+  const token = match[1]!
+  const componentId = match[2]!
+  const ctx = loadGptContext(token)
+  if (!ctx || !hasComponentId(ctx.components, request.customId)) {
+    throw new Error('Component interaction expired')
+  }
+  if (ctx.senderOnlyComponentIds.includes(componentId) && request.userId !== ctx.userId) {
+    throw new Error('Only the user who sent this request can use this component')
+  }
+  if (ctx.modals[componentId]) throw new Error('This component requires a Discord modal')
+
+  await continueGptComponentInteraction(
+    ctx,
+    token,
+    componentId,
+    request.values ?? [],
+    {
+      editMain: async (components) =>
+        onUpdate({
+          content: null,
+          components: components as never,
+          flags: MessageFlags.IsComponentsV2
+        }),
+      editPayload: onUpdate
+    },
+    signal
+  )
 }
