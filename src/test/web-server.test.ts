@@ -20,7 +20,7 @@ import {
   listStoredKeys,
   setStoredValue
 } from '../helpers/kv-store.js'
-import { resetWebAuthForTests } from '../web-auth.js'
+import { createWebSessionForTests, resetWebAuthForTests } from '../web-auth.js'
 
 let server: Server | undefined
 
@@ -284,6 +284,61 @@ describe('web server', () => {
     expect(update.status).toBe(401)
     expect(reset.status).toBe(401)
     expect(getStoredValue('global-system-prompt')).toBeUndefined()
+  })
+
+  it('lets an administrator load, persist, and reset the global system prompt', async () => {
+    const origin = await startServer()
+    const { cookie, csrfToken } = createWebSessionForTests({
+      id: 'web:issuer:admin-subject',
+      subject: 'admin-subject',
+      name: 'Administrator',
+      admin: true,
+      allowed: true
+    })
+    const authenticatedHeaders = { Cookie: cookie }
+    const mutationHeaders = {
+      ...authenticatedHeaders,
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken
+    }
+
+    const initial = await fetch(`${origin}/api/admin/system-prompt`, {
+      headers: authenticatedHeaders
+    })
+    expect(initial.status).toBe(200)
+    expect(await initial.json()).toMatchObject({ isDefault: true, updatedAt: null })
+
+    const missingCsrf = await fetch(`${origin}/api/admin/system-prompt`, {
+      method: 'PUT',
+      headers: { ...authenticatedHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Unprotected replacement' })
+    })
+    expect(missingCsrf.status).toBe(403)
+
+    const update = await fetch(`${origin}/api/admin/system-prompt`, {
+      method: 'PUT',
+      headers: mutationHeaders,
+      body: JSON.stringify({ prompt: 'Answer with the important evidence first.' })
+    })
+    expect(update.status).toBe(200)
+    expect(await update.json()).toMatchObject({
+      prompt: 'Answer with the important evidence first.',
+      isDefault: false,
+      updatedBy: 'web:issuer:admin-subject'
+    })
+    expect(JSON.parse(getStoredValue('global-system-prompt')!)).toMatchObject({
+      prompt: 'Answer with the important evidence first.'
+    })
+
+    const reset = await fetch(`${origin}/api/admin/system-prompt/reset`, {
+      method: 'POST',
+      headers: { ...authenticatedHeaders, 'X-CSRF-Token': csrfToken }
+    })
+    expect(reset.status).toBe(200)
+    expect(await reset.json()).toMatchObject({
+      isDefault: true,
+      updatedBy: 'web:issuer:admin-subject'
+    })
   })
 
   it('generates and reuses a persisted web session secret across restarts', async () => {

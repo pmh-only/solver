@@ -344,3 +344,13 @@ export function resetWebAuthForTests(): void {
   flows.clear()
   sessionSecret = undefined
 }
+
+export function createWebSessionForTests(user: WebUser): {
+  cookie: string
+  csrfToken: string
+} {
+  const token = randomBytes(32).toString('base64url')
+  const csrfToken = randomBytes(24).toString('base64url')
+  sessions.set(token, { user, csrfToken, expiresAt: Date.now() + SESSION_TTL_MS })
+  return { cookie: `${SESSION_COOKIE}=${token}`, csrfToken }
+}
