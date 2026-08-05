@@ -161,6 +161,11 @@ vi.mock('@strands-agents/sdk', () => ({
       this.messages.push(this.message({ role: 'user', content: [{ text: prompt }] }))
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
+      if (streamResult === 'waitInTool') {
+        const wait = this.options.tools?.find((candidate) => candidate.name === 'wait')
+        await wait?.callback?.({ seconds: 600 } as never)
+        return
+      }
       if (streamResult === 'waitForAbort') {
         yield {
           type: 'modelStreamUpdateEvent',
@@ -538,6 +543,7 @@ describe('/a', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({ name: 'shell' }),
+          expect.objectContaining({ name: 'wait' }),
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
@@ -560,6 +566,15 @@ describe('/a', () => {
       { type: 10, content: '**explain recursion**' },
       { type: 14, divider: true, spacing: 1 }
     ])
+  })
+
+  it('provides a bounded wait tool', async () => {
+    await dispatch(agentCommandJSON('wait briefly'), subs)
+    const wait = registeredAgentTools.get('wait') as {
+      callback: (input: { seconds: number }) => Promise<string>
+    }
+
+    await expect(wait.callback({ seconds: 0.1 })).resolves.toBe('Waited 0.1 seconds.')
   })
 
   it('updates reasoning and tool status while the agent is generating', async () => {
@@ -760,7 +775,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -780,7 +795,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
@@ -880,7 +895,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
-    expect(tools).toHaveLength(12)
+    expect(tools).toHaveLength(13)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
@@ -895,6 +910,7 @@ describe('/a', () => {
         systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
         tools: [
           expect.objectContaining({ name: 'shell' }),
+          expect.objectContaining({ name: 'wait' }),
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
@@ -1006,6 +1022,23 @@ describe('/a', () => {
       })
     ])
     expect(JSON.stringify(updates.at(-1))).toContain('cancelled')
+  })
+
+  it('interrupts an active wait when the web request is cancelled', async () => {
+    streamMock.mockReturnValueOnce('waitInTool')
+    const running = runWebAgent(
+      { userId: 'web-user', prompt: 'wait for deployment', runId: 'waiting-run' },
+      async () => undefined
+    )
+    await vi.waitFor(() => expect(streamMock).toHaveBeenCalled())
+
+    await expect(cancelWebAgent('web-user', 'default', 'waiting-run')).resolves.toBe(true)
+    await running
+
+    expect(loadWebConversation('web-user')).toEqual([
+      { role: 'user', content: 'wait for deployment' },
+      expect.objectContaining({ role: 'assistant', status: 'cancelled' })
+    ])
   })
 
   it('cancels a running web request before appending its replacement', async () => {

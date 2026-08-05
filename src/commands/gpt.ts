@@ -28,6 +28,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { errorContainer, matchesInteractiveId, PIN_BUTTON_ID } from '../components.js'
@@ -115,6 +116,26 @@ function shellTool(signal: AbortSignal) {
       formatAgentShellResult(await executeAgentShell(command, timeoutSeconds * 1000, signal))
   })
 }
+
+function waitTool(signal: AbortSignal) {
+  return tool({
+    name: 'wait',
+    description:
+      'Pause this agent run for a bounded duration before continuing. Use when an external operation needs time to progress instead of repeatedly polling. The wait stops if the request is cancelled.',
+    inputSchema: z.object({
+      seconds: z
+        .number()
+        .min(0.1)
+        .max(600)
+        .describe('Number of seconds to wait, from 0.1 through 600')
+    }),
+    callback: async ({ seconds }) => {
+      await delay(seconds * 1000, undefined, { signal })
+      return `Waited ${seconds} second${seconds === 1 ? '' : 's'}.`
+    }
+  })
+}
+
 const publishHtmlTool = tool({
   name: 'publish_html',
   description:
@@ -1429,6 +1450,7 @@ async function runGptStream(
       )
       const localTools = [
         shellTool(controller.signal),
+        waitTool(controller.signal),
         publishHtmlTool,
         spotifyAuthenticationTool,
         googleCalendarAuthenticationTool,

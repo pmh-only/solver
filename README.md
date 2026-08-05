@@ -150,6 +150,7 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Persistent knowledge-graph memory stored at `data/.agent-memory.jsonl`
 - Structured sequential reasoning
 - Current-time lookup and time-zone conversion
+- Cancellable waits from 0.1 seconds through 10 minutes for external operations to make progress
 - Spotify search, library, playlist, and playback control after authentication
 - Received-mail search and reading, plus outgoing mail scheduling, when `MAIL_API_KEY` is configured
 - Google Calendar search, availability, and event management after authentication
