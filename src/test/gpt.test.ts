@@ -6,6 +6,7 @@ import { agentCommand } from '../application-commands.js'
 import {
   GPT_ACTION_COMPONENT_ID,
   GPT_MODAL_ID,
+  cancelWebAgent,
   createWebSession,
   loadWebConversation,
   loadWebSessionState,
@@ -120,6 +121,11 @@ vi.mock('@strands-agents/sdk', () => ({
   },
   Agent: class MockAgent {
     private options: { tools?: { name?: string; callback?: (input: never) => unknown }[] }
+    messages: Array<{
+      role: 'user' | 'assistant'
+      content: Record<string, unknown>[]
+      toJSON: () => { role: 'user' | 'assistant'; content: Record<string, unknown>[] }
+    }>
     toolRegistry: {
       get: (name: string) => Record<string, unknown> | undefined
       remove: (name: string) => void
@@ -129,6 +135,9 @@ vi.mock('@strands-agents/sdk', () => ({
     constructor(options: unknown) {
       agentMock(options)
       this.options = options as typeof this.options
+      const initial = (options as { messages?: Array<{ role: 'user' | 'assistant'; content: [] }> })
+        .messages
+      this.messages = (initial ?? []).map((message) => this.message(message))
       for (const candidate of this.options.tools ?? []) {
         if (candidate.name) registeredAgentTools.set(candidate.name, candidate)
       }
@@ -143,9 +152,33 @@ vi.mock('@strands-agents/sdk', () => ({
       return [...registeredAgentTools.values()]
     }
 
+    private message(data: { role: 'user' | 'assistant'; content: Record<string, unknown>[] }) {
+      const serialized = structuredClone(data)
+      return { ...serialized, toJSON: () => structuredClone(serialized) }
+    }
+
     async *stream(prompt: string, options: unknown) {
+      this.messages.push(this.message({ role: 'user', content: [{ text: prompt }] }))
       const streamResult = streamMock(prompt, options)
       if (streamResult instanceof Error) throw streamResult
+      if (streamResult === 'waitForAbort') {
+        yield {
+          type: 'modelStreamUpdateEvent',
+          event: {
+            type: 'modelContentBlockDeltaEvent',
+            delta: { type: 'reasoningContentDelta', text: 'Working through the request.' }
+          }
+        }
+        const signal = (options as { cancelSignal: AbortSignal }).cancelSignal
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        this.messages.push(
+          this.message({ role: 'assistant', content: [{ text: 'Cancelled by user' }] })
+        )
+        return
+      }
       const componentAction = componentActions.shift()
       const modalAction = modalActions.shift()
       if (modalAction) {
@@ -194,6 +227,33 @@ vi.mock('@strands-agents/sdk', () => ({
         type: 'toolResultEvent',
         result: { toolUseId: 'tool-1', status: 'success', content: [] }
       }
+      this.messages.push(
+        this.message({
+          role: 'assistant',
+          content: [
+            { reasoning: { text: 'I should look this up.' } },
+            {
+              toolUse: {
+                name: 'docker_list',
+                toolUseId: 'tool-1',
+                input: { apiKey: 'secret' }
+              }
+            }
+          ]
+        }),
+        this.message({
+          role: 'user',
+          content: [
+            {
+              toolResult: {
+                toolUseId: 'tool-1',
+                status: 'success',
+                content: [{ text: 'container is running' }]
+              }
+            }
+          ]
+        })
+      )
       yield {
         type: 'modelStreamUpdateEvent',
         event: {
@@ -253,6 +313,7 @@ vi.mock('@strands-agents/sdk', () => ({
             event: { type: 'modelContentBlockDeltaEvent', delta: { type: 'textDelta', text } }
           }
         }
+        this.messages.push(this.message({ role: 'assistant', content: [{ text: response }] }))
       }
       yield {
         type: 'agentResultEvent',
@@ -271,6 +332,32 @@ vi.mock('@strands-agents/sdk', () => ({
 const subs = makeSubcommands()
 const googleCalendarTestDirectory = join(process.cwd(), '.tmp', 'gpt-google-calendar-test')
 const previousKvStorePath = process.env.KV_STORE_PATH
+
+function expectStoredAgentHistory(callIndex: number, prompt: string): void {
+  const options = agentMock.mock.calls.at(callIndex)?.[0] as { messages?: unknown[] }
+  expect(options.messages).toEqual([
+    { role: 'user', content: [{ text: prompt }] },
+    {
+      role: 'assistant',
+      content: [
+        { reasoning: { text: 'I should look this up.' } },
+        expect.objectContaining({ toolUse: expect.objectContaining({ name: 'docker_list' }) })
+      ]
+    },
+    {
+      role: 'user',
+      content: [
+        expect.objectContaining({
+          toolResult: expect.objectContaining({
+            status: 'success',
+            content: [{ text: 'container is running' }]
+          })
+        })
+      ]
+    },
+    { role: 'assistant', content: [{ text: '{"content":"hello world"}' }] }
+  ])
+}
 
 beforeEach(() => {
   process.env.OPENAI_API_KEY = 'test-key'
@@ -889,6 +976,68 @@ describe('/a', () => {
     expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
   })
 
+  it('restores a running web request and preserves its progress when cancelled', async () => {
+    streamMock.mockReturnValueOnce('waitForAbort')
+    const updates: unknown[] = []
+    const running = runWebAgent(
+      { userId: 'web-user', sessionName: 'work', prompt: 'long request', runId: 'run-one' },
+      async (payload) => void updates.push(payload)
+    )
+
+    await vi.waitFor(() => {
+      const active = loadWebConversation('web-user', 'work')
+      expect(active.at(-1)).toMatchObject({
+        role: 'assistant',
+        status: 'running',
+        runId: 'run-one'
+      })
+      expect(active.at(-1)?.content).toContain('Working through the request.')
+    })
+
+    await expect(cancelWebAgent('web-user', 'work', 'run-one')).resolves.toBe(true)
+    await running
+
+    expect(loadWebConversation('web-user', 'work')).toEqual([
+      { role: 'user', content: 'long request' },
+      expect.objectContaining({
+        role: 'assistant',
+        status: 'cancelled',
+        content: expect.stringContaining('Working through the request.')
+      })
+    ])
+    expect(JSON.stringify(updates.at(-1))).toContain('cancelled')
+  })
+
+  it('cancels a running web request before appending its replacement', async () => {
+    streamMock.mockReturnValueOnce('waitForAbort')
+    const first = runWebAgent(
+      { userId: 'web-user', prompt: 'first request', runId: 'first-run' },
+      async () => undefined
+    )
+    await vi.waitFor(() => expect(loadWebConversation('web-user').at(-1)?.status).toBe('running'))
+
+    const second = runWebAgent(
+      { userId: 'web-user', prompt: 'replacement request', runId: 'second-run' },
+      async () => undefined
+    )
+    await Promise.all([first, second])
+
+    expect(loadWebConversation('web-user')).toEqual([
+      { role: 'user', content: 'first request' },
+      expect.objectContaining({ role: 'assistant', status: 'cancelled' }),
+      { role: 'user', content: 'replacement request' },
+      expect.objectContaining({
+        role: 'assistant',
+        content: expect.stringContaining('hello world')
+      })
+    ])
+    const replacementOptions = agentMock.mock.calls.at(-1)?.[0] as { messages: unknown[] }
+    expect(replacementOptions.messages).toEqual([
+      { role: 'user', content: [{ text: 'first request' }] },
+      { role: 'assistant', content: [{ text: 'Cancelled by user' }] }
+    ])
+  })
+
   it('shares session discovery between Discord and the web UI', async () => {
     await dispatch(agentCommandJSON('from Discord', {}, 'discord session'), subs)
     createWebSession('666666666666666666', 'web session')
@@ -941,17 +1090,38 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('first question'), subs)
     await dispatch(agentCommandJSON('second question'), subs)
 
+    expectStoredAgentHistory(-1, 'first question')
+  })
+
+  it('loads legacy text history and upgrades it after the next response', async () => {
+    setStoredValue(
+      'gpt-session:web-user:default',
+      JSON.stringify([
+        { role: 'user', content: 'legacy question' },
+        { role: 'assistant', content: '{"content":"legacy answer"}' }
+      ])
+    )
+
+    await runWebAgent({ userId: 'web-user', prompt: 'continue' }, async () => undefined)
+
     expect(agentMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         messages: [
-          expect.objectContaining({ role: 'user', content: [{ text: 'first question' }] }),
-          expect.objectContaining({
-            role: 'assistant',
-            content: [{ text: '{"content":"hello world"}' }]
-          })
+          { role: 'user', content: [{ text: 'legacy question' }] },
+          { role: 'assistant', content: [{ text: '{"content":"legacy answer"}' }] }
         ]
       })
     )
+    const upgraded = JSON.parse(getStoredValue('gpt-session:web-user:default')!) as {
+      version: number
+      turns: unknown[]
+    }
+    expect(upgraded.version).toBe(2)
+    expect(upgraded.turns.slice(0, 3)).toEqual([
+      { role: 'user', content: 'legacy question' },
+      { role: 'assistant', content: '{"content":"legacy answer"}' },
+      { role: 'user', content: 'continue' }
+    ])
   })
 
   it('clears the selected session history without invoking the agent', async () => {
@@ -1591,17 +1761,7 @@ describe('/a', () => {
 
     expect(JSON.stringify(switched)).toContain('hello world')
     expect(JSON.stringify(continued)).toContain('hello world')
-    expect(agentMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        messages: [
-          expect.objectContaining({ role: 'user', content: [{ text: 'work question' }] }),
-          expect.objectContaining({
-            role: 'assistant',
-            content: [{ text: '{"content":"hello world"}' }]
-          })
-        ]
-      })
-    )
+    expectStoredAgentHistory(-1, 'work question')
   })
 
   it('serializes overlapping requests in the same session', async () => {
@@ -1610,21 +1770,7 @@ describe('/a', () => {
       dispatch(agentCommandJSON('second concurrent question'), subs)
     ])
 
-    expect(agentMock).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        messages: [
-          expect.objectContaining({
-            role: 'user',
-            content: [{ text: 'first concurrent question' }]
-          }),
-          expect.objectContaining({
-            role: 'assistant',
-            content: [{ text: '{"content":"hello world"}' }]
-          })
-        ]
-      })
-    )
+    expectStoredAgentHistory(1, 'first concurrent question')
   })
 
   it('does not inject session metadata into agent-owned output', async () => {
@@ -1641,7 +1787,13 @@ describe('/a', () => {
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     const edit = getEdit(calls) as { components?: unknown } | null
     expect(edit).not.toBeNull()
-    expect(getStoredValue('gpt-session:666666666666666666:default')).toBe('[]')
+    expect(JSON.parse(getStoredValue('gpt-session:666666666666666666:default')!)).toMatchObject({
+      version: 2,
+      messages: [
+        { role: 'user', content: [{ text: 'what is 2+2' }] },
+        { role: 'assistant', content: [{ text: 'no OPENAI_API_KEY' }] }
+      ]
+    })
   })
 
   it('is no longer exposed through /c autocomplete', async () => {

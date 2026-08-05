@@ -72,7 +72,11 @@ describe('web server', () => {
     expect(html).toContain('id="max-tokens"')
     expect(script).toContain("api('/models')")
     expect(script).toContain("api('/api/chat/sessions'")
-    expect(script).toContain('sessionName:state.sessionName')
+    expect(script).toContain('sessionName:name')
+    expect(html).toContain('id="cancel-run"')
+    expect(script).toContain("api('/api/chat/cancel'")
+    expect(script).toContain('state.runs.has(name))await cancelRun(name,true)')
+    expect(script).toContain("function controlsDisabled(disabled){['#model-select'")
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
     expect(script).toContain("api('/api/admin/system-prompt')")
@@ -232,6 +236,12 @@ describe('web server', () => {
       body: JSON.stringify({ customId: 'gpt-action:token:button' })
     })
     expect(unauthorizedInteraction.status).toBe(401)
+    const unauthorizedCancel = await fetch(`${origin}/api/chat/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionName: 'default' })
+    })
+    expect(unauthorizedCancel.status).toBe(401)
 
     const session = await fetch(`${origin}/api/session`)
     expect(await session.json()).toMatchObject({ oidcSetupRequired: true, oidcEnabled: false })
@@ -339,6 +349,14 @@ describe('web server', () => {
       body: JSON.stringify({ prompt: 'Unprotected replacement' })
     })
     expect(missingCsrf.status).toBe(403)
+
+    const idleCancel = await fetch(`${origin}/api/chat/cancel`, {
+      method: 'POST',
+      headers: mutationHeaders,
+      body: JSON.stringify({ sessionName: 'default' })
+    })
+    expect(idleCancel.status).toBe(200)
+    expect(await idleCancel.json()).toEqual({ cancelled: false })
 
     const update = await fetch(`${origin}/api/admin/system-prompt`, {
       method: 'PUT',

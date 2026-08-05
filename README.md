@@ -10,6 +10,12 @@ conversation storage, and session serialization as Discord. Use the same Discord
 render text, common Markdown, embeds, link buttons, reasoning/tool status, errors, and the supported
 Discord interactions described below.
 
+Web requests continue running when the user switches sessions. Returning to a session restores its
+latest reasoning and tool status. **Cancel** stops the selected session's request while preserving
+the request and progress already produced; submitting another message during a run cancels and
+records the current run before appending the replacement. Conversation persistence includes the
+agent's structured tool calls and tool results so follow-up requests retain that context.
+
 ### Web Discord Component Compatibility
 
 Web interactions use the same namespaced `custom_id`, persisted context, session serialization, and

@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import {
@@ -7,6 +8,7 @@ import {
   runWebInteraction,
   loadWebConversation,
   clearWebConversation,
+  cancelWebAgent,
   createWebSession,
   loadWebSessionState
 } from './commands/gpt.js'
@@ -282,6 +284,21 @@ async function handleApiRequest(
     sendJson(response, 200, { ok: true })
     return true
   }
+  if (url.pathname === '/api/chat/cancel' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    const body = (await readJson(request)) as { sessionName?: unknown; runId?: unknown }
+    const sessionName = typeof body.sessionName === 'string' ? body.sessionName : 'default'
+    const runId = typeof body.runId === 'string' ? body.runId : undefined
+    sendJson(response, 200, {
+      cancelled: await cancelWebAgent(session.user.id, sessionName, runId)
+    })
+    return true
+  }
   if (url.pathname === '/api/chat/interaction' && method === 'POST') {
     const session = mutationAllowed(request, response)
     if (!session) return true
@@ -338,6 +355,7 @@ async function handleApiRequest(
       return true
     }
     const body = (await readJson(request)) as Record<string, unknown>
+    const runId = randomUUID()
     response.writeHead(200, {
       ...securityHeaders(),
       'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -347,10 +365,6 @@ async function handleApiRequest(
     const write = (value: unknown) => {
       if (!response.destroyed) response.write(`${JSON.stringify(value)}\n`)
     }
-    const controller = new AbortController()
-    response.once('close', () => {
-      if (!response.writableEnded) controller.abort()
-    })
     try {
       await runWebAgent(
         {
@@ -359,13 +373,14 @@ async function handleApiRequest(
           sessionName: typeof body.sessionName === 'string' ? body.sessionName : undefined,
           model: typeof body.model === 'string' ? body.model : undefined,
           effort: typeof body.effort === 'string' ? body.effort : undefined,
-          maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined
+          maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
+          runId
         },
-        async (payload) => write({ payload }),
-        controller.signal
+        async (payload) => write({ runId, payload })
       )
+      write({ runId, done: true })
     } catch (error) {
-      write({ error: safeError(error) })
+      write({ runId, error: safeError(error) })
     } finally {
       response.end()
     }

@@ -193,6 +193,7 @@ interface GptContext {
   userId: string
   sessionName: string
   history: ConversationTurn[]
+  modelHistory: MessageData[]
   components: GptManagedComponent[]
   senderOnlyComponentIds: string[]
   modals: Record<string, GptManagedComponent>
@@ -205,6 +206,13 @@ interface ConversationTurn {
   role: 'user' | 'assistant'
   content: string
   webContent?: string
+  status?: 'complete' | 'cancelled'
+}
+
+interface StoredConversation {
+  version: 2
+  turns: ConversationTurn[]
+  messages: MessageData[]
 }
 
 interface AgentActivity {
@@ -229,6 +237,21 @@ const DEFAULT_SESSION_NAME = 'default'
 const activeStreams = new Map<string, AbortController>()
 const sessionQueues = new Map<string, Promise<void>>()
 const activeWebInteractions = new Set<string>()
+
+interface ActiveWebRun {
+  id: string
+  userId: string
+  sessionName: string
+  prompt: string
+  startedAt: string
+  controller: AbortController
+  latestPayload: InteractionEditReplyOptions
+  persisted: boolean
+  done: Promise<void>
+  finish: () => void
+}
+
+const activeWebRuns = new Map<string, ActiveWebRun>()
 
 function isMcpConnectionClosed(error: unknown): boolean {
   let current = error
@@ -425,7 +448,10 @@ type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<Butto
 type GptComponent = ContainerBuilder | AnyRow | GptManagedComponent
 
 function storeGptContext(token: string, ctx: GptContext) {
-  setStoredValue(`${GPT_CONTEXT_KEY}:${token}`, JSON.stringify({ ...ctx, history: [] }))
+  setStoredValue(
+    `${GPT_CONTEXT_KEY}:${token}`,
+    JSON.stringify({ ...ctx, history: [], modelHistory: [] })
+  )
 }
 
 function deleteGptContext(token: string): void {
@@ -478,6 +504,7 @@ function loadGptContext(token: string): GptContext | null {
     ) {
       throw new Error('Invalid sender-only component ids.')
     }
+    if (!Array.isArray(parsed.modelHistory)) parsed.modelHistory = []
     if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
       parsed.modals = {}
     }
@@ -735,49 +762,118 @@ function storeSessionSettings(
   setStoredValue(settingsKey(userId, sessionName), JSON.stringify(settings))
 }
 
-function loadConversation(userId: string, sessionName: string): ConversationTurn[] {
-  const key = sessionKey(userId, sessionName)
-  const stored = getStoredValue(key)
-  if (stored === undefined) {
-    setStoredValue(key, '[]')
-    return []
-  }
-
-  try {
-    const turns = JSON.parse(stored) as ConversationTurn[]
-    if (
-      !Array.isArray(turns) ||
-      !turns.every(
-        (turn) =>
-          (turn.role === 'user' || turn.role === 'assistant') &&
-          typeof turn.content === 'string' &&
-          (turn.webContent === undefined || typeof turn.webContent === 'string')
-      )
-    ) {
-      return []
-    }
-    return turns
-  } catch {
-    return []
-  }
-}
-
-function storeConversation(ctx: GptContext, response: string, webContent?: string): void {
-  setStoredValue(
-    sessionKey(ctx.userId, ctx.sessionName),
-    JSON.stringify([
-      ...ctx.history,
-      { role: 'user', content: ctx.prompt },
-      { role: 'assistant', content: response, ...(webContent ? { webContent } : {}) }
-    ])
+function validConversationTurns(value: unknown): value is ConversationTurn[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (turn) =>
+        turn &&
+        typeof turn === 'object' &&
+        (turn.role === 'user' || turn.role === 'assistant') &&
+        typeof turn.content === 'string' &&
+        (turn.webContent === undefined || typeof turn.webContent === 'string') &&
+        (turn.status === undefined || turn.status === 'complete' || turn.status === 'cancelled')
+    )
   )
 }
 
-function agentMessages(history: ConversationTurn[]): MessageData[] {
+function validModelMessages(value: unknown): value is MessageData[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (message) =>
+        message &&
+        typeof message === 'object' &&
+        (message.role === 'user' || message.role === 'assistant') &&
+        Array.isArray(message.content)
+    )
+  )
+}
+
+function legacyAgentMessages(history: ConversationTurn[]): MessageData[] {
   return history.map((turn) => ({
     role: turn.role,
     content: [{ text: turn.content }]
   }))
+}
+
+function loadConversation(userId: string, sessionName: string): StoredConversation {
+  const key = sessionKey(userId, sessionName)
+  const stored = getStoredValue(key)
+  if (stored === undefined) {
+    setStoredValue(key, '[]')
+    return { version: 2, turns: [], messages: [] }
+  }
+
+  try {
+    const parsed = JSON.parse(stored) as unknown
+    if (validConversationTurns(parsed)) {
+      return { version: 2, turns: parsed, messages: legacyAgentMessages(parsed) }
+    }
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      (parsed as Partial<StoredConversation>).version === 2 &&
+      validConversationTurns((parsed as Partial<StoredConversation>).turns) &&
+      validModelMessages((parsed as Partial<StoredConversation>).messages)
+    ) {
+      return parsed as StoredConversation
+    }
+    return { version: 2, turns: [], messages: [] }
+  } catch {
+    return { version: 2, turns: [], messages: [] }
+  }
+}
+
+function storeConversation(
+  ctx: GptContext,
+  response: string,
+  messages: MessageData[],
+  webContent?: string,
+  status: ConversationTurn['status'] = 'complete'
+): void {
+  setStoredValue(
+    sessionKey(ctx.userId, ctx.sessionName),
+    JSON.stringify({
+      version: 2,
+      turns: [
+        ...ctx.history,
+        { role: 'user', content: ctx.prompt },
+        {
+          role: 'assistant',
+          content: response,
+          ...(webContent ? { webContent } : {}),
+          ...(status !== 'complete' ? { status } : {})
+        }
+      ],
+      messages
+    } satisfies StoredConversation)
+  )
+}
+
+function loadContextConversation(ctx: GptContext): void {
+  const conversation = loadConversation(ctx.userId, ctx.sessionName)
+  ctx.history = conversation.turns
+  ctx.modelHistory = conversation.messages
+}
+
+function ensureTurnMessages(
+  ctx: GptContext,
+  messages: MessageData[],
+  assistantText: string
+): MessageData[] {
+  const appendedMessages = messages.slice(ctx.modelHistory.length)
+  if (!appendedMessages.some(({ role }) => role === 'user')) {
+    return [
+      ...ctx.modelHistory,
+      { role: 'user', content: [{ text: ctx.prompt }] },
+      { role: 'assistant', content: [{ text: assistantText }] }
+    ]
+  }
+  if (messages.at(-1)?.role !== 'assistant') {
+    return [...messages, { role: 'assistant', content: [{ text: assistantText }] }]
+  }
+  return messages
 }
 
 async function runInSession(
@@ -865,6 +961,19 @@ function buildAgentProgressPayload(
     flags: MessageFlags.IsComponentsV2,
     allowedMentions: { parse: [] }
   }
+}
+
+function buildAgentCancelledPayload(
+  ctx: GptContext,
+  activity: AgentActivity
+): InteractionEditReplyOptions {
+  const payload = buildAgentProgressPayload(ctx, activity)
+  const components = payload.components as unknown as GptManagedComponent[]
+  components[components.length - 1] = {
+    type: ComponentType.TextDisplay,
+    content: '-# cancelled'
+  }
+  return payload
 }
 
 function parseJsonObject(input: string): Record<string, unknown> {
@@ -1099,6 +1208,7 @@ function buildGptComponents(
 interface StreamCallbacks {
   editMain: (components: GptComponent[]) => Promise<{ id?: string } | unknown>
   editPayload: (payload: InteractionEditReplyOptions) => Promise<{ id?: string } | unknown>
+  stored?: () => void
 }
 
 function makeCallbacks(
@@ -1134,9 +1244,16 @@ async function runGptStream(
 ): Promise<void> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
-    await callbacks.editPayload(
-      buildAgentPayload(JSON.stringify({ content: 'no OPENAI_API_KEY' }), token, ctx)
+    const response = JSON.stringify({ content: 'no OPENAI_API_KEY' })
+    const payload = buildAgentPayload(response, token, ctx)
+    await callbacks.editPayload(payload)
+    storeConversation(
+      ctx,
+      response,
+      ensureTurnMessages(ctx, ctx.modelHistory, 'no OPENAI_API_KEY'),
+      JSON.stringify(payload)
     )
+    callbacks.stored?.()
     return
   }
 
@@ -1151,6 +1268,8 @@ async function runGptStream(
 
   let responseContent = ''
   let usage: Usage | undefined
+  let modelMessages = ctx.modelHistory
+  let conversationStored = false
   const activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
   const mcpClients: McpClient[] = []
   const managedMcpConnections = new Map<string, ManagedMcpConnection>()
@@ -1328,7 +1447,7 @@ async function runGptStream(
           ])
       agent = new Agent({
         model,
-        messages: agentMessages(ctx.history),
+        messages: ctx.modelHistory,
         systemPrompt: diagnosing
           ? [
               systemInstruction,
@@ -1349,72 +1468,80 @@ async function runGptStream(
       })
       let contentBlockStarted = false
 
-      for await (const event of agent.stream(prompt, { cancelSignal: controller.signal })) {
-        if (controller.signal.aborted) break
+      try {
+        for await (const event of agent.stream(prompt, { cancelSignal: controller.signal })) {
+          if (controller.signal.aborted) break
 
-        let activityChanged = false
-        let forceProgressUpdate = false
+          let activityChanged = false
+          let forceProgressUpdate = false
 
-        if (event.type === 'modelStreamUpdateEvent') {
-          if (event.event.type === 'modelContentBlockDeltaEvent') {
-            if (event.event.delta.type === 'textDelta') {
-              contentBlockStarted = false
-              if (!activity.responseStarted) {
-                activity.responseStarted = true
+          if (event.type === 'modelStreamUpdateEvent') {
+            if (event.event.type === 'modelContentBlockDeltaEvent') {
+              if (event.event.delta.type === 'textDelta') {
+                contentBlockStarted = false
+                if (!activity.responseStarted) {
+                  activity.responseStarted = true
+                  activityChanged = true
+                  forceProgressUpdate = true
+                }
+                responseContent += event.event.delta.text
+              } else if (
+                event.event.delta.type === 'reasoningContentDelta' &&
+                event.event.delta.text
+              ) {
+                if (contentBlockStarted) activity.reasoning = ''
+                contentBlockStarted = false
+                if (!activity.reasoning || activity.responseStarted) forceProgressUpdate = true
+                activity.responseStarted = false
+                activity.reasoning += event.event.delta.text
+                activityChanged = true
+              } else if (
+                event.event.delta.type === 'citationsDelta' &&
+                event.event.delta.citations.length > 0 &&
+                !activity.tools.some(({ id }) => id === 'web_search')
+              ) {
+                activity.tools.push({
+                  id: 'web_search',
+                  name: 'web_search',
+                  status: 'success'
+                })
                 activityChanged = true
                 forceProgressUpdate = true
               }
-              responseContent += event.event.delta.text
-            } else if (
-              event.event.delta.type === 'reasoningContentDelta' &&
-              event.event.delta.text
-            ) {
-              if (contentBlockStarted) activity.reasoning = ''
-              contentBlockStarted = false
-              if (!activity.reasoning || activity.responseStarted) forceProgressUpdate = true
-              activity.responseStarted = false
-              activity.reasoning += event.event.delta.text
-              activityChanged = true
-            } else if (
-              event.event.delta.type === 'citationsDelta' &&
-              event.event.delta.citations.length > 0 &&
-              !activity.tools.some(({ id }) => id === 'web_search')
-            ) {
-              activity.tools.push({
-                id: 'web_search',
-                name: 'web_search',
-                status: 'success'
-              })
+            } else if (event.event.type === 'modelContentBlockStartEvent') {
+              if (event.event.start?.type === 'toolUseStart') {
+                contentBlockStarted = false
+                activity.tools.push({
+                  id: event.event.start.toolUseId,
+                  name: event.event.start.name,
+                  status: 'running'
+                })
+                activityChanged = true
+                forceProgressUpdate = true
+              } else {
+                contentBlockStarted = true
+              }
+            }
+          }
+          if (event.type === 'toolResultEvent') {
+            const usedTool = activity.tools.find(({ id }) => id === event.result.toolUseId)
+            if (usedTool) {
+              usedTool.status = event.result.status
               activityChanged = true
               forceProgressUpdate = true
             }
-          } else if (event.event.type === 'modelContentBlockStartEvent') {
-            if (event.event.start?.type === 'toolUseStart') {
-              contentBlockStarted = false
-              activity.tools.push({
-                id: event.event.start.toolUseId,
-                name: event.event.start.name,
-                status: 'running'
-              })
-              activityChanged = true
-              forceProgressUpdate = true
-            } else {
-              contentBlockStarted = true
-            }
           }
-        }
-        if (event.type === 'toolResultEvent') {
-          const usedTool = activity.tools.find(({ id }) => id === event.result.toolUseId)
-          if (usedTool) {
-            usedTool.status = event.result.status
-            activityChanged = true
-            forceProgressUpdate = true
+          if (event.type === 'agentResultEvent') {
+            usage = event.result.metrics?.latestAgentInvocation?.usage
           }
+          if (activityChanged) await updateProgress(forceProgressUpdate)
         }
-        if (event.type === 'agentResultEvent') {
-          usage = event.result.metrics?.latestAgentInvocation?.usage
+      } finally {
+        modelMessages = agent.messages.map((message) => message.toJSON())
+        if (diagnosing) {
+          const userMessage = modelMessages[ctx.modelHistory.length]
+          if (userMessage?.role === 'user') userMessage.content = [{ text: ctx.prompt }]
         }
-        if (activityChanged) await updateProgress(forceProgressUpdate)
       }
     }
 
@@ -1462,7 +1589,9 @@ async function runGptStream(
       const response = responseContent || JSON.stringify({ content: '(no response)' })
       const payload = buildAgentPayload(response, token, ctx, usage, activity)
       await callbacks.editPayload(payload)
-      storeConversation(ctx, response, JSON.stringify(payload))
+      storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
+      conversationStored = true
+      callbacks.stored?.()
     }
   } catch (error) {
     if (
@@ -1476,16 +1605,31 @@ async function runGptStream(
     for (const usedTool of activity.tools) {
       if (usedTool.status === 'running') usedTool.status = 'error'
     }
-    await callbacks.editPayload(
-      buildAgentPayload(
-        JSON.stringify({ content: `error: ${errMsg}` }),
-        token,
-        ctx,
-        usage,
-        activity
-      )
+    const response = JSON.stringify({ content: `error: ${errMsg}` })
+    const payload = buildAgentPayload(response, token, ctx, usage, activity)
+    await callbacks.editPayload(payload)
+    storeConversation(
+      ctx,
+      response,
+      ensureTurnMessages(ctx, modelMessages, `error: ${errMsg}`),
+      JSON.stringify(payload)
     )
+    conversationStored = true
+    callbacks.stored?.()
   } finally {
+    if (controller.signal.aborted && !conversationStored) {
+      modelMessages = ensureTurnMessages(ctx, modelMessages, 'Cancelled by user')
+      const payload = buildAgentCancelledPayload(ctx, activity)
+      storeConversation(
+        ctx,
+        JSON.stringify({ content: 'Cancelled by user' }),
+        modelMessages,
+        JSON.stringify(payload),
+        'cancelled'
+      )
+      callbacks.stored?.()
+      await callbacks.editPayload(payload).catch(() => {})
+    }
     externalSignal?.removeEventListener('abort', abort)
     await Promise.all(mcpClients.map((client) => client.disconnect().catch(() => {})))
     activeStreams.delete(token)
@@ -1593,7 +1737,7 @@ async function continueGptComponentInteraction(
   signal?: AbortSignal
 ): Promise<void> {
   await runInSession(ctx.userId, ctx.sessionName, async () => {
-    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+    loadContextConversation(ctx)
     ctx.prompt = JSON.stringify({
       type: 'discord_component',
       custom_id: componentId,
@@ -1721,7 +1865,7 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
 
   await interaction.deferUpdate()
   await runInSession(ctx.userId, ctx.sessionName, async () => {
-    ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+    loadContextConversation(ctx)
     ctx.prompt = JSON.stringify({ type: 'discord_modal_submit', trigger_id: triggerId, fields })
     storeGptContext(token, ctx)
     await runGptStream(makeCallbacks(interaction, ctx.pub), ctx, token)
@@ -1786,6 +1930,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     userId: interaction.user.id,
     sessionName,
     history: [],
+    modelHistory: [],
     components: [],
     senderOnlyComponentIds: [],
     modals: {},
@@ -1798,7 +1943,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   const callbacks = makeCallbacks(interaction, pub)
   await runInSession(interaction.user.id, sessionName, async () => {
-    ctx.history = loadConversation(interaction.user.id, sessionName)
+    loadContextConversation(ctx)
     storeGptContext(token, ctx)
     try {
       await runGptStream(callbacks, ctx, token)
@@ -1817,6 +1962,7 @@ export interface WebAgentRequest {
   model?: string
   effort?: string
   maxTokens?: number
+  runId?: string
 }
 
 export interface WebInteractionField {
@@ -1838,6 +1984,9 @@ export type WebInteractionResult = { modal: GptManagedComponent } | { updated: t
 export interface WebConversationTurn {
   role: 'user' | 'assistant'
   content: string
+  status?: 'running' | 'cancelled'
+  runId?: string
+  startedAt?: string
 }
 
 export interface WebSessionState {
@@ -1875,7 +2024,8 @@ export function loadWebConversation(
   sessionName = DEFAULT_SESSION_NAME
 ): WebConversationTurn[] {
   const visible: WebConversationTurn[] = []
-  for (const { role, content, webContent } of loadConversation(userId, sessionName)) {
+  const name = validateWebSessionName(sessionName)
+  for (const { role, content, webContent, status } of loadConversation(userId, name).turns) {
     let interaction = false
     if (role === 'user') {
       try {
@@ -1889,17 +2039,49 @@ export function loadWebConversation(
       if (visible.at(-1)?.role === 'assistant') visible.pop()
       continue
     }
-    visible.push({ role, content: role === 'assistant' ? (webContent ?? content) : content })
+    visible.push({
+      role,
+      content: role === 'assistant' ? (webContent ?? content) : content,
+      ...(status === 'cancelled' ? { status } : {})
+    })
+  }
+  const active = activeWebRuns.get(sessionKey(userId, name))
+  if (active && !active.persisted) {
+    visible.push(
+      { role: 'user', content: active.prompt, status: 'running', runId: active.id },
+      {
+        role: 'assistant',
+        content: JSON.stringify(active.latestPayload),
+        status: 'running',
+        runId: active.id,
+        startedAt: active.startedAt
+      }
+    )
   }
   return visible
+}
+
+export async function cancelWebAgent(
+  userId: string,
+  sessionName = DEFAULT_SESSION_NAME,
+  runId?: string
+): Promise<boolean> {
+  const name = validateWebSessionName(sessionName)
+  const active = activeWebRuns.get(sessionKey(userId, name))
+  if (!active || (runId && active.id !== runId)) return false
+  active.controller.abort()
+  await active.done
+  return true
 }
 
 export async function clearWebConversation(
   userId: string,
   sessionName = DEFAULT_SESSION_NAME
 ): Promise<void> {
-  await runInSession(userId, sessionName, async () => {
-    setStoredValue(sessionKey(userId, sessionName), '[]')
+  const name = validateWebSessionName(sessionName)
+  await cancelWebAgent(userId, name)
+  await runInSession(userId, name, async () => {
+    setStoredValue(sessionKey(userId, name), '[]')
   })
 }
 
@@ -1913,6 +2095,8 @@ export async function runWebAgent(
     throw new Error('Prompt must contain 1 to 32,000 characters')
   const sessionName = request.sessionName?.trim() || DEFAULT_SESSION_NAME
   if (sessionName.length > 100) throw new Error('Session name must not exceed 100 characters')
+  const runId = request.runId ?? randomUUID()
+  if (!/^[a-zA-Z0-9-]{1,64}$/.test(runId)) throw new Error('Invalid run identifier')
 
   const storedSettings = loadSessionSettings(request.userId, sessionName)
   const effort = request.effort ?? storedSettings.effort
@@ -1943,32 +2127,69 @@ export async function runWebAgent(
     userId: request.userId,
     sessionName,
     history: [],
+    modelHistory: [],
     components: [],
     senderOnlyComponentIds: [],
     modals: {},
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
+  const key = sessionKey(request.userId, sessionName)
+  activeWebRuns.get(key)?.controller.abort()
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  let finish!: () => void
+  const done = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  const active: ActiveWebRun = {
+    id: runId,
+    userId: request.userId,
+    sessionName,
+    prompt,
+    startedAt: new Date().toISOString(),
+    controller,
+    latestPayload: buildAgentProgressPayload(ctx),
+    persisted: false,
+    done,
+    finish
+  }
+  activeWebRuns.set(key, active)
+  const update = async (payload: InteractionEditReplyOptions): Promise<void> => {
+    active.latestPayload = payload
+    await onUpdate(payload)
+  }
   const callbacks: StreamCallbacks = {
     editMain: async (components) =>
-      onUpdate({
+      update({
         content: null,
         components: components as never,
         flags: MessageFlags.IsComponentsV2
       }),
-    editPayload: onUpdate
+    editPayload: update,
+    stored: () => {
+      active.persisted = true
+    }
   }
 
-  await runInSession(request.userId, sessionName, async () => {
-    ctx.history = loadConversation(request.userId, sessionName)
-    storeGptContext(token, ctx)
-    try {
-      await runGptStream(callbacks, ctx, token, signal)
-    } finally {
-      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
-        deleteGptContext(token)
-      else storeGptContext(token, ctx)
-    }
-  })
+  try {
+    await runInSession(request.userId, sessionName, async () => {
+      loadContextConversation(ctx)
+      storeGptContext(token, ctx)
+      try {
+        await runGptStream(callbacks, ctx, token, controller.signal)
+      } finally {
+        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+          deleteGptContext(token)
+        else storeGptContext(token, ctx)
+      }
+    })
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    if (activeWebRuns.get(key) === active) activeWebRuns.delete(key)
+    active.finish()
+  }
 }
 
 function webCallbacks(
@@ -2207,7 +2428,7 @@ export async function runWebInteraction(
         if (!latest || !latestComponent) webInteractionError('Interaction expired')
         ctx = latest
         validateWebComponentValues(latestComponent, values)
-        ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+        loadContextConversation(ctx)
         ctx.prompt = JSON.stringify({
           type: 'discord_component',
           custom_id: parsed.stableId,
@@ -2233,7 +2454,7 @@ export async function runWebInteraction(
       }
       ctx = latest
       normalizeWebModalFields(latestModal, request.fields)
-      ctx.history = loadConversation(ctx.userId, ctx.sessionName)
+      loadContextConversation(ctx)
       ctx.prompt = JSON.stringify({
         type: 'discord_modal_submit',
         trigger_id: parsed.stableId,
