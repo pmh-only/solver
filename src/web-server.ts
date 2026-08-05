@@ -122,16 +122,6 @@ function mutationAllowed(request: IncomingMessage, response: ServerResponse) {
   return session
 }
 
-function administrator(request: IncomingMessage, response: ServerResponse, mutation = false) {
-  const session = mutation ? mutationAllowed(request, response) : authenticated(request, response)
-  if (!session) return null
-  if (!session.user.admin) {
-    sendJson(response, 403, { error: 'Administrator access required' })
-    return null
-  }
-  return session
-}
-
 function safeError(error: unknown): string {
   if (!(error instanceof Error)) return 'Request failed'
   if (error.name === 'ZodError' || error instanceof SyntaxError) return 'Invalid request data'
@@ -190,10 +180,6 @@ async function handleApiRequest(
     if (hasStoredValue('web-oidc-settings')) {
       const session = authenticated(request, response)
       if (!session) return true
-      if (!session.user.admin) {
-        sendJson(response, 403, { error: 'Administrator access required' })
-        return true
-      }
     }
     sendJson(response, 200, publicOidcSettings())
     return true
@@ -208,42 +194,31 @@ async function handleApiRequest(
     } else {
       const session = mutationAllowed(request, response)
       if (!session) return true
-      if (!session.user.admin) {
-        sendJson(response, 403, { error: 'Administrator access required' })
-        return true
-      }
     }
     const body = await readJson(request)
     if (initialSetup && hasStoredValue('web-oidc-settings')) {
       sendJson(response, 409, { error: 'OIDC setup was completed by another request' })
       return true
     }
-    if (initialSetup) {
-      const candidate = body as Record<string, unknown>
-      if (candidate.enabled !== true) throw new Error('Initial OIDC setup must enable login')
-      if (
-        typeof candidate.adminSubjects !== 'string' ||
-        (!candidate.adminSubjects.trim() && !process.env.WEB_ADMIN_OIDC_SUBJECTS?.trim())
-      ) {
-        throw new Error('Initial OIDC setup requires an administrator subject')
-      }
+    if (initialSetup && (body as Record<string, unknown>).enabled !== true) {
+      throw new Error('Initial OIDC setup must enable login')
     }
     sendJson(response, 200, saveOidcSettings(body))
     return true
   }
   if (url.pathname === '/api/admin/system-prompt' && method === 'GET') {
-    if (!administrator(request, response)) return true
+    if (!authenticated(request, response)) return true
     sendJson(response, 200, loadSystemPromptSetting())
     return true
   }
   if (url.pathname === '/api/admin/system-prompt' && method === 'PUT') {
-    const session = administrator(request, response, true)
+    const session = mutationAllowed(request, response)
     if (!session) return true
     sendJson(response, 200, updateSystemPrompt(await readJson(request), session.user.id))
     return true
   }
   if (url.pathname === '/api/admin/system-prompt/reset' && method === 'POST') {
-    const session = administrator(request, response, true)
+    const session = mutationAllowed(request, response)
     if (!session) return true
     sendJson(response, 200, resetSystemPrompt(session.user.id))
     return true

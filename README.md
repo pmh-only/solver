@@ -65,8 +65,8 @@ authentication:
   share that database. An explicit value always takes priority. Keep it unchanged after saving OIDC
   settings. Existing deployments that already set this value remain compatible and should leave the
   same override configured; changing or removing it makes the saved OIDC configuration unreadable.
-- `WEB_ADMIN_OIDC_SUBJECTS`: comma- or whitespace-separated OIDC `sub` claims allowed to open the
-  settings page. Ordinary authenticated users can chat but cannot read or change settings.
+- `WEB_ADMIN_OIDC_SUBJECTS`: optional compatibility list of comma- or whitespace-separated OIDC
+  `sub` claims that also receive chat access. Every authenticated Web user can manage settings.
 - `WEB_SECURE_COOKIES`: defaults to secure cookies. Set it to `false` only for local HTTP testing.
 - `WEB_TRUST_PROXY`: set to `true` when a trusted reverse proxy overwrites `X-Forwarded-For`, so
   authentication rate limits apply per client rather than to the proxy itself.
@@ -75,7 +75,7 @@ Open `/`. If OIDC has not been configured, the **OIDC settings** screen opens im
 initial secret or unlock step. Enter the issuer URL, client ID, client secret, exact redirect URI
 ending in `/auth/callback`, scopes
 (including `openid`), automatic-login preference, and optional post-logout redirect URI. Add the
-exact OIDC `sub` claims authorized for chat and administration. Because `/a` has privileged shell,
+exact OIDC `sub` claims authorized for chat. Because `/a` has privileged shell,
 filesystem, Docker, and integration tools, authenticated identities are denied chat access unless
 explicitly listed; `*` is supported only when every account in the provider is fully trusted.
 Register the same redirect and post-logout URIs with the provider, then save with OIDC enabled. The
@@ -84,10 +84,9 @@ secret is AES-256-GCM encrypted and is never returned by the settings API. Leavi
 blank preserves the existing value. Persist `data/kv.sqlite` and use one shared database file when
 running multiple instances.
 The first successful save permanently closes unauthenticated setup access; later settings access
-requires an OIDC subject listed as an administrator and CSRF validation. Because any network client
+requires an authenticated OIDC session and CSRF validation. Because any network client
 can claim an unconfigured instance, keep a new deployment private or network-restricted until this
-first save completes. Initial setup requires OIDC login to be enabled and at least one administrator
-subject in the form or `WEB_ADMIN_OIDC_SUBJECTS` so the configuration remains manageable.
+first save completes. Initial setup requires OIDC login to be enabled.
 
 OIDC uses discovery, Authorization Code with PKCE, browser-bound state, nonce, HttpOnly SameSite
 cookies, CSRF tokens on mutations, subject allowlisting, request limits, and login/chat rate limits.
@@ -97,7 +96,7 @@ sticky routing; restarting the process signs web users out without deleting conv
 
 ### Global System Prompt
 
-An authenticated web administrator can open **System prompt** from the chat screen to view and
+Any authenticated web user can open **System prompt** from the chat screen to view and
 replace the global base system prompt or reset it to the built-in default. The setting applies to
 every future Discord and web agent request, including requests in existing conversation sessions;
 saved conversation history is unchanged. Solver appends its response-protocol, tool-recovery, and

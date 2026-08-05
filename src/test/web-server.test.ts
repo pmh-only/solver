@@ -76,6 +76,7 @@ describe('web server', () => {
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
     expect(script).toContain("api('/api/admin/system-prompt')")
+    expect(script).toContain("$('#admin-prompt').hidden=!yes")
     expect(html).toContain('id="interaction-modal"')
     expect(script).toContain('const componentRenderers=')
     expect(script).toContain('3:c=>stringSelect(c)')
@@ -210,6 +211,18 @@ describe('web server', () => {
 
   it('protects chat and exposes OIDC setup only until the first successful save', async () => {
     const origin = await startServer()
+    const oidcSettings = {
+      enabled: true,
+      issuerUrl: 'https://identity.example.com',
+      clientId: 'solver',
+      clientSecret: 'confidential-test-value',
+      redirectUri: 'https://solver.example.com/auth/callback',
+      scopes: 'openid profile email',
+      allowedSubjects: 'trusted-user',
+      adminSubjects: 'trusted-admin',
+      automaticLogin: false,
+      postLogoutRedirectUri: 'https://solver.example.com/'
+    }
 
     const unauthorized = await fetch(`${origin}/api/chat/history`)
     expect(unauthorized.status).toBe(401)
@@ -232,18 +245,7 @@ describe('web server', () => {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        enabled: true,
-        issuerUrl: 'https://identity.example.com',
-        clientId: 'solver',
-        clientSecret: 'confidential-test-value',
-        redirectUri: 'https://solver.example.com/auth/callback',
-        scopes: 'openid profile email',
-        allowedSubjects: 'trusted-user',
-        adminSubjects: 'trusted-admin',
-        automaticLogin: false,
-        postLogoutRedirectUri: 'https://solver.example.com/'
-      })
+      body: JSON.stringify(oidcSettings)
     })
     const savedBody = (await saved.json()) as Record<string, unknown>
     expect(saved.status).toBe(200)
@@ -266,9 +268,32 @@ describe('web server', () => {
       body: '{}'
     })
     expect(secondSave.status).toBe(401)
+
+    const { cookie, csrfToken } = createWebSessionForTests({
+      id: 'web:issuer:authenticated-subject',
+      subject: 'authenticated-subject',
+      name: 'Authenticated user',
+      admin: false,
+      allowed: false
+    })
+    const authenticatedLoad = await fetch(`${origin}/api/admin/oidc`, {
+      headers: { Cookie: cookie }
+    })
+    const authenticatedSave = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: {
+        Cookie: cookie,
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken
+      },
+      body: JSON.stringify({ ...oidcSettings, clientSecret: '' })
+    })
+
+    expect(authenticatedLoad.status).toBe(200)
+    expect(authenticatedSave.status).toBe(200)
   })
 
-  it('never exposes global system prompt management without an administrator session', async () => {
+  it('never exposes global system prompt management without an authenticated session', async () => {
     const origin = await startServer()
     const options = {
       method: 'PUT',
@@ -286,13 +311,13 @@ describe('web server', () => {
     expect(getStoredValue('global-system-prompt')).toBeUndefined()
   })
 
-  it('lets an administrator load, persist, and reset the global system prompt', async () => {
+  it('lets any authenticated user load, persist, and reset the global system prompt', async () => {
     const origin = await startServer()
     const { cookie, csrfToken } = createWebSessionForTests({
-      id: 'web:issuer:admin-subject',
-      subject: 'admin-subject',
-      name: 'Administrator',
-      admin: true,
+      id: 'web:issuer:authenticated-subject',
+      subject: 'authenticated-subject',
+      name: 'Authenticated user',
+      admin: false,
       allowed: true
     })
     const authenticatedHeaders = { Cookie: cookie }
@@ -324,7 +349,7 @@ describe('web server', () => {
     expect(await update.json()).toMatchObject({
       prompt: 'Answer with the important evidence first.',
       isDefault: false,
-      updatedBy: 'web:issuer:admin-subject'
+      updatedBy: 'web:issuer:authenticated-subject'
     })
     expect(JSON.parse(getStoredValue('global-system-prompt')!)).toMatchObject({
       prompt: 'Answer with the important evidence first.'
@@ -337,7 +362,7 @@ describe('web server', () => {
     expect(reset.status).toBe(200)
     expect(await reset.json()).toMatchObject({
       isDefault: true,
-      updatedBy: 'web:issuer:admin-subject'
+      updatedBy: 'web:issuer:authenticated-subject'
     })
   })
 
@@ -414,7 +439,7 @@ describe('web server', () => {
     )
   })
 
-  it('requires enabled OIDC and an administrator for initial setup', async () => {
+  it('requires enabled OIDC for initial setup without requiring an administrator', async () => {
     const origin = await startServer()
     const settings = {
       enabled: false,
@@ -442,13 +467,10 @@ describe('web server', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...settings, enabled: true })
     })
-    expect(noAdministrator.status).toBe(400)
-    expect(await noAdministrator.json()).toEqual({
-      error: 'Initial OIDC setup requires an administrator subject'
-    })
+    expect(noAdministrator.status).toBe(200)
 
     expect(await (await fetch(`${origin}/api/session`)).json()).toMatchObject({
-      oidcSetupRequired: true
+      oidcSetupRequired: false
     })
   })
 
