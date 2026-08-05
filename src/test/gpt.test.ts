@@ -43,6 +43,7 @@ const {
   mcpActions,
   mcpActionResults,
   mcpClientMock,
+  mcpToolFailures,
   mcpToolGroups,
   mcpToolNumber,
   modelMock,
@@ -64,6 +65,7 @@ const {
     mcpActions: [] as Record<string, unknown>[],
     mcpActionResults: [] as unknown[],
     mcpClientMock: vi.fn(),
+    mcpToolFailures: [] as boolean[],
     mcpToolGroups: [] as Record<string, unknown>[][],
     mcpToolNumber: { value: 0 },
     modelMock: vi.fn(),
@@ -116,7 +118,13 @@ vi.mock('@strands-agents/sdk', () => ({
       const tools = mcpToolGroups.shift() ?? [
         { name: `mcp_tool_${mcpToolNumber.value++}`, description: 'MCP tool' }
       ]
-      this.listTools = vi.fn().mockResolvedValue(tools)
+      this.listTools = vi
+        .fn()
+        .mockImplementation(() =>
+          mcpToolFailures.shift()
+            ? Promise.reject(new Error('MCP authentication failed'))
+            : Promise.resolve(tools)
+        )
     }
   },
   Agent: class MockAgent {
@@ -370,6 +378,7 @@ beforeEach(() => {
   modalActions.length = 0
   mcpActions.length = 0
   mcpActionResults.length = 0
+  mcpToolFailures.length = 0
   registeredAgentTools.clear()
   responsePayloads.length = 0
   mcpToolGroups.length = 0
@@ -799,6 +808,22 @@ describe('/a', () => {
       })
     )
     expect(disconnectMock).toHaveBeenCalledTimes(8)
+  })
+
+  it('keeps the agent available when Mail MCP authentication fails', async () => {
+    process.env.MAIL_API_KEY = 'invalid-key'
+    mcpToolFailures.push(false, false, false, false, false, false, false, true)
+
+    const calls = await dispatch(agentCommandJSON('update my mail API key'), subs)
+
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
+      })
+    )
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('MCP authentication failed')
+    expect(disconnectMock).toHaveBeenCalledTimes(9)
   })
 
   it('gives the agent Google Calendar MCP tools when OAuth is configured', async () => {

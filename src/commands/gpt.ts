@@ -304,8 +304,19 @@ async function loadMcpTools(
   clients: McpClient[],
   onLoaded?: (client: McpClient, tools: Tool[]) => void
 ): Promise<Tool[]> {
-  const toolsByClient = await Promise.all(clients.map((client) => client.listTools()))
-  clients.forEach((client, index) => onLoaded?.(client, toolsByClient[index]!))
+  const toolsByClient = await Promise.all(
+    clients.map(async (client) => {
+      try {
+        const tools = await client.listTools()
+        onLoaded?.(client, tools)
+        return tools
+      } catch {
+        // A bad optional integration must not prevent local tools or other MCPs from loading.
+        await client.disconnect().catch(() => {})
+        return []
+      }
+    })
+  )
   return toolsByClient.flat()
 }
 
