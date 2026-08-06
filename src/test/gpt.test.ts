@@ -882,9 +882,11 @@ describe('/a', () => {
       requestInit: { headers: { Authorization: 'Bearer secret-token' } }
     })
     expect(toolRegistryAddMock).toHaveBeenCalledWith([
-      expect.objectContaining({ name: 'github_search' })
+      expect.objectContaining({ name: 'github_github_search' })
     ])
-    expect(mcpActionResults.at(-1)).toBe('Attached MCP server github with 1 tool: github_search.')
+    expect(mcpActionResults.at(-1)).toBe(
+      'Attached MCP server github with 1 tool: github_github_search.'
+    )
 
     resetStoredValueConnection()
     mcpActions.push({ action: 'list' })
@@ -908,19 +910,21 @@ describe('/a', () => {
 
   it('replaces MCP tools whose names differ only by hyphens and underscores', async () => {
     mcpToolGroups.push(
-      [{ name: 'get-current-time', source: 'old' }],
-      [{ name: 'get_current_time', source: 'replacement' }],
-      ...Array.from({ length: 5 }, (_, index) => [{ name: `other_tool_${index}` }])
+      [
+        { name: 'get-current-time', source: 'old' },
+        { name: 'get_current_time', source: 'replacement' }
+      ],
+      ...Array.from({ length: 6 }, (_, index) => [{ name: `other_tool_${index}` }])
     )
 
     await dispatch(agentCommandJSON('what time is it?'), subs)
 
     const tools = (agentMock.mock.calls[0]![0] as { tools: Record<string, unknown>[] }).tools
     expect(tools).toContainEqual(
-      expect.objectContaining({ name: 'get_current_time', source: 'replacement' })
+      expect.objectContaining({ name: 'docker_get_current_time', source: 'replacement' })
     )
-    expect(tools).not.toContainEqual(expect.objectContaining({ name: 'get-current-time' }))
-    expect(tools).toHaveLength(13)
+    expect(tools).not.toContainEqual(expect.objectContaining({ name: 'docker_get-current-time' }))
+    expect(tools).toHaveLength(14)
   })
 
   it('automatically diagnoses a closed MCP connection without MCP tools', async () => {

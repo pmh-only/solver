@@ -21,7 +21,14 @@ import type {
   ModalSubmitInteraction,
   StringSelectMenuInteraction
 } from 'discord.js'
-import { Agent, McpClient, tool, type MessageData, type Tool } from '@strands-agents/sdk'
+import {
+  Agent,
+  McpClient,
+  tool,
+  type MessageData,
+  type Tool,
+  type ToolContext
+} from '@strands-agents/sdk'
 import type { Usage } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -300,14 +307,41 @@ function replaceDuplicateTools<T extends { name: string }>(tools: T[]): T[] {
   return [...toolsByNormalizedName.values()]
 }
 
+const MCP_TOOL_NAME_MAX_LENGTH = 64
+
+function mcpToolName(serverName: string, toolName: string): string {
+  const combined = `${serverName}_${toolName}`
+  return combined.length <= MCP_TOOL_NAME_MAX_LENGTH
+    ? combined
+    : combined.slice(0, MCP_TOOL_NAME_MAX_LENGTH)
+}
+
+// The MCP protocol call must still use each tool's original name, so the prefixed name is
+// only exposed to the model here; the underlying tool keeps handling its own invocation.
+function prefixMcpTools(serverName: string, tools: Tool[]): Tool[] {
+  return tools.map((original) => {
+    const name = mcpToolName(serverName, original.name)
+    return {
+      ...original,
+      name,
+      toolSpec: { ...original.toolSpec, name },
+      stream: (toolContext: ToolContext) => original.stream(toolContext)
+    }
+  })
+}
+
 async function loadMcpTools(
   clients: McpClient[],
+  clientNames: Map<McpClient, string>,
   onLoaded?: (client: McpClient, tools: Tool[]) => void
 ): Promise<Tool[]> {
   const toolsByClient = await Promise.all(
     clients.map(async (client) => {
       try {
-        const tools = await client.listTools()
+        const tools = prefixMcpTools(
+          clientNames.get(client) ?? client.clientName,
+          await client.listTools()
+        )
         onLoaded?.(client, tools)
         return tools
       } catch {
@@ -436,7 +470,7 @@ function mcpServerManagementTool(
       const client = storedMcpClient(server)
       let serverTools: Tool[]
       try {
-        serverTools = replaceDuplicateTools(await client.listTools())
+        serverTools = replaceDuplicateTools(prefixMcpTools(server.name, await client.listTools()))
       } catch (error) {
         await client.disconnect().catch(() => {})
         return `Could not attach MCP server ${name}: ${error instanceof Error ? error.message : String(error)}`
@@ -1304,6 +1338,11 @@ async function runGptStream(
   let conversationStored = false
   const activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
   const mcpClients: McpClient[] = []
+  const mcpClientNames = new Map<McpClient, string>()
+  const registerMcpClient = (name: string, client: McpClient): McpClient => {
+    mcpClientNames.set(client, name)
+    return client
+  }
   const managedMcpConnections = new Map<string, ManagedMcpConnection>()
   let lastProgressUpdate = 0
   let lastProgressPayload = ''
@@ -1349,106 +1388,137 @@ async function runGptStream(
       }
     })
     mcpClients.push(
-      new McpClient({
-        applicationName: 'solver /a Docker',
-        transport: new StdioClientTransport({
-          command: 'uvx',
-          args: ['mcp-server-docker']
+      registerMcpClient(
+        'docker',
+        new McpClient({
+          applicationName: 'solver /a Docker',
+          transport: new StdioClientTransport({
+            command: 'uvx',
+            args: ['mcp-server-docker']
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Filesystem',
-        transport: new StdioClientTransport({
-          command: process.execPath,
-          args: [FILESYSTEM_MCP_PATH, MCP_DATA_DIRECTORY]
+      ),
+      registerMcpClient(
+        'filesystem',
+        new McpClient({
+          applicationName: 'solver /a Filesystem',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [FILESYSTEM_MCP_PATH, MCP_DATA_DIRECTORY]
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Memory',
-        transport: new StdioClientTransport({
-          command: process.execPath,
-          args: [MEMORY_MCP_PATH],
-          env: { MEMORY_FILE_PATH: MCP_MEMORY_PATH }
+      ),
+      registerMcpClient(
+        'memory',
+        new McpClient({
+          applicationName: 'solver /a Memory',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [MEMORY_MCP_PATH],
+            env: { MEMORY_FILE_PATH: MCP_MEMORY_PATH }
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Sequential Thinking',
-        transport: new StdioClientTransport({
-          command: process.execPath,
-          args: [SEQUENTIAL_THINKING_MCP_PATH]
+      ),
+      registerMcpClient(
+        'sequential_thinking',
+        new McpClient({
+          applicationName: 'solver /a Sequential Thinking',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [SEQUENTIAL_THINKING_MCP_PATH]
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Fetch',
-        transport: new StdioClientTransport({
-          command: 'uvx',
-          args: ['--with', 'mcp==1.29.0', 'mcp-server-fetch==2026.7.10']
+      ),
+      registerMcpClient(
+        'fetch',
+        new McpClient({
+          applicationName: 'solver /a Fetch',
+          transport: new StdioClientTransport({
+            command: 'uvx',
+            args: ['--with', 'mcp==1.29.0', 'mcp-server-fetch==2026.7.10']
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Time',
-        transport: new StdioClientTransport({
-          command: 'uvx',
-          args: ['--with', 'mcp==1.29.0', 'mcp-server-time==2026.7.10']
+      ),
+      registerMcpClient(
+        'time',
+        new McpClient({
+          applicationName: 'solver /a Time',
+          transport: new StdioClientTransport({
+            command: 'uvx',
+            args: ['--with', 'mcp==1.29.0', 'mcp-server-time==2026.7.10']
+          })
         })
-      }),
-      new McpClient({
-        applicationName: 'solver /a Playwright',
-        transport: new StdioClientTransport({
-          command: process.execPath,
-          args: [
-            PLAYWRIGHT_MCP_PATH,
-            '--headless',
-            '--isolated',
-            '--no-sandbox',
-            '--image-responses',
-            'omit',
-            '--executable-path',
-            '/usr/bin/chromium'
-          ]
+      ),
+      registerMcpClient(
+        'playwright',
+        new McpClient({
+          applicationName: 'solver /a Playwright',
+          transport: new StdioClientTransport({
+            command: process.execPath,
+            args: [
+              PLAYWRIGHT_MCP_PATH,
+              '--headless',
+              '--isolated',
+              '--no-sandbox',
+              '--image-responses',
+              'omit',
+              '--executable-path',
+              '/usr/bin/chromium'
+            ]
+          })
         })
-      })
+      )
     )
     const spotifyConfiguration = await loadSpotifyConfiguration()
     if (spotifyConfiguration) {
       mcpClients.push(
-        new McpClient({
-          applicationName: 'solver /a',
-          transport: new StdioClientTransport({
-            command: process.execPath,
-            args: [SPOTIFY_MCP_PATH],
-            env: getSpotifyMcpEnvironment(spotifyConfiguration)
+        registerMcpClient(
+          'spotify',
+          new McpClient({
+            applicationName: 'solver /a',
+            transport: new StdioClientTransport({
+              command: process.execPath,
+              args: [SPOTIFY_MCP_PATH],
+              env: getSpotifyMcpEnvironment(spotifyConfiguration)
+            })
           })
-        })
+        )
       )
     }
     const googleCalendarConfiguration = await loadGoogleCalendarConfiguration()
     if (googleCalendarConfiguration) {
       mcpClients.push(
-        new McpClient({
-          applicationName: 'solver /a Google Calendar',
-          transport: new StdioClientTransport({
-            command: process.execPath,
-            args: [GOOGLE_CALENDAR_MCP_PATH],
-            env: getGoogleCalendarMcpEnvironment(googleCalendarConfiguration)
+        registerMcpClient(
+          'google_calendar',
+          new McpClient({
+            applicationName: 'solver /a Google Calendar',
+            transport: new StdioClientTransport({
+              command: process.execPath,
+              args: [GOOGLE_CALENDAR_MCP_PATH],
+              env: getGoogleCalendarMcpEnvironment(googleCalendarConfiguration)
+            })
           })
-        })
+        )
       )
     }
     const mailApiKey = process.env.MAIL_API_KEY?.trim()
     if (mailApiKey) {
       mcpClients.push(
-        new McpClient({
-          applicationName: 'solver /a Mail',
-          transport: new StreamableHTTPClientTransport(new URL(MAIL_MCP_URL), {
-            requestInit: { headers: { Authorization: `Bearer ${mailApiKey}` } }
+        registerMcpClient(
+          'mail',
+          new McpClient({
+            applicationName: 'solver /a Mail',
+            transport: new StreamableHTTPClientTransport(new URL(MAIL_MCP_URL), {
+              requestInit: { headers: { Authorization: `Bearer ${mailApiKey}` } }
+            })
           })
-        })
+        )
       )
     }
     for (const server of loadStoredMcpServers()) {
       const client = storedMcpClient(server)
       mcpClients.push(client)
+      mcpClientNames.set(client, server.name)
       managedMcpConnections.set(server.name, { client, tools: [] })
     }
     const streamAgent = async (prompt: string, diagnosing = false, retryingToolInput = false) => {
@@ -1472,7 +1542,7 @@ async function runGptStream(
         ? localTools
         : replaceDuplicateTools([
             ...localTools,
-            ...(await loadMcpTools(mcpClients, (client, tools) => {
+            ...(await loadMcpTools(mcpClients, mcpClientNames, (client, tools) => {
               for (const connection of managedMcpConnections.values()) {
                 if (connection.client === client) connection.tools = tools
               }
