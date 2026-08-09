@@ -1187,6 +1187,30 @@ describe('/a', () => {
     expectStoredAgentHistory(-1, 'first question')
   })
 
+  it('resets an /a session after one hour without a command', async () => {
+    let now = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    await dispatch(agentCommandJSON('remember this'), subs)
+
+    now += 60 * 60 * 1000
+    await dispatch(agentCommandJSON('new topic'), subs)
+
+    expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
+    expect(getStoredValue('gpt-session-activity:666666666666666666:default')).toBe(String(now))
+  })
+
+  it('resets idle Web UI history after one hour without a command', async () => {
+    let now = 2_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    await runWebAgent({ userId: 'web-user', prompt: 'remember this' }, async () => undefined)
+
+    now += 60 * 60 * 1000
+    expect(loadWebConversation('web-user')).toEqual([])
+    await runWebAgent({ userId: 'web-user', prompt: 'new topic' }, async () => undefined)
+
+    expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
+  })
+
   it('loads legacy text history and upgrades it after the next response', async () => {
     setStoredValue(
       'gpt-session:web-user:default',

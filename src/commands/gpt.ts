@@ -257,11 +257,13 @@ interface GptSessionSettings {
 
 const GPT_CONTEXT_KEY = 'gpt-ctx'
 const GPT_SESSION_KEY = 'gpt-session'
+const GPT_SESSION_ACTIVITY_KEY = 'gpt-session-activity'
 const GPT_SELECTED_SESSION_KEY = 'gpt-session-selected'
 const GPT_SETTINGS_KEY = 'gpt-settings'
 const GPT_SESSIONS_KEY = 'gpt-sessions'
 const GPT_WEB_SESSIONS_KEY = 'gpt-web-sessions'
 const DEFAULT_SESSION_NAME = 'default'
+const GPT_SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000
 const activeStreams = new Map<string, AbortController>()
 const sessionQueues = new Map<string, Promise<void>>()
 const activeWebInteractions = new Set<string>()
@@ -733,6 +735,39 @@ function selectedSessionKey(userId: string): string {
 
 function sessionKey(userId: string, sessionName: string): string {
   return `${GPT_SESSION_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function sessionActivityKey(userId: string, sessionName: string): string {
+  return `${GPT_SESSION_ACTIVITY_KEY}:${userId}:${encodeURIComponent(sessionName)}`
+}
+
+function sessionIsIdle(userId: string, sessionName: string, now: number): boolean {
+  const lastActivity = Number(getStoredValue(sessionActivityKey(userId, sessionName)))
+  return Number.isFinite(lastActivity) && now - lastActivity >= GPT_SESSION_IDLE_TIMEOUT_MS
+}
+
+function beginSessionCommand(userId: string, sessionName: string): void {
+  const now = Date.now()
+  if (sessionIsIdle(userId, sessionName, now)) {
+    setStoredValue(sessionKey(userId, sessionName), '[]')
+  }
+  setStoredValue(sessionActivityKey(userId, sessionName), String(now))
+}
+
+function finishSessionCommand(userId: string, sessionName: string): void {
+  setStoredValue(sessionActivityKey(userId, sessionName), String(Date.now()))
+}
+
+function resetIdleSession(userId: string, sessionName: string): void {
+  const key = sessionKey(userId, sessionName)
+  if (
+    sessionQueues.has(key) ||
+    activeWebRuns.has(key) ||
+    !sessionIsIdle(userId, sessionName, Date.now())
+  ) {
+    return
+  }
+  setStoredValue(key, '[]')
 }
 
 function sessionsKey(userId: string): string {
@@ -2017,20 +2052,25 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   if (prompt === '/clear') {
     await interaction.deferReply()
     await runInSession(interaction.user.id, sessionName, async () => {
-      setStoredValue(sessionKey(interaction.user.id, sessionName), '[]')
-      await interaction.editReply({
-        content: null,
-        components: [
-          { type: ComponentType.TextDisplay, content: '**/clear**' },
-          { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small },
-          {
-            type: ComponentType.TextDisplay,
-            content: `Cleared history for session \`${footerSessionName(sessionName)}\`.`
-          }
-        ] as never,
-        flags: MessageFlags.IsComponentsV2,
-        allowedMentions: { parse: [] }
-      })
+      beginSessionCommand(interaction.user.id, sessionName)
+      try {
+        setStoredValue(sessionKey(interaction.user.id, sessionName), '[]')
+        await interaction.editReply({
+          content: null,
+          components: [
+            { type: ComponentType.TextDisplay, content: '**/clear**' },
+            { type: ComponentType.Separator, divider: true, spacing: SeparatorSpacingSize.Small },
+            {
+              type: ComponentType.TextDisplay,
+              content: `Cleared history for session \`${footerSessionName(sessionName)}\`.`
+            }
+          ] as never,
+          flags: MessageFlags.IsComponentsV2,
+          allowedMentions: { parse: [] }
+        })
+      } finally {
+        finishSessionCommand(interaction.user.id, sessionName)
+      }
     })
     return
   }
@@ -2073,14 +2113,16 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   const callbacks = makeCallbacks(interaction, pub)
   await runInSession(interaction.user.id, sessionName, async () => {
-    loadContextConversation(ctx)
-    storeGptContext(token, ctx)
+    beginSessionCommand(interaction.user.id, sessionName)
     try {
+      loadContextConversation(ctx)
+      storeGptContext(token, ctx)
       await runGptStream(callbacks, ctx, token)
     } finally {
       if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
         deleteGptContext(token)
       else storeGptContext(token, ctx)
+      finishSessionCommand(interaction.user.id, sessionName)
     }
   })
 }
@@ -2155,6 +2197,7 @@ export function loadWebConversation(
 ): WebConversationTurn[] {
   const visible: WebConversationTurn[] = []
   const name = validateWebSessionName(sessionName)
+  resetIdleSession(userId, name)
   for (const { role, content, webContent, status } of loadConversation(userId, name).turns) {
     let interaction = false
     if (role === 'user') {
@@ -2305,14 +2348,16 @@ export async function runWebAgent(
 
   try {
     await runInSession(request.userId, sessionName, async () => {
-      loadContextConversation(ctx)
-      storeGptContext(token, ctx)
+      beginSessionCommand(request.userId, sessionName)
       try {
+        loadContextConversation(ctx)
+        storeGptContext(token, ctx)
         await runGptStream(callbacks, ctx, token, controller.signal)
       } finally {
         if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
           deleteGptContext(token)
         else storeGptContext(token, ctx)
+        finishSessionCommand(request.userId, sessionName)
       }
     })
   } finally {

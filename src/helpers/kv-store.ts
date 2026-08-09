@@ -18,6 +18,7 @@ const INTERNAL_KEY_PREFIXES = [
   'gpt-mcp-servers',
   'gpt-settings:',
   'gpt-session:',
+  'gpt-session-activity:',
   'gpt-session-selected:',
   'gpt-sessions:',
   'gpt-web-sessions:',
