@@ -1604,10 +1604,14 @@ async function runGptStream(
         printer: false
       })
       currentAgent = agent
-      await consumeAgentStream(agent, prompt)
+      await consumeAgentStream(agent, prompt, diagnosing)
     }
 
-    async function consumeAgentStream(agent: Agent, prompt: string): Promise<void> {
+    async function consumeAgentStream(
+      agent: Agent,
+      prompt: string,
+      diagnosing = false
+    ): Promise<void> {
       let contentBlockStarted = false
 
       try {
