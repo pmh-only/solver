@@ -71,7 +71,7 @@ const {
     modelMock: vi.fn(),
     componentActions: [] as Record<string, unknown>[],
     modalActions: [] as Record<string, unknown>[],
-    responsePayloads: [] as Record<string, unknown>[],
+    responsePayloads: [] as unknown[],
     streamMock: vi.fn(),
     toolMock: vi.fn((options) => options),
     toolRegistryAddMock: vi.fn((tools: Record<string, unknown>[]) => {
@@ -308,14 +308,18 @@ vi.mock('@strands-agents/sdk', () => ({
         }
       }
       if (streamResult !== 'noResponse') {
-        const response = JSON.stringify(
-          responsePayloads.shift() ?? {
-            content: 'hello world',
-            ...(typeof componentAction?.components_json === 'string'
-              ? { components: JSON.parse(componentAction.components_json) }
-              : {})
-          }
-        )
+        const responsePayload = responsePayloads.shift()
+        const response =
+          typeof responsePayload === 'string'
+            ? responsePayload
+            : JSON.stringify(
+                responsePayload ?? {
+                  content: 'hello world',
+                  ...(typeof componentAction?.components_json === 'string'
+                    ? { components: JSON.parse(componentAction.components_json) }
+                    : {})
+                }
+              )
         yield {
           type: 'modelStreamUpdateEvent',
           event: { type: 'modelContentBlockStartEvent' }
@@ -643,16 +647,44 @@ describe('/a', () => {
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
-    expect(agentMock).toHaveBeenCalledTimes(2)
-    expect(agentMock).toHaveBeenNthCalledWith(
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    expect(streamMock).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({
-        systemPrompt: expect.stringContaining('previous attempt produced malformed tool input')
-      })
+      expect.stringContaining('Ensure every tool input is one complete valid JSON object'),
+      expect.anything()
     )
-    expect(streamMock).toHaveBeenNthCalledWith(2, 'inspect the system', expect.anything())
     expect(JSON.stringify(calls)).toContain('hello world')
     expect(JSON.stringify(calls)).not.toContain('error: unable to parse tool input JSON')
+  })
+
+  it('continues from the current agent state after a general tool-use error', async () => {
+    streamMock.mockReturnValueOnce(new Error('tool execution failed'))
+
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    expect(streamMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('Continue from the current state'),
+      expect.anything()
+    )
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('error: tool execution failed')
+  })
+
+  it('has the current agent repair malformed response JSON', async () => {
+    responsePayloads.push('not valid JSON', { content: 'repaired response' })
+
+    const calls = await dispatch(agentCommandJSON('show status'), subs)
+
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    expect(streamMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('Unexpected token'),
+      expect.anything()
+    )
+    expect(JSON.stringify(calls)).toContain('repaired response')
+    expect(JSON.stringify(calls)).not.toContain('error: Unexpected token')
   })
 
   it('retains reasoning and failed tool status if malformed tool input persists', async () => {
@@ -662,7 +694,7 @@ describe('/a', () => {
     const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
     const rendered = JSON.stringify(finalEdit)
 
-    expect(agentMock).toHaveBeenCalledTimes(2)
+    expect(agentMock).toHaveBeenCalledTimes(1)
     expect(rendered).toContain('error: unable to parse tool input JSON')
     expect(rendered).toContain('I should look this up.')
     expect(rendered).toContain('`docker_list`: error')

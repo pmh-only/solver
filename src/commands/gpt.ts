@@ -1521,7 +1521,13 @@ async function runGptStream(
       mcpClientNames.set(client, server.name)
       managedMcpConnections.set(server.name, { client, tools: [] })
     }
-    const streamAgent = async (prompt: string, diagnosing = false, retryingToolInput = false) => {
+    let currentAgent: Agent | undefined
+    const streamAgent = async (prompt: string, diagnosing = false, continueCurrent = false) => {
+      if (continueCurrent && currentAgent) {
+        await consumeAgentStream(currentAgent, prompt)
+        return
+      }
+
       const modalTool = interactionModalTool(token, ctx)
       let agent: Agent
       const manageMcpServersTool = mcpServerManagementTool(
@@ -1558,17 +1564,15 @@ async function runGptStream(
             ]
               .filter(Boolean)
               .join('\n')
-          : [
-              systemInstruction,
-              retryingToolInput
-                ? 'The previous attempt produced malformed tool input. Retry the request, ensuring every tool input is one complete valid JSON object that exactly matches its schema.'
-                : null
-            ]
-              .filter(Boolean)
-              .join('\n'),
+          : systemInstruction,
         tools: agentTools,
         printer: false
       })
+      currentAgent = agent
+      await consumeAgentStream(agent, prompt)
+    }
+
+    async function consumeAgentStream(agent: Agent, prompt: string): Promise<void> {
       let contentBlockStarted = false
 
       try {
@@ -1648,49 +1652,72 @@ async function runGptStream(
       }
     }
 
-    try {
-      try {
-        await streamAgent(ctx.prompt)
-      } catch (error) {
-        if (!isToolInputJsonError(error) || controller.signal.aborted) throw error
-        for (const usedTool of activity.tools) {
-          if (usedTool.status === 'running') usedTool.status = 'error'
-        }
-        await updateProgress(true)
-        responseContent = ''
-        usage = undefined
-        await streamAgent(ctx.prompt, false, true)
+    let retried = false
+    const retryFromCurrentState = async (error: unknown): Promise<void> => {
+      retried = true
+      for (const usedTool of activity.tools) {
+        if (usedTool.status === 'running') usedTool.status = 'error'
       }
-    } catch (error) {
-      if (!isMcpConnectionClosed(error) || controller.signal.aborted) throw error
-
+      await updateProgress(true)
       responseContent = ''
       usage = undefined
-      activity.reasoning = ''
-      activity.tools = []
       activity.responseStarted = false
-      const integrations = [
-        'Docker MCP (`uvx mcp-server-docker`)',
-        'Filesystem MCP',
-        'Memory MCP',
-        'Sequential Thinking MCP',
-        'Fetch MCP',
-        'Time MCP',
-        'Playwright MCP',
-        ...(spotifyConfiguration ? ['Spotify MCP'] : []),
-        ...(googleCalendarConfiguration ? ['Google Calendar MCP'] : []),
-        ...(mailApiKey ? ['Mail MCP'] : []),
-        ...loadStoredMcpServers().map(({ name }) => `${name} MCP`)
-      ].join(' and ')
+      const message = error instanceof Error ? error.message : String(error)
+      const toolGuidance = isToolInputJsonError(error)
+        ? ' Ensure every tool input is one complete valid JSON object that exactly matches its schema.'
+        : ''
+      const originalRequest = currentAgent ? '' : `The original request was: ${ctx.prompt}\n`
       await streamAgent(
-        `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,
+        `${originalRequest}The previous attempt failed with this error: ${message}\nContinue from the current state and complete the original request. Do not repeat tool calls that already succeeded unless necessary.${toolGuidance} Return one complete valid Discord response JSON object.`,
+        false,
         true
       )
     }
 
+    try {
+      await streamAgent(ctx.prompt)
+    } catch (error) {
+      if (controller.signal.aborted) throw error
+      if (isMcpConnectionClosed(error)) {
+        retried = true
+        responseContent = ''
+        usage = undefined
+        activity.reasoning = ''
+        activity.tools = []
+        activity.responseStarted = false
+        const integrations = [
+          'Docker MCP (`uvx mcp-server-docker`)',
+          'Filesystem MCP',
+          'Memory MCP',
+          'Sequential Thinking MCP',
+          'Fetch MCP',
+          'Time MCP',
+          'Playwright MCP',
+          ...(spotifyConfiguration ? ['Spotify MCP'] : []),
+          ...(googleCalendarConfiguration ? ['Google Calendar MCP'] : []),
+          ...(mailApiKey ? ['Mail MCP'] : []),
+          ...loadStoredMcpServers().map(({ name }) => `${name} MCP`)
+        ].join(' and ')
+        await streamAgent(
+          `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,
+          true
+        )
+      } else {
+        await retryFromCurrentState(error)
+      }
+    }
+
     if (!controller.signal.aborted) {
-      const response = responseContent || JSON.stringify({ content: '(no response)' })
-      const payload = buildAgentPayload(response, token, ctx, usage, activity)
+      let response = responseContent || JSON.stringify({ content: '(no response)' })
+      let payload: InteractionEditReplyOptions
+      try {
+        payload = buildAgentPayload(response, token, ctx, usage, activity)
+      } catch (error) {
+        if (retried) throw error
+        await retryFromCurrentState(error)
+        response = responseContent || JSON.stringify({ content: '(no response)' })
+        payload = buildAgentPayload(response, token, ctx, usage, activity)
+      }
       await callbacks.editPayload(payload)
       storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
       conversationStored = true
