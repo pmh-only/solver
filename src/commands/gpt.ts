@@ -112,6 +112,7 @@ const PLAYWRIGHT_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/@playwright/mcp/cli.js', import.meta.url)
 )
 const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
+const MCP_FILESYSTEM_ROOT = '/'
 const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
 function shellTool(signal: AbortSignal) {
@@ -1459,7 +1460,7 @@ async function runGptStream(
           applicationName: 'solver /a Filesystem',
           transport: new StdioClientTransport({
             command: process.execPath,
-            args: [FILESYSTEM_MCP_PATH, MCP_DATA_DIRECTORY]
+            args: [FILESYSTEM_MCP_PATH, MCP_FILESYSTEM_ROOT]
           })
         })
       ),

@@ -156,7 +156,7 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Unrestricted Bash shell access as the `agent` user, with passwordless `sudo` for root operations
 - Browser automation through headless Chromium and Playwright
 - Fetching and converting web pages to Markdown
-- Reading and writing files under the persistent `data/` directory
+- Reading and writing any filesystem path accessible to the `agent` user
 - Persistent knowledge-graph memory stored at `data/.agent-memory.jsonl`
 - Structured sequential reasoning
 - Current-time lookup and time-zone conversion

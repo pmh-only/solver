@@ -530,7 +530,7 @@ describe('/a', () => {
       command: process.execPath,
       args: [
         expect.stringMatching(/server-filesystem\/dist\/index\.js$/),
-        expect.stringMatching(/data$/)
+        '/'
       ]
     })
     expect(transportMock).toHaveBeenCalledWith({
