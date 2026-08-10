@@ -733,6 +733,15 @@ function selectedSessionKey(userId: string): string {
   return `${GPT_SELECTED_SESSION_KEY}:${userId}`
 }
 
+function loadSelectedSession(userId: string): string {
+  const selected = getStoredValue(selectedSessionKey(userId))?.trim()
+  return selected && selected.length <= 100 ? selected : DEFAULT_SESSION_NAME
+}
+
+function selectSession(userId: string, sessionName: string): void {
+  setStoredValue(selectedSessionKey(userId), sessionName)
+}
+
 function sessionKey(userId: string, sessionName: string): string {
   return `${GPT_SESSION_KEY}:${userId}:${encodeURIComponent(sessionName)}`
 }
@@ -2167,6 +2176,7 @@ export interface WebConversationTurn {
 
 export interface WebSessionState {
   sessions: string[]
+  selectedSession: string
   settings: GptSessionSettings
 }
 
@@ -2179,11 +2189,12 @@ function validateWebSessionName(sessionName: string): string {
 
 export function loadWebSessionState(
   userId: string,
-  sessionName = DEFAULT_SESSION_NAME
+  sessionName = loadSelectedSession(userId)
 ): WebSessionState {
   const name = validateWebSessionName(sessionName)
   return {
     sessions: loadAgentSessionNames(userId),
+    selectedSession: loadSelectedSession(userId),
     settings: loadSessionSettings(userId, name)
   }
 }
@@ -2192,6 +2203,7 @@ export function createWebSession(userId: string, sessionName: string): WebSessio
   const name = validateWebSessionName(sessionName)
   loadConversation(userId, name)
   registerAgentSession(userId, name)
+  selectSession(userId, name)
   return loadWebSessionState(userId, name)
 }
 
@@ -2291,6 +2303,7 @@ export async function runWebAgent(
   if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
   storeSessionSettings(request.userId, sessionName, settings)
   registerAgentSession(request.userId, sessionName)
+  selectSession(request.userId, sessionName)
 
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {

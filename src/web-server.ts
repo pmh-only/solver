@@ -249,7 +249,9 @@ async function handleApiRequest(
     sendJson(
       response,
       200,
-      loadWebSessionState(session.user.id, url.searchParams.get('session') || 'default')
+      url.searchParams.has('session')
+        ? loadWebSessionState(session.user.id, url.searchParams.get('session') || 'default')
+        : loadWebSessionState(session.user.id)
     )
     return true
   }

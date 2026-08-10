@@ -10,6 +10,10 @@ conversation storage, and session serialization as Discord. Use the same Discord
 render text, common Markdown, embeds, link buttons, reasoning/tool status, errors, and the supported
 Discord interactions described below.
 
+The selected session is shared too: choosing a session in either client selects it in the other.
+While open, the Web UI polls the shared conversation so completed Discord `/a` turns and the shared
+one-hour idle reset appear without reloading the page.
+
 Web requests continue running when the user switches sessions. Returning to a session restores its
 latest reasoning and tool status. **Cancel** stops the selected session's request while preserving
 the request and progress already produced; submitting another message during a run cancels and

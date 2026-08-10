@@ -73,6 +73,8 @@ describe('web server', () => {
     expect(script).toContain("api('/models')")
     expect(script).toContain("api('/api/chat/sessions'")
     expect(script).toContain('sessionName:name')
+    expect(script).toContain('data.selectedSession')
+    expect(script).toContain('scheduleSessionPoll')
     expect(html).toContain('id="cancel-run"')
     expect(script).toContain("api('/api/chat/cancel'")
     expect(script).toContain('state.runs.has(name))await cancelRun(name,true)')

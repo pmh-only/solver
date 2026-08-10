@@ -1031,6 +1031,7 @@ describe('/a', () => {
 
     expect(created).toEqual({
       sessions: ['default', 'project notes'],
+      selectedSession: 'project notes',
       settings: { model: 'gpt-5.4', effort: 'medium', maxTokens: 4096 }
     })
 
@@ -1048,6 +1049,7 @@ describe('/a', () => {
 
     expect(loadWebSessionState('web-user', 'project notes')).toEqual({
       sessions: ['default', 'project notes'],
+      selectedSession: 'project notes',
       settings: { model: 'gpt-5.4-mini', effort: 'high', maxTokens: 2048 }
     })
     expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
@@ -1147,6 +1149,17 @@ describe('/a', () => {
     expect(body.data.choices).toEqual([{ name: 'web session', value: 'web session' }])
   })
 
+  it('shares the selected session and conversation between Discord and the web UI', async () => {
+    createWebSession('666666666666666666', 'shared session')
+    await dispatch(agentCommandJSON('sent from Discord'), subs)
+
+    expect(loadWebSessionState('666666666666666666').selectedSession).toBe('shared session')
+    expect(loadWebConversation('666666666666666666', 'shared session')[0]).toEqual({
+      role: 'user',
+      content: 'sent from Discord'
+    })
+  })
+
   it('includes sessions from legacy web indexes and persisted conversations', () => {
     setStoredValue('gpt-web-sessions:shared-user', JSON.stringify(['legacy web']))
     setStoredValue('gpt-session:shared-user:legacy%20discord', '[]')
@@ -1193,6 +1206,7 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('remember this'), subs)
 
     now += 60 * 60 * 1000
+    expect(loadWebConversation('666666666666666666')).toEqual([])
     await dispatch(agentCommandJSON('new topic'), subs)
 
     expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
