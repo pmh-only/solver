@@ -14,7 +14,7 @@ import {
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 import { clearModelCache } from '../model-catalog.js'
-import { updateOpenAIEndpoint } from '../openai-config.js'
+import { updateOpenAIEndpoint, updateOpenAIToken } from '../openai-config.js'
 import {
   deleteStoredValue,
   getStoredValue,
@@ -37,6 +37,7 @@ afterEach(async () => {
   deleteStoredValue('web-session-secret')
   deleteStoredValue('global-system-prompt')
   deleteStoredValue('openai-endpoint')
+  deleteStoredValue('openai-token')
   for (const key of listStoredKeys()) if (key.startsWith('web-rate:')) deleteStoredValue(key)
   await rm(HOSTED_HTML_PATH, { force: true })
   await rm(SHARED_HTML_DIRECTORY, { force: true, recursive: true })
@@ -66,7 +67,9 @@ describe('web server', () => {
     expect(html).toContain('id="composer"')
     expect(script).toContain("if(prompt==='/clear')")
     expect(html).toContain('name="viewport"')
-    expect(html).not.toContain('<aside>')
+    expect(html).toContain('<aside class="sidebar">')
+    expect(html).toContain('class="settings-grid"')
+    expect(html).toContain('id="mobile-settings"')
     expect(html).toContain('id="session-select"')
     expect(html).toContain('id="model-select"')
     expect(html).toContain('id="model-options"')
@@ -85,8 +88,10 @@ describe('web server', () => {
     expect(html).toContain('id="prompt-settings-view"')
     expect(html).toContain('id="session-prompt-settings-form"')
     expect(html).toContain('id="openai-endpoint-form"')
+    expect(html).toContain('id="openai-token-form"')
     expect(script).toContain("api('/api/admin/system-prompt')")
     expect(script).toContain("api('/api/admin/openai-endpoint')")
+    expect(script).toContain("api('/api/admin/openai-token')")
     expect(script).toContain("api('/api/chat/system-prompt")
     expect(script).toContain("$('#admin-prompt').hidden=!yes")
     expect(html).toContain('id="interaction-modal"')
@@ -118,6 +123,7 @@ describe('web server', () => {
   it('serves models loaded dynamically from OpenAI', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
     updateOpenAIEndpoint({ endpoint: 'https://inference.example.com/openai/v1' }, 'admin')
+    updateOpenAIToken({ token: 'override-model-token' }, 'admin')
     const nativeFetch = globalThis.fetch
     const upstreamFetch = vi
       .spyOn(globalThis, 'fetch')
@@ -150,7 +156,7 @@ describe('web server', () => {
       models: ['provider-model-a', 'provider-model-b']
     })
     expect(upstreamFetch).toHaveBeenCalledWith('https://inference.example.com/openai/v1/models', {
-      headers: { Authorization: 'Bearer test-key' }
+      headers: { Authorization: 'Bearer override-model-token' }
     })
     expect(
       upstreamFetch.mock.calls.filter(
@@ -405,6 +411,34 @@ describe('web server', () => {
     expect(await endpointReset.json()).toMatchObject({
       endpoint: 'https://api.openai.com/v1',
       isDefault: true
+    })
+
+    const tokenUpdate = await fetch(`${origin}/api/admin/openai-token`, {
+      method: 'PUT',
+      headers: mutationHeaders,
+      body: JSON.stringify({ token: 'web-override-secret-token' })
+    })
+    const tokenSetting = (await tokenUpdate.json()) as Record<string, unknown>
+    expect(tokenUpdate.status).toBe(200)
+    expect(tokenSetting).toMatchObject({ hasOverride: true, effectiveSource: 'override' })
+    expect(tokenSetting).not.toHaveProperty('token')
+    expect(getStoredValue('openai-token')).not.toContain('web-override-secret-token')
+
+    const loadedTokenSetting = await fetch(`${origin}/api/admin/openai-token`, {
+      headers: authenticatedHeaders
+    })
+    expect(await loadedTokenSetting.json()).toMatchObject({
+      hasOverride: true,
+      effectiveSource: 'override'
+    })
+
+    const tokenReset = await fetch(`${origin}/api/admin/openai-token/reset`, {
+      method: 'POST',
+      headers: { ...authenticatedHeaders, 'X-CSRF-Token': csrfToken }
+    })
+    expect(await tokenReset.json()).toMatchObject({
+      hasOverride: false,
+      effectiveSource: 'missing'
     })
 
     const sessionPrompt = await fetch(`${origin}/api/chat/system-prompt`, {

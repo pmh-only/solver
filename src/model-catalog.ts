@@ -1,4 +1,4 @@
-import { loadOpenAIEndpoint, openAIEndpointUrl } from './openai-config.js'
+import { loadOpenAIApiKey, loadOpenAIEndpoint, openAIEndpointUrl } from './openai-config.js'
 
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000
 
@@ -20,7 +20,7 @@ export function clearModelCache(): void {
 }
 
 export async function loadAvailableModels(): Promise<string[]> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim()
+  const apiKey = loadOpenAIApiKey()
   if (!apiKey) return []
   const endpoint = loadOpenAIEndpoint()
 

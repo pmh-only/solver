@@ -98,14 +98,14 @@ describe('quiz question generation', () => {
     ).rejects.toThrow('repeated a previous question')
   })
 
-  it('rejects a category mismatch and missing API key', async () => {
+  it('rejects a category mismatch and missing API token', async () => {
     await expect(
       generateQuizQuestion(options({ category: 'history', userId: 'wrong-category' }))
     ).rejects.toThrow('wrong category')
 
     delete process.env.OPENAI_API_KEY
     await expect(generateQuizQuestion(options({ userId: 'missing-key' }))).rejects.toThrow(
-      'OPENAI_API_KEY'
+      'OpenAI API token'
     )
     expect(createMock).toHaveBeenCalledTimes(1)
   })

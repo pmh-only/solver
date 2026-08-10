@@ -1,17 +1,11 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  timingSafeEqual
-} from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as oidc from 'openid-client'
 import { z } from 'zod'
-import { getOrCreateStoredValue, getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { decryptWebSecret, encryptWebSecret, initializeWebSecret } from './helpers/web-secret.js'
 
 const SETTINGS_KEY = 'web-oidc-settings'
-const SESSION_SECRET_KEY = 'web-session-secret'
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const OIDC_FLOW_TTL_MS = 10 * 60 * 1000
 const SESSION_COOKIE = 'solver_web_session'
@@ -61,45 +55,16 @@ interface OidcFlow {
 
 const sessions = new Map<string, WebSession>()
 const flows = new Map<string, OidcFlow>()
-let sessionSecret: string | undefined
-
 export function initializeWebAuth(): void {
-  if (sessionSecret) return
-  const configured = process.env.WEB_SESSION_SECRET?.trim()
-  if (configured && configured.length < 32) {
-    throw new Error('WEB_SESSION_SECRET must contain at least 32 characters')
-  }
-  sessionSecret =
-    configured || getOrCreateStoredValue(SESSION_SECRET_KEY, randomBytes(32).toString('base64url'))
-  if (sessionSecret.length < 32) throw new Error('Stored web session secret is invalid')
-}
-
-function encryptionKey(): Buffer {
-  initializeWebAuth()
-  return createHash('sha256').update(sessionSecret!).digest()
-}
-
-function encrypt(value: string): string {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv)
-  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
-  return [iv, cipher.getAuthTag(), ciphertext].map((part) => part.toString('base64url')).join('.')
-}
-
-function decrypt(value: string): string {
-  const [iv, tag, ciphertext] = value.split('.').map((part) => Buffer.from(part ?? '', 'base64url'))
-  if (!iv || !tag || !ciphertext || iv.length !== 12 || tag.length !== 16) {
-    throw new Error('Invalid encrypted OIDC settings')
-  }
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), iv)
-  decipher.setAuthTag(tag)
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')
+  initializeWebSecret()
 }
 
 export function loadOidcSettings(): OidcSettings | null {
   const stored = getStoredValue(SETTINGS_KEY)
   if (!stored) return null
-  return settingsSchema.parse(JSON.parse(decrypt(stored)))
+  return settingsSchema.parse(
+    JSON.parse(decryptWebSecret(stored, 'Invalid encrypted OIDC settings'))
+  )
 }
 
 export function publicOidcSettings(): PublicOidcSettings | null {
@@ -134,7 +99,7 @@ export function saveOidcSettings(input: unknown): PublicOidcSettings {
   if (!settings.scopes.split(/\s+/).includes('openid')) {
     throw new Error('OIDC scopes must include openid')
   }
-  setStoredValue(SETTINGS_KEY, encrypt(JSON.stringify(settings)))
+  setStoredValue(SETTINGS_KEY, encryptWebSecret(JSON.stringify(settings)))
   return publicOidcSettings()!
 }
 
@@ -342,7 +307,6 @@ export async function logoutUrl(request: IncomingMessage): Promise<URL | null> {
 export function resetWebAuthForTests(): void {
   sessions.clear()
   flows.clear()
-  sessionSecret = undefined
 }
 
 export function createWebSessionForTests(user: WebUser): {

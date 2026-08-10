@@ -21,6 +21,7 @@ import {
   setStoredValue
 } from '../helpers/kv-store.js'
 import { clearModelCache } from '../model-catalog.js'
+import { updateOpenAIToken } from '../openai-config.js'
 import { updateSystemPrompt } from '../system-prompt.js'
 import {
   agentCommandJSON,
@@ -783,6 +784,17 @@ describe('/a', () => {
     expect(modelMock.mock.calls[2]?.[0]).toMatchObject({
       clientConfig: { baseURL: 'https://api.openai.com/v1' }
     })
+  })
+
+  it('uses the encrypted OpenAI token override without exposing it in replies', async () => {
+    updateOpenAIToken({ token: 'override-secret-token' }, 'admin')
+
+    const calls = await dispatch(agentCommandJSON('use configured credentials'), subs)
+
+    expect(modelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'override-secret-token' })
+    )
+    expect(JSON.stringify(calls)).not.toContain('override-secret-token')
   })
 
   it('preserves raw Discord embeds and appends token usage to the last footer', async () => {
@@ -1969,7 +1981,7 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).not.toContain('Session:')
   })
 
-  it('edits reply when no API key', async () => {
+  it('edits reply when no API token is configured', async () => {
     delete process.env.OPENAI_API_KEY
     const calls = await dispatch(agentCommandJSON('what is 2+2'), subs)
     const defer = getCallback(calls) as { type: number }
@@ -1980,7 +1992,7 @@ describe('/a', () => {
       version: 2,
       messages: [
         { role: 'user', content: [{ text: 'what is 2+2' }] },
-        { role: 'assistant', content: [{ text: 'no OPENAI_API_KEY' }] }
+        { role: 'assistant', content: [{ text: 'no OpenAI API token configured' }] }
       ]
     })
   })

@@ -18,8 +18,11 @@ import { readHostedHtml, readSharedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
 import {
   loadOpenAIEndpointSetting,
+  loadOpenAITokenSetting,
   resetOpenAIEndpoint,
-  updateOpenAIEndpoint
+  resetOpenAIToken,
+  updateOpenAIEndpoint,
+  updateOpenAIToken
 } from './openai-config.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import {
@@ -151,6 +154,7 @@ function safeError(error: unknown): string {
     'System prompt must',
     'Session system prompt must',
     'OpenAI endpoint must',
+    'OpenAI token must',
     'Invalid component interaction',
     'Component interaction expired',
     'Only the user who sent',
@@ -267,6 +271,36 @@ async function handleApiRequest(
       return true
     }
     sendJson(response, 200, resetOpenAIEndpoint(session.user.id))
+    return true
+  }
+  if (url.pathname === '/api/admin/openai-token' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, loadOpenAITokenSetting())
+    return true
+  }
+  if (url.pathname === '/api/admin/openai-token' && method === 'PUT') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, updateOpenAIToken(await readJson(request), session.user.id))
+    return true
+  }
+  if (url.pathname === '/api/admin/openai-token/reset' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, resetOpenAIToken())
     return true
   }
   if (url.pathname === '/api/chat/system-prompt' && method === 'GET') {

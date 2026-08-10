@@ -56,7 +56,12 @@ import {
   upsertStoredMcpServer
 } from '../helpers/mcp-store.js'
 import { sharedPageUrl, writeSharedHtml } from '../hosted-page.js'
-import { loadOpenAIEndpoint, resetOpenAIEndpoint, updateOpenAIEndpoint } from '../openai-config.js'
+import {
+  loadOpenAIApiKey,
+  loadOpenAIEndpoint,
+  resetOpenAIEndpoint,
+  updateOpenAIEndpoint
+} from '../openai-config.js'
 import {
   loadEffectiveSystemPrompt,
   resetSessionSystemPrompt,
@@ -1357,15 +1362,15 @@ async function runGptStream(
   token: string,
   externalSignal?: AbortSignal
 ): Promise<void> {
-  const apiKey = process.env.OPENAI_API_KEY
+  const apiKey = loadOpenAIApiKey()
   if (!apiKey) {
-    const response = JSON.stringify({ content: 'no OPENAI_API_KEY' })
+    const response = JSON.stringify({ content: 'no OpenAI API token configured' })
     const payload = buildAgentPayload(response, token, ctx)
     await callbacks.editPayload(payload)
     storeConversation(
       ctx,
       response,
-      ensureTurnMessages(ctx, ctx.modelHistory, 'no OPENAI_API_KEY'),
+      ensureTurnMessages(ctx, ctx.modelHistory, 'no OpenAI API token configured'),
       JSON.stringify(payload)
     )
     callbacks.stored?.()

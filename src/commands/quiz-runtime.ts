@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { consumeStoredRateLimit } from '../helpers/kv-store.js'
-import { loadOpenAIEndpoint } from '../openai-config.js'
+import { loadOpenAIApiKey, loadOpenAIEndpoint } from '../openai-config.js'
 
 export const QUIZ_CATEGORIES = ['mixed', 'science', 'history', 'technology'] as const
 
@@ -120,8 +120,8 @@ function parseQuestion(
 export async function generateQuizQuestion(
   options: GenerateQuizQuestionOptions
 ): Promise<QuizQuestion> {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured')
+  const apiKey = loadOpenAIApiKey()
+  if (!apiKey) throw new Error('OpenAI API token is not configured')
   if (options.previousQuestions.length > 4) {
     throw new Error('quiz session already has the maximum number of previous questions')
   }
