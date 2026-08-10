@@ -17,7 +17,14 @@ import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml, readSharedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
-import { loadSystemPromptSetting, resetSystemPrompt, updateSystemPrompt } from './system-prompt.js'
+import {
+  loadSessionSystemPromptSetting,
+  loadSystemPromptSetting,
+  resetSessionSystemPrompt,
+  resetSystemPrompt,
+  updateSessionSystemPrompt,
+  updateSystemPrompt
+} from './system-prompt.js'
 import {
   beginOidcLogin,
   clearSessionCookie,
@@ -137,6 +144,7 @@ function safeError(error: unknown): string {
     'OIDC scopes',
     'Initial OIDC setup',
     'System prompt must',
+    'Session system prompt must',
     'Invalid component interaction',
     'Component interaction expired',
     'Only the user who sent',
@@ -223,6 +231,61 @@ async function handleApiRequest(
     const session = mutationAllowed(request, response)
     if (!session) return true
     sendJson(response, 200, resetSystemPrompt(session.user.id))
+    return true
+  }
+  if (url.pathname === '/api/chat/system-prompt' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(
+      response,
+      200,
+      loadSessionSystemPromptSetting(
+        session.user.id,
+        url.searchParams.get('session') || 'default'
+      )
+    )
+    return true
+  }
+  if (url.pathname === '/api/chat/system-prompt' && method === 'PUT') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    const body = (await readJson(request)) as Record<string, unknown>
+    sendJson(
+      response,
+      200,
+      updateSessionSystemPrompt(
+        session.user.id,
+        typeof body.sessionName === 'string' ? body.sessionName : 'default',
+        body,
+        session.user.id
+      )
+    )
+    return true
+  }
+  if (url.pathname === '/api/chat/system-prompt/reset' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    const body = (await readJson(request)) as { sessionName?: unknown }
+    sendJson(
+      response,
+      200,
+      resetSessionSystemPrompt(
+        session.user.id,
+        typeof body.sessionName === 'string' ? body.sessionName : 'default'
+      )
+    )
     return true
   }
   if (url.pathname === '/api/chat/history' && method === 'GET') {

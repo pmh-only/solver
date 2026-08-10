@@ -81,7 +81,9 @@ describe('web server', () => {
     expect(script).toContain("function controlsDisabled(disabled){['#model-select'")
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
+    expect(html).toContain('id="session-prompt-settings-form"')
     expect(script).toContain("api('/api/admin/system-prompt')")
+    expect(script).toContain("api('/api/chat/system-prompt")
     expect(script).toContain("$('#admin-prompt').hidden=!yes")
     expect(html).toContain('id="interaction-modal"')
     expect(script).toContain('const componentRenderers=')
@@ -373,6 +375,41 @@ describe('web server', () => {
     })
     expect(JSON.parse(getStoredValue('global-system-prompt')!)).toMatchObject({
       prompt: 'Answer with the important evidence first.'
+    })
+
+    const sessionPrompt = await fetch(`${origin}/api/chat/system-prompt`, {
+      method: 'PUT',
+      headers: mutationHeaders,
+      body: JSON.stringify({
+        sessionName: 'work',
+        prompt: 'Use the terminology for this project.'
+      })
+    })
+    expect(sessionPrompt.status).toBe(200)
+    expect(await sessionPrompt.json()).toMatchObject({
+      prompt: 'Use the terminology for this project.',
+      isSet: true
+    })
+
+    const loadedSessionPrompt = await fetch(
+      `${origin}/api/chat/system-prompt?session=${encodeURIComponent('work')}`,
+      { headers: authenticatedHeaders }
+    )
+    expect(await loadedSessionPrompt.json()).toMatchObject({
+      prompt: 'Use the terminology for this project.',
+      isSet: true
+    })
+
+    const clearedSessionPrompt = await fetch(`${origin}/api/chat/system-prompt/reset`, {
+      method: 'POST',
+      headers: mutationHeaders,
+      body: JSON.stringify({ sessionName: 'work' })
+    })
+    expect(await clearedSessionPrompt.json()).toEqual({
+      prompt: '',
+      isSet: false,
+      updatedAt: null,
+      updatedBy: null
     })
 
     const reset = await fetch(`${origin}/api/admin/system-prompt/reset`, {

@@ -14,6 +14,12 @@ The selected session is shared too: choosing a session in either client selects 
 While open, the Web UI polls the shared conversation so completed Discord `/a` turns and the shared
 one-hour idle reset appear without reloading the page.
 
+System prompts are stored permanently in the SQLite KV store. The global system prompt applies to
+every Discord and Web UI request in every session. Each user session can also have a persistent
+session system prompt, which is appended to the global instructions only for that session. Manage
+both prompts from **System prompts** in the Web UI, or set/reset the current Discord session prompt
+with the `/a` options `system_prompt` and `reset_system_prompt`.
+
 Web requests continue running when the user switches sessions. Returning to a session restores its
 latest reasoning and tool status. **Cancel** stops the selected session's request while preserving
 the request and progress already produced; submitting another message during a run cancels and

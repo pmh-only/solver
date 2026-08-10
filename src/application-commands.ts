@@ -51,6 +51,14 @@ export const agentCommand = new SlashCommandBuilder()
       .setMinValue(256)
       .setMaxValue(16384)
   )
+  .addStringOption((option) =>
+    option.setName('system_prompt').setDescription('persistent instructions for this session')
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName('reset_system_prompt')
+      .setDescription('remove this session system prompt before running')
+  )
 
 export const applicationCommands = [
   {

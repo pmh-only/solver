@@ -241,7 +241,13 @@ export function agentCommandJSON(
   prompt: string,
   overrides: Partial<RawInteraction> = {},
   session?: string,
-  settings: { model?: string; effort?: string; tokens?: number } = {}
+  settings: {
+    model?: string
+    effort?: string
+    tokens?: number
+    systemPrompt?: string
+    resetSystemPrompt?: boolean
+  } = {}
 ): RawInteraction {
   return commandJSON('', {
     data: {
@@ -253,7 +259,13 @@ export function agentCommandJSON(
         ...(session ? [{ name: 'session', value: session, type: 3 }] : []),
         ...(settings.model ? [{ name: 'model', value: settings.model, type: 3 }] : []),
         ...(settings.effort ? [{ name: 'effort', value: settings.effort, type: 3 }] : []),
-        ...(settings.tokens ? [{ name: 'tokens', value: settings.tokens, type: 4 }] : [])
+        ...(settings.tokens ? [{ name: 'tokens', value: settings.tokens, type: 4 }] : []),
+        ...(settings.systemPrompt
+          ? [{ name: 'system_prompt', value: settings.systemPrompt, type: 3 }]
+          : []),
+        ...(settings.resetSystemPrompt
+          ? [{ name: 'reset_system_prompt', value: true, type: 5 }]
+          : [])
       ]
     },
     ...overrides

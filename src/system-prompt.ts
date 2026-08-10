@@ -1,7 +1,8 @@
 import { z } from 'zod'
-import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 const SYSTEM_PROMPT_KEY = 'global-system-prompt'
+const SESSION_SYSTEM_PROMPT_KEY = 'gpt-session-system-prompt'
 export const MAX_SYSTEM_PROMPT_LENGTH = 32_000
 
 export const DEFAULT_SYSTEM_PROMPT =
@@ -21,6 +22,24 @@ export interface SystemPromptSetting {
   updatedBy: string | null
 }
 
+export interface SessionSystemPromptSetting {
+  prompt: string
+  isSet: boolean
+  updatedAt: string | null
+  updatedBy: string | null
+}
+
+function sessionSystemPromptKey(userId: string, sessionName: string): string {
+  return `${SESSION_SYSTEM_PROMPT_KEY}:${encodeURIComponent(userId)}:${encodeURIComponent(sessionName)}`
+}
+
+function validateSessionName(sessionName: string): string {
+  const name = sessionName.trim()
+  if (!name) throw new Error('Session name must not be empty')
+  if (name.length > 100) throw new Error('Session name must not exceed 100 characters')
+  return name
+}
+
 export function loadSystemPromptSetting(): SystemPromptSetting {
   const stored = getStoredValue(SYSTEM_PROMPT_KEY)
   if (!stored) {
@@ -31,6 +50,28 @@ export function loadSystemPromptSetting(): SystemPromptSetting {
 
 export function loadSystemPrompt(): string {
   return loadSystemPromptSetting().prompt
+}
+
+export function loadSessionSystemPromptSetting(
+  userId: string,
+  sessionName: string
+): SessionSystemPromptSetting {
+  const stored = getStoredValue(sessionSystemPromptKey(userId, validateSessionName(sessionName)))
+  if (!stored) return { prompt: '', isSet: false, updatedAt: null, updatedBy: null }
+  const setting = storedSystemPromptSchema.parse(JSON.parse(stored))
+  return {
+    prompt: setting.prompt,
+    isSet: true,
+    updatedAt: setting.updatedAt,
+    updatedBy: setting.updatedBy
+  }
+}
+
+export function loadEffectiveSystemPrompt(userId: string, sessionName: string): string {
+  const globalPrompt = loadSystemPrompt()
+  const sessionPrompt = loadSessionSystemPromptSetting(userId, sessionName)
+  if (!sessionPrompt.isSet) return globalPrompt
+  return `${globalPrompt}\n\nAdditional instructions for the current session:\n${sessionPrompt.prompt}`
 }
 
 function persistSystemPrompt(
@@ -62,4 +103,43 @@ export function updateSystemPrompt(input: unknown, updatedBy: string): SystemPro
 
 export function resetSystemPrompt(updatedBy: string): SystemPromptSetting {
   return persistSystemPrompt(DEFAULT_SYSTEM_PROMPT, true, updatedBy)
+}
+
+export function updateSessionSystemPrompt(
+  userId: string,
+  sessionName: string,
+  input: unknown,
+  updatedBy: string
+): SessionSystemPromptSetting {
+  const candidate = input as { prompt?: unknown }
+  if (typeof candidate?.prompt !== 'string' || !candidate.prompt.trim()) {
+    throw new Error('Session system prompt must not be empty')
+  }
+  if (candidate.prompt.length > MAX_SYSTEM_PROMPT_LENGTH) {
+    throw new Error(
+      `Session system prompt must not exceed ${MAX_SYSTEM_PROMPT_LENGTH} characters`
+    )
+  }
+  const name = validateSessionName(sessionName)
+  const setting = storedSystemPromptSchema.parse({
+    prompt: candidate.prompt,
+    isDefault: false,
+    updatedAt: new Date().toISOString(),
+    updatedBy
+  })
+  setStoredValue(sessionSystemPromptKey(userId, name), JSON.stringify(setting))
+  return {
+    prompt: setting.prompt,
+    isSet: true,
+    updatedAt: setting.updatedAt,
+    updatedBy: setting.updatedBy
+  }
+}
+
+export function resetSessionSystemPrompt(
+  userId: string,
+  sessionName: string
+): SessionSystemPromptSetting {
+  deleteStoredValue(sessionSystemPromptKey(userId, validateSessionName(sessionName)))
+  return { prompt: '', isSet: false, updatedAt: null, updatedBy: null }
 }

@@ -20,6 +20,7 @@ const INTERNAL_KEY_PREFIXES = [
   'gpt-session:',
   'gpt-session-activity:',
   'gpt-session-selected:',
+  'gpt-session-system-prompt:',
   'gpt-sessions:',
   'gpt-web-sessions:',
   'global-system-prompt',

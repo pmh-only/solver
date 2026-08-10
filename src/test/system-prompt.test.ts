@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { deleteStoredValue, getStoredValue, isInternalStoredKey } from '../helpers/kv-store.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
+  loadEffectiveSystemPrompt,
+  loadSessionSystemPromptSetting,
   loadSystemPrompt,
   loadSystemPromptSetting,
   MAX_SYSTEM_PROMPT_LENGTH,
   resetSystemPrompt,
+  resetSessionSystemPrompt,
+  updateSessionSystemPrompt,
   updateSystemPrompt
 } from '../system-prompt.js'
 
@@ -45,5 +49,44 @@ describe('global system prompt', () => {
       updateSystemPrompt({ prompt: 'x'.repeat(MAX_SYSTEM_PROMPT_LENGTH + 1) }, 'admin')
     ).toThrow()
     expect(isInternalStoredKey('global-system-prompt')).toBe(true)
+  })
+
+  it('persists additional prompts by user and session', () => {
+    const saved = updateSessionSystemPrompt(
+      'user:1',
+      'project notes',
+      { prompt: 'Use the project terminology.' },
+      'user:1'
+    )
+
+    expect(saved).toMatchObject({ prompt: 'Use the project terminology.', isSet: true })
+    expect(loadSessionSystemPromptSetting('user:1', 'project notes')).toEqual(saved)
+    expect(loadSessionSystemPromptSetting('user:1', 'other')).toMatchObject({
+      prompt: '',
+      isSet: false
+    })
+    expect(isInternalStoredKey('gpt-session-system-prompt:user%3A1:project%20notes')).toBe(true)
+  })
+
+  it('combines the permanent global prompt with only the selected session prompt', () => {
+    updateSystemPrompt({ prompt: 'Global instructions.' }, 'admin')
+    updateSessionSystemPrompt(
+      'user-1',
+      'work',
+      { prompt: 'Work-session instructions.' },
+      'user-1'
+    )
+
+    expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Global instructions.')
+    expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Work-session instructions.')
+    expect(loadEffectiveSystemPrompt('user-1', 'other')).toBe('Global instructions.')
+
+    expect(resetSessionSystemPrompt('user-1', 'work')).toEqual({
+      prompt: '',
+      isSet: false,
+      updatedAt: null,
+      updatedBy: null
+    })
+    expect(loadEffectiveSystemPrompt('user-1', 'work')).toBe('Global instructions.')
   })
 })

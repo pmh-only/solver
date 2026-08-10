@@ -415,7 +415,9 @@ describe('/a', () => {
       'session',
       'model',
       'effort',
-      'tokens'
+      'tokens',
+      'system_prompt',
+      'reset_system_prompt'
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({
@@ -720,11 +722,42 @@ describe('/a', () => {
     updateSystemPrompt({ prompt: 'Always explain the key tradeoff.' }, 'admin')
 
     await dispatch(agentCommandJSON('design this'), subs)
+    await dispatch(agentCommandJSON('design that', {}, 'another session'), subs)
 
-    expect(agentMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        systemPrompt: expect.stringContaining('Always explain the key tradeoff.')
-      })
+    expect(agentMock.mock.calls[0]?.[0].systemPrompt).toContain(
+      'Always explain the key tradeoff.'
+    )
+    expect(agentMock.mock.calls[1]?.[0].systemPrompt).toContain(
+      'Always explain the key tradeoff.'
+    )
+  })
+
+  it('persists and resets a system prompt for only the selected session', async () => {
+    await dispatch(
+      agentCommandJSON('configure this session', {}, 'work', {
+        systemPrompt: 'Use terse release-management language.'
+      }),
+      subs
+    )
+    await dispatch(agentCommandJSON('continue', {}, 'work'), subs)
+    await dispatch(agentCommandJSON('other session', {}, 'other'), subs)
+
+    expect(agentMock.mock.calls[0]?.[0]).toMatchObject({
+      systemPrompt: expect.stringContaining('Use terse release-management language.')
+    })
+    expect(agentMock.mock.calls[1]?.[0]).toMatchObject({
+      systemPrompt: expect.stringContaining('Use terse release-management language.')
+    })
+    expect(agentMock.mock.calls[2]?.[0].systemPrompt).not.toContain(
+      'Use terse release-management language.'
+    )
+
+    await dispatch(
+      agentCommandJSON('reset this session', {}, 'work', { resetSystemPrompt: true }),
+      subs
+    )
+    expect(agentMock.mock.calls[3]?.[0].systemPrompt).not.toContain(
+      'Use terse release-management language.'
     )
   })
 
