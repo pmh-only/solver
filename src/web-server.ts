@@ -45,7 +45,7 @@ import {
   requireCsrf,
   saveOidcSettings
 } from './web-auth.js'
-import { WEB_CSS, WEB_HTML, WEB_JS } from './web-ui.js'
+import { WEB_CSS, WEB_HTML, WEB_JS, WEB_MARKDOWN_JS } from './web-ui.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -626,6 +626,10 @@ export async function handleWebRequest(
     }
     if (url.pathname === '/app.js') {
       send(response, 200, 'text/javascript; charset=utf-8', WEB_JS, head)
+      return
+    }
+    if (url.pathname === '/markdown.js') {
+      send(response, 200, 'text/javascript; charset=utf-8', WEB_MARKDOWN_JS, head)
       return
     }
     if (url.pathname === '/favicon.ico') {

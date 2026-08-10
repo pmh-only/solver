@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Solver</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main>
+      <section id="auth-view" class="auth">
+        <div class="card">
+          <h1>Ask Solver from anywhere.</h1>
+          <p>
+            Sign in through your organization's identity provider to start a private assistant
+            session.
+          </p>
+          <button class="primary" id="login">Continue with OIDC</button>
+          <p class="error" id="auth-error"></p>
+        </div>
+      </section>
+      <section id="chat-view" class="chat" hidden>
+        <header class="control-bar">
+          <label
+            ><span>Session</span
+            ><select id="session-select" aria-label="Session">
+              <option value="default">default</option>
+              <option value="">+ New session</option>
+            </select></label
+          ><label
+            ><span>Model</span
+            ><input
+              id="model-select"
+              list="model-options"
+              aria-label="Model"
+              autocomplete="off" /><datalist id="model-options"></datalist></label
+          ><label
+            ><span>Reasoning</span
+            ><select id="effort" aria-label="Reasoning effort">
+              <option value="none">None</option>
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+            </select></label
+          ><label class="token-control"
+            ><span>Max tokens <output id="max-tokens-value">4096</output></span
+            ><input
+              id="max-tokens"
+              type="range"
+              min="256"
+              max="16384"
+              step="256"
+              value="4096"
+              aria-label="Maximum tokens" /></label
+          ><button class="admin-link" id="admin-prompt" hidden>Agent settings</button>
+        </header>
+        <div class="message-pane">
+          <div class="messages" id="messages" aria-live="polite"></div>
+          <button class="jump-bottom" id="jump-bottom" type="button" hidden>
+            Latest messages ↓
+          </button>
+        </div>
+        <form class="composer" id="composer">
+          <textarea
+            id="prompt"
+            rows="1"
+            maxlength="32000"
+            placeholder="Message Solver..."
+            aria-label="Message"
+            required
+          ></textarea
+          ><button class="cancel" id="cancel-run" type="button" hidden>Cancel</button
+          ><button class="send" aria-label="Send">↑</button>
+        </form>
+      </section>
+      <section id="settings-view" class="settings" hidden>
+        <header>
+          <div>
+            <em id="settings-eyebrow">ADMINISTRATION</em>
+            <h1>OIDC settings</h1>
+          </div>
+        </header>
+        <form id="settings-form">
+          <div class="notice" id="setup-notice" hidden>
+            Complete setup before exposing this service publicly. The first successful save closes
+            unauthenticated setup access.
+          </div>
+          <div class="notice">
+            The client secret is encrypted at rest and is never returned by the API. Leave it blank
+            to keep the stored value.
+          </div>
+          <label class="check"><input type="checkbox" name="enabled" /> Enable OIDC login</label
+          ><label
+            >Issuer URL<input
+              name="issuerUrl"
+              type="url"
+              required
+              placeholder="https://id.example.com" /></label
+          ><label>Client ID<input name="clientId" required autocomplete="off" /></label
+          ><label
+            >Client secret<input
+              name="clientSecret"
+              type="password"
+              autocomplete="new-password" /><small id="secret-state"></small></label
+          ><label
+            >Redirect URI<input
+              name="redirectUri"
+              type="url"
+              required
+              placeholder="https://solver.example.com/auth/callback"
+            /><small>Must use the path /auth/callback.</small></label
+          ><label>Scopes<input name="scopes" required value="openid profile email" /></label
+          ><label
+            >Allowed chat subjects<input
+              name="allowedSubjects"
+              placeholder="subject-1, subject-2"
+            /><small
+              >OIDC sub claims allowed to use the privileged assistant. Use * only for a fully
+              trusted provider.</small
+            ></label
+          ><label
+            >Administrator subjects<input name="adminSubjects" placeholder="admin-subject" /><small
+              >Optional compatibility list whose subjects also receive chat access. Every
+              authenticated identity can manage settings.</small
+            ></label
+          ><label class="check"
+            ><input type="checkbox" name="automaticLogin" /> Automatically redirect signed-out
+            visitors</label
+          ><label
+            >Post-logout redirect URI<input
+              name="postLogoutRedirectUri"
+              type="url"
+              placeholder="https://solver.example.com/"
+          /></label>
+          <p><button class="primary">Save settings</button> <span id="settings-status"></span></p>
+        </form>
+      </section>
+      <section id="prompt-settings-view" class="settings" hidden>
+        <header>
+          <div>
+            <em>AGENT SETTINGS</em>
+            <h1>Agent settings</h1>
+          </div>
+          <button id="prompt-back">Back to chat</button>
+        </header>
+        <form id="openai-endpoint-form">
+          <div class="notice">
+            This permanent OpenAI-compatible base URL is used by every session. It should normally
+            end in /v1. The API token is sent to this endpoint.
+          </div>
+          <label
+            >OpenAI endpoint<input
+              name="endpoint"
+              type="url"
+              maxlength="2048"
+              required
+              placeholder="https://api.openai.com/v1" /></label
+          ><small id="openai-endpoint-metadata"></small>
+          <p>
+            <button class="primary">Save endpoint</button>
+            <button type="button" id="openai-endpoint-reset">Use official OpenAI</button>
+            <span id="openai-endpoint-status"></span>
+          </p>
+        </form>
+        <form id="openai-token-form">
+          <div class="notice">
+            The encrypted token override is used by every session instead of OPENAI_API_KEY. The
+            stored token is never returned. Removing it restores the environment token fallback.
+          </div>
+          <label
+            >OpenAI API token<input
+              name="token"
+              type="password"
+              maxlength="4096"
+              required
+              autocomplete="new-password"
+              placeholder="Enter a new token" /></label
+          ><small id="openai-token-metadata"></small>
+          <p>
+            <button class="primary">Save token override</button>
+            <button type="button" id="openai-token-reset">Remove override</button>
+            <span id="openai-token-status"></span>
+          </p>
+        </form>
+        <form id="prompt-settings-form">
+          <div class="notice">
+            This permanent global prompt applies to every Discord and Web UI session. Runtime
+            protocol and safety instructions are appended separately.
+          </div>
+          <label
+            >Global system prompt<textarea
+              name="prompt"
+              rows="12"
+              maxlength="32000"
+              required
+            ></textarea></label
+          ><small id="prompt-metadata"></small>
+          <p>
+            <button class="primary">Save global prompt</button>
+            <button type="button" id="prompt-reset">Reset global default</button>
+            <span id="prompt-settings-status"></span>
+          </p>
+        </form>
+        <form id="session-prompt-settings-form">
+          <div class="notice">
+            These persistent instructions apply only to session
+            <strong id="session-prompt-name"></strong>, in addition to the global prompt.
+          </div>
+          <label
+            >Session system prompt<textarea
+              name="prompt"
+              rows="10"
+              maxlength="32000"
+              placeholder="No additional instructions for this session"
+            ></textarea></label
+          ><small id="session-prompt-metadata"></small>
+          <p>
+            <button class="primary">Save session prompt</button>
+            <button type="button" id="session-prompt-reset">Remove session prompt</button>
+            <span id="session-prompt-settings-status"></span>
+          </p>
+        </form>
+      </section>
+    </main>
+    <dialog id="interaction-modal">
+      <form method="dialog" id="interaction-modal-form">
+        <header>
+          <h2 id="interaction-modal-title"></h2>
+          <button type="button" class="modal-close" aria-label="Close">×</button>
+        </header>
+        <div id="interaction-modal-fields"></div>
+        <p class="modal-error" aria-live="polite"></p>
+        <footer>
+          <button type="button" class="modal-cancel">Cancel</button
+          ><button class="primary" value="submit">Submit</button>
+        </footer>
+      </form>
+    </dialog>
+    <script src="/markdown.js" defer></script>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
