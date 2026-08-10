@@ -27,6 +27,7 @@ const INTERNAL_KEY_PREFIXES = [
   'message-input:',
   'message-render-',
   'message-store-',
+  'openai-endpoint',
   'poll:',
   'pub-content:',
   'web-oidc-settings',

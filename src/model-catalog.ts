@@ -1,9 +1,11 @@
-const OPENAI_MODELS_URL = 'https://api.openai.com/v1/models'
+import { loadOpenAIEndpoint, openAIEndpointUrl } from './openai-config.js'
+
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000
 
 let cache:
   | {
       apiKey: string
+      endpoint: string
       expiresAt: number
       models: string[]
     }
@@ -20,12 +22,18 @@ export function clearModelCache(): void {
 export async function loadAvailableModels(): Promise<string[]> {
   const apiKey = process.env.OPENAI_API_KEY?.trim()
   if (!apiKey) return []
+  const endpoint = loadOpenAIEndpoint()
 
-  if (cache && cache.apiKey === apiKey && cache.expiresAt > Date.now()) {
+  if (
+    cache &&
+    cache.apiKey === apiKey &&
+    cache.endpoint === endpoint &&
+    cache.expiresAt > Date.now()
+  ) {
     return [...cache.models]
   }
 
-  const response = await fetch(OPENAI_MODELS_URL, {
+  const response = await fetch(openAIEndpointUrl('models'), {
     headers: { Authorization: `Bearer ${apiKey}` }
   })
   if (!response.ok) throw new Error(`OpenAI models request failed with status ${response.status}`)
@@ -49,7 +57,7 @@ export async function loadAvailableModels(): Promise<string[]> {
     )
   ].sort((a, b) => a.localeCompare(b))
 
-  cache = { apiKey, expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models }
+  cache = { apiKey, endpoint, expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models }
   return [...models]
 }
 

@@ -68,6 +68,7 @@ describe('quiz question generation', () => {
     })
     expect(constructorMock).toHaveBeenCalledWith({
       apiKey: 'test-key',
+      baseURL: 'https://api.openai.com/v1',
       maxRetries: 0,
       timeout: 15_000
     })

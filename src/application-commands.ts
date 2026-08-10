@@ -59,6 +59,12 @@ export const agentCommand = new SlashCommandBuilder()
       .setName('reset_system_prompt')
       .setDescription('remove this session system prompt before running')
   )
+  .addStringOption((option) =>
+    option.setName('openai_endpoint').setDescription('persistent OpenAI-compatible base URL')
+  )
+  .addBooleanOption((option) =>
+    option.setName('reset_openai_endpoint').setDescription('restore the official OpenAI endpoint')
+  )
 
 export const applicationCommands = [
   {

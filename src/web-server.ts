@@ -16,6 +16,11 @@ import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml, readSharedHtml } from './hosted-page.js'
 import { loadModelsResponse } from './model-catalog.js'
+import {
+  loadOpenAIEndpointSetting,
+  resetOpenAIEndpoint,
+  updateOpenAIEndpoint
+} from './openai-config.js'
 import { handleSpotifyCallback } from './spotify-auth.js'
 import {
   loadSessionSystemPromptSetting,
@@ -145,6 +150,7 @@ function safeError(error: unknown): string {
     'Initial OIDC setup',
     'System prompt must',
     'Session system prompt must',
+    'OpenAI endpoint must',
     'Invalid component interaction',
     'Component interaction expired',
     'Only the user who sent',
@@ -233,6 +239,36 @@ async function handleApiRequest(
     sendJson(response, 200, resetSystemPrompt(session.user.id))
     return true
   }
+  if (url.pathname === '/api/admin/openai-endpoint' && method === 'GET') {
+    const session = authenticated(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, loadOpenAIEndpointSetting())
+    return true
+  }
+  if (url.pathname === '/api/admin/openai-endpoint' && method === 'PUT') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, updateOpenAIEndpoint(await readJson(request), session.user.id))
+    return true
+  }
+  if (url.pathname === '/api/admin/openai-endpoint/reset' && method === 'POST') {
+    const session = mutationAllowed(request, response)
+    if (!session) return true
+    if (!session.user.allowed) {
+      sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+      return true
+    }
+    sendJson(response, 200, resetOpenAIEndpoint(session.user.id))
+    return true
+  }
   if (url.pathname === '/api/chat/system-prompt' && method === 'GET') {
     const session = authenticated(request, response)
     if (!session) return true
@@ -243,10 +279,7 @@ async function handleApiRequest(
     sendJson(
       response,
       200,
-      loadSessionSystemPromptSetting(
-        session.user.id,
-        url.searchParams.get('session') || 'default'
-      )
+      loadSessionSystemPromptSetting(session.user.id, url.searchParams.get('session') || 'default')
     )
     return true
   }

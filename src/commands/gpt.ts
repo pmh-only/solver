@@ -56,6 +56,7 @@ import {
   upsertStoredMcpServer
 } from '../helpers/mcp-store.js'
 import { sharedPageUrl, writeSharedHtml } from '../hosted-page.js'
+import { loadOpenAIEndpoint, resetOpenAIEndpoint, updateOpenAIEndpoint } from '../openai-config.js'
 import {
   loadEffectiveSystemPrompt,
   resetSessionSystemPrompt,
@@ -1429,6 +1430,7 @@ async function runGptStream(
       api: 'responses',
       modelId: ctx.model,
       apiKey,
+      clientConfig: { baseURL: loadOpenAIEndpoint() },
       maxTokens: ctx.maxTokens,
       params: {
         tools: [{ type: 'web_search' }],
@@ -2068,6 +2070,8 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   const requestedSystemPrompt = interaction.options.getString('system_prompt')
   const resetSystemPrompt = interaction.options.getBoolean('reset_system_prompt') ?? false
+  const requestedOpenAIEndpoint = interaction.options.getString('openai_endpoint')
+  const resetEndpoint = interaction.options.getBoolean('reset_openai_endpoint') ?? false
   if (requestedSystemPrompt && resetSystemPrompt) {
     throw new Error('Choose either system_prompt or reset_system_prompt, not both')
   }
@@ -2080,6 +2084,14 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     )
   } else if (resetSystemPrompt) {
     resetSessionSystemPrompt(interaction.user.id, sessionName)
+  }
+  if (requestedOpenAIEndpoint && resetEndpoint) {
+    throw new Error('Choose either openai_endpoint or reset_openai_endpoint, not both')
+  }
+  if (requestedOpenAIEndpoint) {
+    updateOpenAIEndpoint({ endpoint: requestedOpenAIEndpoint }, interaction.user.id)
+  } else if (resetEndpoint) {
+    resetOpenAIEndpoint(interaction.user.id)
   }
 
   if (prompt === '/clear') {

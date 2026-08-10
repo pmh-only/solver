@@ -15,6 +15,7 @@ import {
 } from '../components.js'
 import { poll } from './more-poll.js'
 import { getStoredValue, listStoredKeys, setStoredValue } from '../helpers/kv-store.js'
+import { openAIEndpointUrl } from '../openai-config.js'
 
 const PREVIEW_LIMIT = 120_000
 const FETCH_TIMEOUT_MS = 10_000
@@ -207,7 +208,7 @@ function scheduleLater(interaction: CommandInteraction, ms: number, message: str
 async function openAiOcr(imageUrl: string): Promise<string> {
   const key = process.env.OPENAI_API_KEY
   if (!key) throw new Error('OPENAI_API_KEY missing')
-  const response = await fetch('https://api.openai.com/v1/responses', {
+  const response = await fetch(openAIEndpointUrl('responses'), {
     method: 'POST',
     headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     body: JSON.stringify({

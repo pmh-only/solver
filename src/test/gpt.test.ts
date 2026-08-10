@@ -417,7 +417,9 @@ describe('/a', () => {
       'effort',
       'tokens',
       'system_prompt',
-      'reset_system_prompt'
+      'reset_system_prompt',
+      'openai_endpoint',
+      'reset_openai_endpoint'
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({
@@ -506,6 +508,7 @@ describe('/a', () => {
       expect.objectContaining({
         api: 'responses',
         apiKey: 'test-key',
+        clientConfig: { baseURL: 'https://api.openai.com/v1' },
         modelId: 'gpt-5.4',
         params: {
           reasoning: { effort: 'medium', summary: 'auto' },
@@ -724,12 +727,8 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('design this'), subs)
     await dispatch(agentCommandJSON('design that', {}, 'another session'), subs)
 
-    expect(agentMock.mock.calls[0]?.[0].systemPrompt).toContain(
-      'Always explain the key tradeoff.'
-    )
-    expect(agentMock.mock.calls[1]?.[0].systemPrompt).toContain(
-      'Always explain the key tradeoff.'
-    )
+    expect(agentMock.mock.calls[0]?.[0].systemPrompt).toContain('Always explain the key tradeoff.')
+    expect(agentMock.mock.calls[1]?.[0].systemPrompt).toContain('Always explain the key tradeoff.')
   })
 
   it('persists and resets a system prompt for only the selected session', async () => {
@@ -759,6 +758,31 @@ describe('/a', () => {
     expect(agentMock.mock.calls[3]?.[0].systemPrompt).not.toContain(
       'Use terse release-management language.'
     )
+  })
+
+  it('persists one OpenAI endpoint across sessions and can restore the default', async () => {
+    await dispatch(
+      agentCommandJSON('use the proxy', {}, 'work', {
+        openAIEndpoint: 'https://inference.example.com/openai/v1/'
+      }),
+      subs
+    )
+    await dispatch(agentCommandJSON('continue elsewhere', {}, 'other'), subs)
+
+    expect(modelMock.mock.calls[0]?.[0]).toMatchObject({
+      clientConfig: { baseURL: 'https://inference.example.com/openai/v1' }
+    })
+    expect(modelMock.mock.calls[1]?.[0]).toMatchObject({
+      clientConfig: { baseURL: 'https://inference.example.com/openai/v1' }
+    })
+
+    await dispatch(
+      agentCommandJSON('restore OpenAI', {}, 'work', { resetOpenAIEndpoint: true }),
+      subs
+    )
+    expect(modelMock.mock.calls[2]?.[0]).toMatchObject({
+      clientConfig: { baseURL: 'https://api.openai.com/v1' }
+    })
   })
 
   it('preserves raw Discord embeds and appends token usage to the last footer', async () => {

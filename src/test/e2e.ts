@@ -247,6 +247,8 @@ export function agentCommandJSON(
     tokens?: number
     systemPrompt?: string
     resetSystemPrompt?: boolean
+    openAIEndpoint?: string
+    resetOpenAIEndpoint?: boolean
   } = {}
 ): RawInteraction {
   return commandJSON('', {
@@ -265,6 +267,12 @@ export function agentCommandJSON(
           : []),
         ...(settings.resetSystemPrompt
           ? [{ name: 'reset_system_prompt', value: true, type: 5 }]
+          : []),
+        ...(settings.openAIEndpoint
+          ? [{ name: 'openai_endpoint', value: settings.openAIEndpoint, type: 3 }]
+          : []),
+        ...(settings.resetOpenAIEndpoint
+          ? [{ name: 'reset_openai_endpoint', value: true, type: 5 }]
           : [])
       ]
     },

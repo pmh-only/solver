@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import { consumeStoredRateLimit } from '../helpers/kv-store.js'
+import { loadOpenAIEndpoint } from '../openai-config.js'
 
 export const QUIZ_CATEGORIES = ['mixed', 'science', 'history', 'technology'] as const
 
@@ -142,7 +143,12 @@ export async function generateQuizQuestion(
   try {
     const categories =
       options.category === 'mixed' ? ['science', 'history', 'technology'] : [options.category]
-    const openai = new OpenAI({ apiKey, maxRetries: 0, timeout: REQUEST_TIMEOUT_MS })
+    const openai = new OpenAI({
+      apiKey,
+      baseURL: loadOpenAIEndpoint(),
+      maxRetries: 0,
+      timeout: REQUEST_TIMEOUT_MS
+    })
     const response = await openai.responses.create(
       {
         model: MODEL,

@@ -112,7 +112,7 @@ sticky routing; restarting the process signs web users out without deleting conv
 
 ### Global System Prompt
 
-Any authenticated web user can open **System prompt** from the chat screen to view and
+Any authenticated web user can open **Agent settings** from the chat screen to view and
 replace the global base system prompt or reset it to the built-in default. The setting applies to
 every future Discord and web agent request, including requests in existing conversation sessions;
 saved conversation history is unchanged. Solver appends its response-protocol, tool-recovery, and
@@ -170,6 +170,25 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
 servers. No extra MCP installation is required after deployment.
+
+### OpenAI Endpoint
+
+The OpenAI inference base URL is stored permanently as the internal `openai-endpoint` record in the
+SQLite KV store and applies to every session. Configure it under **Agent settings**, or use the `/a`
+options `openai_endpoint` and `reset_openai_endpoint`. The default is
+`https://api.openai.com/v1`; custom values may use HTTP or HTTPS and are normalized without a
+trailing slash.
+
+The configured server receives `OPENAI_API_KEY` and must support the OpenAI Responses API and the
+`/models` endpoint. Only use an endpoint you trust. The setting also applies to quiz generation and
+OCR inference. OpenAI organization usage/admin requests remain on the official OpenAI API because
+compatible inference providers generally do not implement those administration endpoints.
+
+The equivalent Web API requires authentication, and mutations require CSRF validation:
+
+- `GET /api/admin/openai-endpoint`
+- `PUT /api/admin/openai-endpoint` with JSON `{ "endpoint": "https://host.example/v1" }`
+- `POST /api/admin/openai-endpoint/reset`
 
 ### Model Selection
 

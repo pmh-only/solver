@@ -14,6 +14,7 @@ import {
 } from '../hosted-page.js'
 import { closeWebServer, startWebServer } from '../web-server.js'
 import { clearModelCache } from '../model-catalog.js'
+import { updateOpenAIEndpoint } from '../openai-config.js'
 import {
   deleteStoredValue,
   getStoredValue,
@@ -35,6 +36,7 @@ afterEach(async () => {
   deleteStoredValue('web-oidc-settings')
   deleteStoredValue('web-session-secret')
   deleteStoredValue('global-system-prompt')
+  deleteStoredValue('openai-endpoint')
   for (const key of listStoredKeys()) if (key.startsWith('web-rate:')) deleteStoredValue(key)
   await rm(HOSTED_HTML_PATH, { force: true })
   await rm(SHARED_HTML_DIRECTORY, { force: true, recursive: true })
@@ -82,7 +84,9 @@ describe('web server', () => {
     expect(html).not.toContain('Bootstrap secret')
     expect(html).toContain('id="prompt-settings-view"')
     expect(html).toContain('id="session-prompt-settings-form"')
+    expect(html).toContain('id="openai-endpoint-form"')
     expect(script).toContain("api('/api/admin/system-prompt')")
+    expect(script).toContain("api('/api/admin/openai-endpoint')")
     expect(script).toContain("api('/api/chat/system-prompt")
     expect(script).toContain("$('#admin-prompt').hidden=!yes")
     expect(html).toContain('id="interaction-modal"')
@@ -113,11 +117,12 @@ describe('web server', () => {
 
   it('serves models loaded dynamically from OpenAI', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
+    updateOpenAIEndpoint({ endpoint: 'https://inference.example.com/openai/v1' }, 'admin')
     const nativeFetch = globalThis.fetch
     const upstreamFetch = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-        if (String(input) === 'https://api.openai.com/v1/models') {
+        if (String(input) === 'https://inference.example.com/openai/v1/models') {
           return Promise.resolve(
             new Response(
               JSON.stringify({
@@ -144,12 +149,12 @@ describe('web server', () => {
     expect(await cachedResponse.json()).toEqual({
       models: ['provider-model-a', 'provider-model-b']
     })
-    expect(upstreamFetch).toHaveBeenCalledWith('https://api.openai.com/v1/models', {
+    expect(upstreamFetch).toHaveBeenCalledWith('https://inference.example.com/openai/v1/models', {
       headers: { Authorization: 'Bearer test-key' }
     })
     expect(
       upstreamFetch.mock.calls.filter(
-        ([input]) => String(input) === 'https://api.openai.com/v1/models'
+        ([input]) => String(input) === 'https://inference.example.com/openai/v1/models'
       )
     ).toHaveLength(1)
   })
@@ -375,6 +380,31 @@ describe('web server', () => {
     })
     expect(JSON.parse(getStoredValue('global-system-prompt')!)).toMatchObject({
       prompt: 'Answer with the important evidence first.'
+    })
+
+    const endpointUpdate = await fetch(`${origin}/api/admin/openai-endpoint`, {
+      method: 'PUT',
+      headers: mutationHeaders,
+      body: JSON.stringify({ endpoint: 'https://inference.example.com/openai/v1/' })
+    })
+    expect(endpointUpdate.status).toBe(200)
+    expect(await endpointUpdate.json()).toMatchObject({
+      endpoint: 'https://inference.example.com/openai/v1',
+      isDefault: false
+    })
+    expect(
+      await (
+        await fetch(`${origin}/api/admin/openai-endpoint`, { headers: authenticatedHeaders })
+      ).json()
+    ).toMatchObject({ endpoint: 'https://inference.example.com/openai/v1' })
+
+    const endpointReset = await fetch(`${origin}/api/admin/openai-endpoint/reset`, {
+      method: 'POST',
+      headers: { ...authenticatedHeaders, 'X-CSRF-Token': csrfToken }
+    })
+    expect(await endpointReset.json()).toMatchObject({
+      endpoint: 'https://api.openai.com/v1',
+      isDefault: true
     })
 
     const sessionPrompt = await fetch(`${origin}/api/chat/system-prompt`, {
