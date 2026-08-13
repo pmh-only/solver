@@ -658,9 +658,7 @@ describe('/a', () => {
 
     expect(JSON.stringify(finalEdit)).toContain('(no response)')
     expect(JSON.stringify(finalEdit)).not.toContain('Unexpected token')
-    expect(getStoredValue('gpt-session:666666666666666666:default')).toContain(
-      '{\\"content\\":\\"(no response)\\"}'
-    )
+    expect(getStoredValue('gpt-session:default')).toContain('{\\"content\\":\\"(no response)\\"}')
   })
 
   it('retries malformed tool input JSON with stricter tool guidance', async () => {
@@ -1244,6 +1242,15 @@ describe('/a', () => {
     })
   })
 
+  it('uses the same session namespace for an unrelated OIDC subject', async () => {
+    await dispatch(agentCommandJSON('sent from Discord'), subs)
+
+    expect(loadWebConversation('oidc|unrelated-subject', 'default')[0]).toEqual({
+      role: 'user',
+      content: 'sent from Discord'
+    })
+  })
+
   it('shows a running Discord request and its progress in the web UI conversation', async () => {
     streamMock.mockReturnValueOnce('waitForRelease')
     const running = dispatch(agentCommandJSON('sent from Discord'), subs)
@@ -1269,8 +1276,8 @@ describe('/a', () => {
   })
 
   it('includes sessions from legacy web indexes and persisted conversations', () => {
-    setStoredValue('gpt-web-sessions:shared-user', JSON.stringify(['legacy web']))
-    setStoredValue('gpt-session:shared-user:legacy%20discord', '[]')
+    setStoredValue('gpt-web-sessions', JSON.stringify(['legacy web']))
+    setStoredValue('gpt-session:legacy%20discord', '[]')
 
     expect(loadWebSessionState('shared-user').sessions).toEqual([
       'default',
@@ -1296,9 +1303,7 @@ describe('/a', () => {
       2,
       expect.objectContaining({ modelId: 'vendor/custom-model-preview' })
     )
-    expect(getStoredValue('gpt-settings:666666666666666666:custom')).toContain(
-      '"model":"vendor/custom-model-preview"'
-    )
+    expect(getStoredValue('gpt-settings:custom')).toContain('"model":"vendor/custom-model-preview"')
   })
 
   it('retains full conversation history in the selected session', async () => {
@@ -1318,7 +1323,7 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('new topic'), subs)
 
     expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
-    expect(getStoredValue('gpt-session-activity:666666666666666666:default')).toBe(String(now))
+    expect(getStoredValue('gpt-session-activity:default')).toBe(String(now))
   })
 
   it('resets idle Web UI history after one hour without a command', async () => {
@@ -1335,7 +1340,7 @@ describe('/a', () => {
 
   it('loads legacy text history and upgrades it after the next response', async () => {
     setStoredValue(
-      'gpt-session:web-user:default',
+      'gpt-session:default',
       JSON.stringify([
         { role: 'user', content: 'legacy question' },
         { role: 'assistant', content: '{"content":"legacy answer"}' }
@@ -1352,7 +1357,7 @@ describe('/a', () => {
         ]
       })
     )
-    const upgraded = JSON.parse(getStoredValue('gpt-session:web-user:default')!) as {
+    const upgraded = JSON.parse(getStoredValue('gpt-session:default')!) as {
       version: number
       turns: unknown[]
     }
@@ -1366,14 +1371,14 @@ describe('/a', () => {
 
   it('clears the selected session history without invoking the agent', async () => {
     await dispatch(agentCommandJSON('work question', {}, 'work'), subs)
-    expect(getStoredValue('gpt-session:666666666666666666:work')).not.toBe('[]')
+    expect(getStoredValue('gpt-session:work')).not.toBe('[]')
 
     const cleared = await dispatch(agentCommandJSON('/clear'), subs)
     const clearEdit = cleared.filter((call) => call.method === 'PATCH').at(-1)?.body
 
     expect(JSON.stringify(clearEdit)).toContain('**/clear**')
     expect(JSON.stringify(clearEdit)).toContain('Cleared history for session `work`.')
-    expect(getStoredValue('gpt-session:666666666666666666:work')).toBe('[]')
+    expect(getStoredValue('gpt-session:work')).toBe('[]')
     expect(agentMock).toHaveBeenCalledTimes(1)
 
     await dispatch(agentCommandJSON('start fresh'), subs)
@@ -1556,13 +1561,6 @@ describe('/a', () => {
     expect(renderedJson).toContain('Unavailable')
     expect(renderedJson).not.toContain('sender_only')
     expect(loadWebConversation('web-user').at(-1)?.content).toBe(renderedJson)
-
-    await expect(
-      runWebComponentInteraction(
-        { userId: 'other-user', customId: customId! },
-        async () => undefined
-      )
-    ).rejects.toThrow('Only the user who sent this request')
 
     responsePayloads.push({ content: 'Continued from the button' })
     const interactionUpdates: unknown[] = []
@@ -1917,7 +1915,7 @@ describe('/a', () => {
     )
   })
 
-  it('rejects a non-owner using a sender-only web component', async () => {
+  it('allows sender-only components through the authenticated single-user web UI', async () => {
     responsePayloads.push({
       content: 'Private action',
       components: [
@@ -1941,10 +1939,11 @@ describe('/a', () => {
     })
     const customId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:private-action/)?.[0]
 
+    responsePayloads.push({ content: 'Private action completed' })
     await expect(
       runWebInteraction({ userId: 'another-user', customId: customId! }, async () => {})
-    ).rejects.toThrow('Only the user who sent this request can use this component')
-    expect(streamMock).toHaveBeenCalledTimes(1)
+    ).resolves.toEqual({ updated: true })
+    expect(streamMock).toHaveBeenCalledTimes(2)
   })
 
   it('rejects unsupported web modal field submissions without running the agent', async () => {
@@ -2027,7 +2026,7 @@ describe('/a', () => {
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     const edit = getEdit(calls) as { components?: unknown } | null
     expect(edit).not.toBeNull()
-    expect(JSON.parse(getStoredValue('gpt-session:666666666666666666:default')!)).toMatchObject({
+    expect(JSON.parse(getStoredValue('gpt-session:default')!)).toMatchObject({
       version: 2,
       messages: [
         { role: 'user', content: [{ text: 'what is 2+2' }] },

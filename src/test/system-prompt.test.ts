@@ -51,7 +51,7 @@ describe('global system prompt', () => {
     expect(isInternalStoredKey('global-system-prompt')).toBe(true)
   })
 
-  it('persists additional prompts by user and session', () => {
+  it('persists additional prompts in the single-user session namespace', () => {
     const saved = updateSessionSystemPrompt(
       'user:1',
       'project notes',
@@ -65,7 +65,7 @@ describe('global system prompt', () => {
       prompt: '',
       isSet: false
     })
-    expect(isInternalStoredKey('gpt-session-system-prompt:user%3A1:project%20notes')).toBe(true)
+    expect(isInternalStoredKey('gpt-session-system-prompt:project%20notes')).toBe(true)
   })
 
   it('combines the permanent global prompt with only the selected session prompt', () => {

@@ -30,7 +30,8 @@ export interface SessionSystemPromptSetting {
 }
 
 function sessionSystemPromptKey(userId: string, sessionName: string): string {
-  return `${SESSION_SYSTEM_PROMPT_KEY}:${encodeURIComponent(userId)}:${encodeURIComponent(sessionName)}`
+  void userId
+  return `${SESSION_SYSTEM_PROMPT_KEY}:${encodeURIComponent(sessionName)}`
 }
 
 function validateSessionName(sessionName: string): string {
