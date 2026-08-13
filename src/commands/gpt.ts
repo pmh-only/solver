@@ -294,6 +294,15 @@ interface ActiveWebRun {
 
 const activeWebRuns = new Map<string, ActiveWebRun>()
 
+interface ActiveDiscordRun {
+  prompt: string
+  startedAt: string
+  latestPayload: InteractionEditReplyOptions
+  persisted: boolean
+}
+
+const activeDiscordRuns = new Map<string, ActiveDiscordRun>()
+
 function isMcpConnectionClosed(error: unknown): boolean {
   let current = error
   for (let depth = 0; depth < 5 && current; depth++) {
@@ -783,6 +792,7 @@ function resetIdleSession(userId: string, sessionName: string): void {
   if (
     sessionQueues.has(key) ||
     activeWebRuns.has(key) ||
+    activeDiscordRuns.has(key) ||
     !sessionIsIdle(userId, sessionName, Date.now())
   ) {
     return
@@ -2163,17 +2173,36 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   await interaction.editReply(buildAgentProgressPayload(ctx))
 
   const callbacks = makeCallbacks(interaction, pub)
+  const key = sessionKey(interaction.user.id, sessionName)
   await runInSession(interaction.user.id, sessionName, async () => {
+    const active: ActiveDiscordRun = {
+      prompt,
+      startedAt: new Date().toISOString(),
+      latestPayload: buildAgentProgressPayload(ctx),
+      persisted: false
+    }
+    activeDiscordRuns.set(key, active)
+    const sharedCallbacks: StreamCallbacks = {
+      editMain: callbacks.editMain,
+      editPayload: async (payload) => {
+        active.latestPayload = payload
+        await callbacks.editPayload(payload)
+      },
+      stored: () => {
+        active.persisted = true
+      }
+    }
     beginSessionCommand(interaction.user.id, sessionName)
     try {
       loadContextConversation(ctx)
       storeGptContext(token, ctx)
-      await runGptStream(callbacks, ctx, token)
+      await runGptStream(sharedCallbacks, ctx, token)
     } finally {
       if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
         deleteGptContext(token)
       else storeGptContext(token, ctx)
       finishSessionCommand(interaction.user.id, sessionName)
+      if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
     }
   })
 }
@@ -2272,7 +2301,8 @@ export function loadWebConversation(
       ...(status === 'cancelled' ? { status } : {})
     })
   }
-  const active = activeWebRuns.get(sessionKey(userId, name))
+  const key = sessionKey(userId, name)
+  const active = activeWebRuns.get(key)
   if (active && !active.persisted) {
     visible.push(
       { role: 'user', content: active.prompt, status: 'running', runId: active.id },
@@ -2282,6 +2312,18 @@ export function loadWebConversation(
         status: 'running',
         runId: active.id,
         startedAt: active.startedAt
+      }
+    )
+  }
+  const discordRun = activeDiscordRuns.get(key)
+  if (!active && discordRun && !discordRun.persisted) {
+    visible.push(
+      { role: 'user', content: discordRun.prompt, status: 'running' },
+      {
+        role: 'assistant',
+        content: JSON.stringify(discordRun.latestPayload),
+        status: 'running',
+        startedAt: discordRun.startedAt
       }
     )
   }

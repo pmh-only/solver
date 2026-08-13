@@ -52,6 +52,7 @@ const {
   modalActions,
   registeredAgentTools,
   responsePayloads,
+  streamRelease,
   streamMock,
   toolMock,
   toolRegistryAddMock,
@@ -73,6 +74,7 @@ const {
     componentActions: [] as Record<string, unknown>[],
     modalActions: [] as Record<string, unknown>[],
     responsePayloads: [] as unknown[],
+    streamRelease: { resolve: undefined as (() => void) | undefined },
     streamMock: vi.fn(),
     toolMock: vi.fn((options) => options),
     toolRegistryAddMock: vi.fn((tools: Record<string, unknown>[]) => {
@@ -192,6 +194,18 @@ vi.mock('@strands-agents/sdk', () => ({
           this.message({ role: 'assistant', content: [{ text: 'Cancelled by user' }] })
         )
         return
+      }
+      if (streamResult === 'waitForRelease') {
+        yield {
+          type: 'modelStreamUpdateEvent',
+          event: {
+            type: 'modelContentBlockDeltaEvent',
+            delta: { type: 'reasoningContentDelta', text: 'Visible from the web UI.' }
+          }
+        }
+        await new Promise<void>((resolve) => {
+          streamRelease.resolve = resolve
+        })
       }
       const componentAction = componentActions.shift()
       const modalAction = modalActions.shift()
@@ -386,6 +400,7 @@ beforeEach(() => {
   mcpToolFailures.length = 0
   registeredAgentTools.clear()
   responsePayloads.length = 0
+  streamRelease.resolve = undefined
   mcpToolGroups.length = 0
   mcpToolNumber.value = 0
   clearModelCache()
@@ -1227,6 +1242,30 @@ describe('/a', () => {
       role: 'user',
       content: 'sent from Discord'
     })
+  })
+
+  it('shows a running Discord request and its progress in the web UI conversation', async () => {
+    streamMock.mockReturnValueOnce('waitForRelease')
+    const running = dispatch(agentCommandJSON('sent from Discord'), subs)
+
+    await vi.waitFor(() => {
+      const conversation = loadWebConversation('666666666666666666', 'default')
+      expect(conversation).toEqual([
+        { role: 'user', content: 'sent from Discord', status: 'running' },
+        expect.objectContaining({
+          role: 'assistant',
+          status: 'running',
+          content: expect.stringContaining('Visible from the web UI.')
+        })
+      ])
+    })
+
+    streamRelease.resolve?.()
+    await running
+    expect(loadWebConversation('666666666666666666', 'default')).toEqual([
+      { role: 'user', content: 'sent from Discord' },
+      expect.objectContaining({ role: 'assistant' })
+    ])
   })
 
   it('includes sessions from legacy web indexes and persisted conversations', () => {
