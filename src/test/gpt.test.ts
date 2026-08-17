@@ -7,6 +7,7 @@ import {
   GPT_ACTION_COMPONENT_ID,
   GPT_MODAL_ID,
   cancelWebAgent,
+  closeAgentMcpRuntime,
   createWebSession,
   loadWebConversation,
   loadWebSessionState,
@@ -408,6 +409,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  await closeAgentMcpRuntime()
   delete process.env.OPENAI_API_KEY
   delete process.env.MAIL_API_KEY
   delete process.env.GOOGLE_OAUTH_CREDENTIALS_BASE64
@@ -543,10 +545,7 @@ describe('/a', () => {
     })
     expect(transportMock).toHaveBeenCalledWith({
       command: process.execPath,
-      args: [
-        expect.stringMatching(/server-filesystem\/dist\/index\.js$/),
-        '/'
-      ]
+      args: [expect.stringMatching(/server-filesystem\/dist\/index\.js$/), '/']
     })
     expect(transportMock).toHaveBeenCalledWith({
       command: process.execPath,
@@ -587,7 +586,7 @@ describe('/a', () => {
         ]
       })
     )
-    expect(disconnectMock).toHaveBeenCalledTimes(7)
+    expect(disconnectMock).not.toHaveBeenCalled()
     expect(streamMock).toHaveBeenCalledWith(
       'explain recursion',
       expect.objectContaining({ cancelSignal: expect.any(AbortSignal) })
@@ -600,6 +599,16 @@ describe('/a', () => {
       { type: 10, content: '**explain recursion**' },
       { type: 14, divider: true, spacing: 1 }
     ])
+  })
+
+  it('reuses MCP clients across agent turns', async () => {
+    await dispatch(agentCommandJSON('first request'), subs)
+    expect(mcpClientMock).toHaveBeenCalledTimes(7)
+
+    await dispatch(agentCommandJSON('second request'), subs)
+
+    expect(mcpClientMock).toHaveBeenCalledTimes(7)
+    expect(disconnectMock).not.toHaveBeenCalled()
   })
 
   it('provides a bounded wait tool', async () => {
@@ -901,7 +910,7 @@ describe('/a', () => {
         tools: [expect.anything(), ...Array(14).fill(expect.anything())]
       })
     )
-    expect(disconnectMock).toHaveBeenCalledTimes(8)
+    expect(disconnectMock).not.toHaveBeenCalled()
   })
 
   it('gives the agent authenticated Mail MCP tools when Mail is configured', async () => {
@@ -921,7 +930,7 @@ describe('/a', () => {
         tools: [expect.anything(), ...Array(14).fill(expect.anything())]
       })
     )
-    expect(disconnectMock).toHaveBeenCalledTimes(8)
+    expect(disconnectMock).not.toHaveBeenCalled()
   })
 
   it('keeps the agent available when Mail MCP authentication fails', async () => {
@@ -937,7 +946,14 @@ describe('/a', () => {
     )
     expect(JSON.stringify(calls)).toContain('hello world')
     expect(JSON.stringify(calls)).not.toContain('MCP authentication failed')
-    expect(disconnectMock).toHaveBeenCalledTimes(9)
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining(
+          'mail: MCP authentication failed. Diagnose and repair each failure'
+        )
+      })
+    )
+    expect(disconnectMock).toHaveBeenCalledTimes(1)
   })
 
   it('gives the agent Google Calendar MCP tools when OAuth is configured', async () => {
@@ -966,7 +982,7 @@ describe('/a', () => {
     expect(mcpClientMock).toHaveBeenCalledWith(
       expect.objectContaining({ applicationName: 'solver /a Google Calendar' })
     )
-    expect(disconnectMock).toHaveBeenCalledTimes(8)
+    expect(disconnectMock).not.toHaveBeenCalled()
   })
 
   it('lets the agent attach, list, reuse, and remove a DB-backed MCP server', async () => {
@@ -1022,6 +1038,47 @@ describe('/a', () => {
     expect(toolRegistryRemoveMock).toHaveBeenCalled()
   })
 
+  it('reports a failed MCP boot to the agent for repair', async () => {
+    mcpToolFailures.push(false, false, false, false, false, false, false, true)
+    mcpActions.push({
+      action: 'attach',
+      name: 'github',
+      transport: 'http',
+      url: 'https://mcp.example.com/mcp'
+    })
+
+    await dispatch(agentCommandJSON('attach the GitHub MCP'), subs)
+
+    expect(mcpActionResults.at(-1)).toBe(
+      'Could not boot MCP server github: MCP authentication failed. Diagnose the configuration or runtime, correct it, and try attaching the server again.'
+    )
+    expect(getStoredValue('gpt-mcp-servers')).toBeUndefined()
+
+    await dispatch(agentCommandJSON('repair the GitHub MCP'), subs)
+    expect(agentMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining(
+          'github: MCP authentication failed. Diagnose and repair each failure'
+        )
+      })
+    )
+  })
+
+  it('lets the agent restart the shared MCP runtime after a repair', async () => {
+    process.env.MAIL_API_KEY = 'repaired-key'
+    mcpToolFailures.push(false, false, false, false, false, false, false, true)
+    mcpActions.push({ action: 'restart' })
+
+    await dispatch(agentCommandJSON('repair and restart MCP'), subs)
+
+    expect(mcpActionResults.at(-1)).toBe('Restarted MCP servers successfully with 8 tools.')
+    expect(mcpClientMock).toHaveBeenCalledTimes(16)
+    expect(disconnectMock).toHaveBeenCalledTimes(8)
+    expect(toolRegistryAddMock).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ name: 'mail_mcp_tool_15' })])
+    )
+  })
+
   it('replaces MCP tools whose names differ only by hyphens and underscores', async () => {
     mcpToolGroups.push(
       [
@@ -1064,14 +1121,12 @@ describe('/a', () => {
     )
     expect(streamMock).toHaveBeenNthCalledWith(
       2,
-      expect.stringMatching(
-        /Docker MCP \(`uvx mcp-server-docker`\).*Filesystem MCP.*Playwright MCP/
-      ),
+      expect.stringMatching(/docker MCP.*filesystem MCP.*playwright MCP/),
       expect.anything()
     )
     expect(JSON.stringify(calls)).toContain('hello world')
     expect(JSON.stringify(calls)).not.toContain('error: MCP error -32000: Connection closed')
-    expect(disconnectMock).toHaveBeenCalledTimes(7)
+    expect(disconnectMock).not.toHaveBeenCalled()
   })
 
   it('persists model, reasoning effort, and token limit per session', async () => {

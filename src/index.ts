@@ -39,6 +39,7 @@ import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
 import { restoreStoredEnvironment } from './helpers/environment-store.js'
+import { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './commands/gpt.js'
 
 restoreStoredEnvironment()
 
@@ -102,7 +103,7 @@ if (!token) throw new Error('no token')
 if (!clientId) throw new Error('no client id')
 requireAdminUserIds()
 
-await ensureDeployed(clientId, token)
+await Promise.all([ensureDeployed(clientId, token), initializeAgentMcpRuntime()])
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -126,7 +127,7 @@ async function shutdown(signal: string) {
   shuttingDown = true
   console.log(`shutdown: ${signal}`)
   client.destroy()
-  await closeWebServer(webServer)
+  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime()])
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -143,6 +144,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 try {
   await client.login(token)
 } catch (error) {
-  await closeWebServer(webServer)
+  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime()])
   throw error
 }
