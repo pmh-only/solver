@@ -168,8 +168,10 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
   are stored under `data/shared/` and survive bot restarts
 
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
-same path. The runtime image includes the Docker CLI, Chromium, `uvx`, and the packaged Node.js MCP
-servers. No extra MCP installation is required after deployment.
+same path. The runtime image includes the Docker CLI, `kubectl`, Chromium, `uvx`, and the packaged
+Node.js MCP servers. `kubectl` is pinned at image build time and can be overridden with the
+`KUBECTL_VERSION` build argument when cluster compatibility requires another release. No extra MCP
+installation is required after deployment.
 
 ### OpenAI Endpoint
 
