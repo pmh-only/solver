@@ -510,11 +510,10 @@ describe('/a', () => {
       { type: 14, divider: true, spacing: 1 }
     ])
     expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).toContain('**Reasoning**')
-    expect(JSON.stringify(calls)).toContain('I should look this up.')
-    expect(JSON.stringify(calls)).toContain('**Tools used**')
-    expect(JSON.stringify(calls)).toContain('`docker_list`: success')
-    expect(JSON.stringify(calls)).toContain('`web_search`: success')
+    expect(JSON.stringify(calls)).not.toContain('**Reasoning**')
+    expect(JSON.stringify(calls)).not.toContain('I should look this up.')
+    expect(JSON.stringify(calls)).not.toContain('**Tools used**')
+    expect(JSON.stringify(calls)).toContain('(docker_listx1, web_searchx1)')
     expect(JSON.stringify(calls)).not.toContain('apiKey')
     expect(JSON.stringify(calls)).not.toContain('secret')
     expect(JSON.stringify(calls)).toContain('Tokens used: 1,234 in / 56 out / 1,290 total')
@@ -601,6 +600,32 @@ describe('/a', () => {
     ])
   })
 
+  it('posts a separate completion message when the response takes at least 30 seconds', async () => {
+    let now = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    streamMock.mockImplementationOnce(() => {
+      now += 30_000
+    })
+
+    const calls = await dispatch(agentCommandJSON('slow request'), subs)
+    const completion = calls.find(
+      (call) => call.method === 'POST' && call.route.includes('/webhooks/')
+    )
+
+    expect(completion?.body).toMatchObject({
+      content: '완료되었습니다.',
+      allowed_mentions: { parse: [] }
+    })
+  })
+
+  it('does not post a completion message for a response under 30 seconds', async () => {
+    const calls = await dispatch(agentCommandJSON('quick request'), subs)
+
+    expect(calls.some((call) => call.method === 'POST' && call.route.includes('/webhooks/'))).toBe(
+      false
+    )
+  })
+
   it('reuses MCP clients across agent turns', async () => {
     await dispatch(agentCommandJSON('first request'), subs)
     expect(mcpClientMock).toHaveBeenCalledTimes(7)
@@ -620,16 +645,17 @@ describe('/a', () => {
     await expect(wait.callback({ seconds: 0.1 })).resolves.toBe('Waited 0.1 seconds.')
   })
 
-  it('updates reasoning and tool status while the agent is generating', async () => {
+  it('shows compact tool counts without reasoning while the agent is generating', async () => {
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
     const progressEdits = calls
       .filter((call) => call.method === 'PATCH')
       .slice(0, -1)
       .map((call) => JSON.stringify(call.body))
 
-    expect(progressEdits.some((edit) => edit.includes('I should look this up.'))).toBe(true)
-    expect(progressEdits.some((edit) => edit.includes('`docker_list`: running'))).toBe(true)
-    expect(progressEdits.some((edit) => edit.includes('`docker_list`: success'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('I should look this up.'))).toBe(true)
+    expect(progressEdits.some((edit) => edit.includes('(docker_listx1)'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('running'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('success'))).toBe(true)
     expect(progressEdits.every((edit) => edit.includes('generating...'))).toBe(true)
     expect(progressEdits.every((edit) => edit.includes('**inspect the system**'))).toBe(true)
     expect(progressEdits.every((edit) => edit.includes('"type":14'))).toBe(true)
@@ -637,7 +663,7 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
-  it('shows only the latest reasoning, every tool use, then compact tool counts', async () => {
+  it('aggregates repeated tool uses without exposing reasoning or statuses', async () => {
     streamMock.mockReturnValueOnce('multipleActivity')
 
     const calls = await dispatch(agentCommandJSON('research this'), subs)
@@ -645,18 +671,13 @@ describe('/a', () => {
       .filter((call) => call.method === 'PATCH')
       .slice(0, -1)
       .map((call) => JSON.stringify(call.body))
-    const latestReasoningEdit = [...progressEdits]
-      .reverse()
-      .find((edit) => edit.includes('Latest reasoning.') && edit.includes('`search`: success'))!
-    const compactEdit = progressEdits.find((edit) => edit.includes('search x3'))!
+    const compactEdit = progressEdits.find((edit) => edit.includes('searchx3'))!
 
-    expect(latestReasoningEdit).not.toContain('Earlier reasoning.')
-    expect(latestReasoningEdit).toContain('`docker_list`: success')
-    expect(latestReasoningEdit).toContain('`web_search`: success')
-    expect(latestReasoningEdit.match(/`search`: success/g)).toHaveLength(3)
-    expect(compactEdit).toContain('(docker_list x1, web_search x1, search x3)')
-    expect(compactEdit).not.toContain('**Reasoning**')
-    expect(compactEdit).not.toContain('Latest reasoning.')
+    expect(compactEdit).toContain('(docker_listx1, web_searchx1, searchx3)')
+    expect(progressEdits.every((edit) => !edit.includes('**Reasoning**'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('Earlier reasoning.'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('Latest reasoning.'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes(': success'))).toBe(true)
   })
 
   it('renders a valid fallback when the agent emits no response text', async () => {
@@ -715,7 +736,7 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).not.toContain('error: Unexpected token')
   })
 
-  it('retains reasoning and failed tool status if malformed tool input persists', async () => {
+  it('retains compact tool counts if malformed tool input persists', async () => {
     streamMock.mockReturnValueOnce('throwAfterActivity').mockReturnValueOnce('throwAfterActivity')
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
@@ -724,8 +745,9 @@ describe('/a', () => {
 
     expect(agentMock).toHaveBeenCalledTimes(1)
     expect(rendered).toContain('error: unable to parse tool input JSON')
-    expect(rendered).toContain('I should look this up.')
-    expect(rendered).toContain('`docker_list`: error')
+    expect(rendered).not.toContain('I should look this up.')
+    expect(rendered).toContain('(docker_listx2, web_searchx1)')
+    expect(rendered).not.toContain(': error')
     expect(rendered).not.toContain('secret')
   })
 
@@ -838,7 +860,7 @@ describe('/a', () => {
     expect(edit.allowed_mentions).toEqual({ parse: [] })
     expect(JSON.stringify(edit.content)).toContain('**show status**')
     expect(JSON.stringify(edit.content)).toContain('-# --------------------------------')
-    expect(JSON.stringify(edit.content)).toContain('(docker_list x1, web_search x1)')
+    expect(JSON.stringify(edit.content)).toContain('(docker_listx1, web_searchx1)')
     expect(JSON.stringify(edit.content)).not.toContain('**Reasoning**')
   })
 
@@ -865,8 +887,22 @@ describe('/a', () => {
       { type: 10, content: 'Additional context' }
     ])
     expect(edit.components.at(-1)?.content).toContain('Tokens used:')
-    expect(edit.components.at(-2)?.content).toContain('(docker_list x1, web_search x1)')
+    expect(edit.components.at(-2)?.content).toContain('(docker_listx1, web_searchx1)')
     expect(edit.components.at(-2)?.content).not.toContain('**Reasoning**')
+  })
+
+  it('keeps the end of an oversized response', async () => {
+    responsePayloads.push({ content: `${'old '.repeat(1_000)}latest result` })
+
+    const calls = await dispatch(agentCommandJSON('show the result'), subs)
+    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: Array<{ type: number; content?: string }>
+    }
+    const response = edit.components[2]?.content ?? ''
+
+    expect(response).toHaveLength(4000)
+    expect(response.endsWith('latest result')).toBe(true)
+    expect(response.startsWith('old old')).toBe(false)
   })
 
   it('accepts raw Discord API poll JSON', async () => {
@@ -1207,7 +1243,8 @@ describe('/a', () => {
         status: 'running',
         runId: 'run-one'
       })
-      expect(active.at(-1)?.content).toContain('Working through the request.')
+      expect(active.at(-1)?.content).toContain('generating...')
+      expect(active.at(-1)?.content).not.toContain('Working through the request.')
     })
 
     await expect(cancelWebAgent('web-user', 'work', 'run-one')).resolves.toBe(true)
@@ -1218,7 +1255,7 @@ describe('/a', () => {
       expect.objectContaining({
         role: 'assistant',
         status: 'cancelled',
-        content: expect.stringContaining('Working through the request.')
+        content: expect.stringContaining('cancelled')
       })
     ])
     expect(JSON.stringify(updates.at(-1))).toContain('cancelled')
@@ -1317,7 +1354,7 @@ describe('/a', () => {
         expect.objectContaining({
           role: 'assistant',
           status: 'running',
-          content: expect.stringContaining('Visible from the web UI.')
+          content: expect.stringContaining('generating...')
         })
       ])
     })

@@ -86,6 +86,8 @@ export const GPT_MODAL_ID = 'gpt-modal'
 export const AGENT_COMMAND_NAME = 'a'
 
 const DEFAULT_MAX_TOKENS = 4096
+const MAX_TEXT_DISPLAY_LENGTH = 4000
+const SLOW_RESPONSE_MS = 30_000
 const GPT_INTERACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
@@ -1205,6 +1207,10 @@ function footerSessionName(sessionName: string): string {
   return escapeMarkdown(sessionName.replace(/\s+/g, ' '))
 }
 
+function keepEnd(value: string, maxLength: number): string {
+  return maxLength > 0 ? value.slice(-maxLength) : ''
+}
+
 function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usage?: Usage): string {
   const tokens = usage
     ? `${usage.inputTokens.toLocaleString('en-US')} in / ${usage.outputTokens.toLocaleString('en-US')} out / ${usage.totalTokens.toLocaleString('en-US')} total`
@@ -1213,31 +1219,13 @@ function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usag
 }
 
 function formatAgentActivity(activity: AgentActivity): string {
-  if (activity.responseStarted) {
-    const counts = new Map<string, number>()
-    for (const { name } of activity.tools) counts.set(name, (counts.get(name) ?? 0) + 1)
-    if (counts.size === 0) return ''
-    return `-# (${[...counts].map(([name, count]) => `${name.replaceAll('`', '')} x${count}`).join(', ')})`
-  }
-
-  const sections: string[] = []
-  const reasoning = activity.reasoning.trim()
-  if (reasoning) {
-    const limit = 1200
-    sections.push(
-      `**Reasoning**\n${reasoning.length > limit ? `${reasoning.slice(0, limit - 3)}...` : reasoning}`
-    )
-  }
-  if (activity.tools.length > 0) {
-    const tools = activity.tools.map(({ name, status }) => {
-      const label = name.replaceAll('`', '')
-      return `- \`${label}\`: ${status}`
-    })
-    sections.push(`**Tools used**\n${tools.join('\n')}`)
-  }
-  const summary = sections.join('\n\n')
-  const limit = 3900
-  return summary.length > limit ? `${summary.slice(0, limit - 3)}...` : summary
+  const counts = new Map<string, number>()
+  for (const { name } of activity.tools) counts.set(name, (counts.get(name) ?? 0) + 1)
+  if (counts.size === 0) return ''
+  const summary = [...counts]
+    .map(([name, count]) => `${name.replaceAll('`', '')}x${count}`)
+    .join(', ')
+  return `-# (${keepEnd(summary, MAX_TEXT_DISPLAY_LENGTH - 5)})`
 }
 
 function agentPromptHeaderComponents(ctx: GptContext): GptManagedComponent[] {
@@ -1387,7 +1375,12 @@ function buildAgentPayload(
   if (usesComponentsV2) {
     const content = typeof payload.content === 'string' ? payload.content : ''
     const header = agentPromptHeaderComponents(ctx)
-    if (content) header.push({ type: ComponentType.TextDisplay, content })
+    if (content) {
+      header.push({
+        type: ComponentType.TextDisplay,
+        content: keepEnd(content, MAX_TEXT_DISPLAY_LENGTH)
+      })
+    }
 
     const activityComponents = activityText
       ? [{ type: ComponentType.TextDisplay, content: activityText }]
@@ -1416,7 +1409,7 @@ function buildAgentPayload(
       const content = typeof payload.content === 'string' ? payload.content : ''
       const activity = activityText ? `\n\n${activityText}` : ''
       const available = Math.max(0, 2000 - promptHeader.length - activity.length)
-      payload.content = `${promptHeader}${content.slice(0, available)}${activity}`
+      payload.content = `${promptHeader}${keepEnd(content, available)}${activity}`
     } else {
       const content = typeof payload.content === 'string' ? payload.content : ''
       const activity = activityText ? `\n\n${activityText}` : ''
@@ -1425,7 +1418,7 @@ function buildAgentPayload(
         0,
         2000 - promptHeader.length - activity.length - footerSection.length
       )
-      payload.content = `${promptHeader}${content.slice(0, available)}${activity}${footerSection}`
+      payload.content = `${promptHeader}${keepEnd(content, available)}${activity}${footerSection}`
     }
     payload.flags = flags & MessageFlags.SuppressEmbeds
   }
@@ -2099,6 +2092,7 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
 }
 
 export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const startedAt = Date.now()
   const prompt = interaction.options.getString('prompt', true).trim()
   const requestedSession = interaction.options.getString('session')?.trim()
   const sessionName =
@@ -2227,6 +2221,12 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
       if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
     }
   })
+  if (Date.now() - startedAt >= SLOW_RESPONSE_MS) {
+    await interaction.followUp({
+      content: '완료되었습니다.',
+      allowedMentions: { parse: [] }
+    })
+  }
 }
 
 export interface WebAgentRequest {
