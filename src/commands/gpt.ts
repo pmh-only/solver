@@ -1620,7 +1620,8 @@ async function runGptStream(
       maxTokens: ctx.maxTokens,
       params: {
         tools: [{ type: 'web_search' }],
-        ...(ctx.effort !== 'none' ? { reasoning: { effort: ctx.effort, summary: 'auto' } } : {})
+        reasoning:
+          ctx.effort === 'none' ? { effort: 'none' } : { effort: ctx.effort, summary: 'auto' }
       }
     })
     let currentAgent: Agent | undefined

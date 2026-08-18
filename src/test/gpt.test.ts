@@ -1199,6 +1199,26 @@ describe('/a', () => {
     )
   })
 
+  it('explicitly disables reasoning when effort is none', async () => {
+    await dispatch(
+      agentCommandJSON('answer quickly', {}, 'fast', {
+        model: 'gpt-5.6-sol',
+        effort: 'none'
+      }),
+      subs
+    )
+
+    expect(modelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'gpt-5.6-sol',
+        params: {
+          reasoning: { effort: 'none' },
+          tools: [{ type: 'web_search' }]
+        }
+      })
+    )
+  })
+
   it('creates and lists web sessions with their persisted settings', async () => {
     const created = createWebSession('web-user', 'project notes')
 
