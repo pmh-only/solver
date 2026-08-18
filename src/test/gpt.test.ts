@@ -48,12 +48,14 @@ const {
   mcpToolFailures,
   mcpToolGroups,
   mcpToolNumber,
+  modelMiddlewareHandlers,
   modelMock,
   componentActions,
   modalActions,
   registeredAgentTools,
   responsePayloads,
   streamRelease,
+  responseIds,
   streamMock,
   toolMock,
   toolRegistryAddMock,
@@ -71,10 +73,12 @@ const {
     mcpToolFailures: [] as boolean[],
     mcpToolGroups: [] as Record<string, unknown>[][],
     mcpToolNumber: { value: 0 },
+    modelMiddlewareHandlers: [] as Array<(context: never) => Promise<unknown>>,
     modelMock: vi.fn(),
     componentActions: [] as Record<string, unknown>[],
     modalActions: [] as Record<string, unknown>[],
     responsePayloads: [] as unknown[],
+    responseIds: [] as string[],
     streamRelease: { resolve: undefined as (() => void) | undefined },
     streamMock: vi.fn(),
     toolMock: vi.fn((options) => options),
@@ -112,6 +116,7 @@ vi.mock('@strands-agents/sdk/models/openai', () => ({
 }))
 
 vi.mock('@strands-agents/sdk', () => ({
+  InvokeModelStage: { Input: {} },
   tool: toolMock,
   McpClient: class MockMcpClient {
     disconnect = disconnectMock
@@ -143,10 +148,27 @@ vi.mock('@strands-agents/sdk', () => ({
       remove: (name: string) => void
       addOrReplace: (tools: Record<string, unknown>[]) => void
     }
+    private modelStateValues: Record<string, unknown>
+    modelState: {
+      get: (key: string) => unknown
+      set: (key: string, value: unknown) => void
+    }
+    addMiddleware = vi.fn((_stage: unknown, handler: (context: never) => Promise<unknown>) => {
+      modelMiddlewareHandlers.push(handler)
+    })
 
     constructor(options: unknown) {
       agentMock(options)
       this.options = options as typeof this.options
+      this.modelStateValues = {
+        ...(options as { modelState?: Record<string, unknown> }).modelState
+      }
+      this.modelState = {
+        get: (key) => this.modelStateValues[key],
+        set: (key, value) => {
+          this.modelStateValues[key] = value
+        }
+      }
       const initial = (options as { messages?: Array<{ role: 'user' | 'assistant'; content: [] }> })
         .messages
       this.messages = (initial ?? []).map((message) => this.message(message))
@@ -172,6 +194,8 @@ vi.mock('@strands-agents/sdk', () => ({
     async *stream(prompt: string, options: unknown) {
       this.messages.push(this.message({ role: 'user', content: [{ text: prompt }] }))
       const streamResult = streamMock(prompt, options)
+      const responseId = responseIds.shift()
+      if (responseId) this.modelState.set('responseId', responseId)
       if (streamResult instanceof Error) throw streamResult
       if (streamResult === 'waitInTool') {
         const wait = this.options.tools?.find((candidate) => candidate.name === 'wait')
@@ -401,9 +425,11 @@ beforeEach(() => {
   mcpToolFailures.length = 0
   registeredAgentTools.clear()
   responsePayloads.length = 0
+  responseIds.length = 0
   streamRelease.resolve = undefined
   mcpToolGroups.length = 0
   mcpToolNumber.value = 0
+  modelMiddlewareHandlers.length = 0
   clearModelCache()
   clearStoredValues()
 })
@@ -525,9 +551,10 @@ describe('/a', () => {
       expect.objectContaining({
         api: 'responses',
         apiKey: 'test-key',
-        clientConfig: { baseURL: 'https://api.openai.com/v1' },
+        clientConfig: { baseURL: 'https://api.openai.com/v1', maxRetries: 0 },
         modelId: 'gpt-5.4',
         params: {
+          parallel_tool_calls: true,
           reasoning: { effort: 'medium', summary: 'auto' },
           tools: [{ type: 'web_search' }]
         }
@@ -573,6 +600,8 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        retryStrategy: null,
+        toolExecutor: 'concurrent',
         tools: [
           expect.objectContaining({ name: 'shell' }),
           expect.objectContaining({ name: 'wait' }),
@@ -663,6 +692,29 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
+  it('streams response content before the final edit', async () => {
+    const calls = await dispatch(agentCommandJSON('answer now'), subs)
+    const progressEdits = calls
+      .filter((call) => call.method === 'PATCH')
+      .slice(0, -1)
+      .map((call) => JSON.stringify(call.body))
+
+    expect(progressEdits.some((edit) => edit.includes('hello world'))).toBe(true)
+  })
+
+  it('streams only the top-level content field', async () => {
+    responsePayloads.push('{"embeds":[{"content":"nested content"}],"content":"visible answer"}')
+
+    const calls = await dispatch(agentCommandJSON('answer now'), subs)
+    const progressEdits = calls
+      .filter((call) => call.method === 'PATCH')
+      .slice(0, -1)
+      .map((call) => JSON.stringify(call.body))
+
+    expect(progressEdits.some((edit) => edit.includes('visible answer'))).toBe(true)
+    expect(progressEdits.every((edit) => !edit.includes('nested content'))).toBe(true)
+  })
+
   it('aggregates repeated tool uses without exposing reasoning or statuses', async () => {
     streamMock.mockReturnValueOnce('multipleActivity')
 
@@ -691,53 +743,39 @@ describe('/a', () => {
     expect(getStoredValue('gpt-session:default')).toContain('{\\"content\\":\\"(no response)\\"}')
   })
 
-  it('retries malformed tool input JSON with stricter tool guidance', async () => {
+  it('does not retry malformed tool input JSON', async () => {
     streamMock.mockReturnValueOnce(new Error('unable to parse tool input JSON'))
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('Ensure every tool input is one complete valid JSON object'),
-      expect.anything()
-    )
-    expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).not.toContain('error: unable to parse tool input JSON')
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(calls)).toContain('error: unable to parse tool input JSON')
   })
 
-  it('continues from the current agent state after a general tool-use error', async () => {
+  it('does not retry a general tool-use error', async () => {
     streamMock.mockReturnValueOnce(new Error('tool execution failed'))
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('Continue from the current state'),
-      expect.anything()
-    )
-    expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).not.toContain('error: tool execution failed')
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(calls)).toContain('error: tool execution failed')
   })
 
-  it('has the current agent repair malformed response JSON', async () => {
+  it('does not retry malformed response JSON', async () => {
     responsePayloads.push('not valid JSON', { content: 'repaired response' })
 
     const calls = await dispatch(agentCommandJSON('show status'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('Unexpected token'),
-      expect.anything()
-    )
-    expect(JSON.stringify(calls)).toContain('repaired response')
-    expect(JSON.stringify(calls)).not.toContain('error: Unexpected token')
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(calls)).not.toContain('repaired response')
+    expect(JSON.stringify(calls)).toContain('error: Unexpected token')
   })
 
   it('retains compact tool counts if malformed tool input persists', async () => {
-    streamMock.mockReturnValueOnce('throwAfterActivity').mockReturnValueOnce('throwAfterActivity')
+    streamMock.mockReturnValueOnce('throwAfterActivity')
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
     const finalEdit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
@@ -746,7 +784,7 @@ describe('/a', () => {
     expect(agentMock).toHaveBeenCalledTimes(1)
     expect(rendered).toContain('error: unable to parse tool input JSON')
     expect(rendered).not.toContain('I should look this up.')
-    expect(rendered).toContain('(docker_listx2, web_searchx1)')
+    expect(rendered).toContain('(docker_listx1, web_searchx1)')
     expect(rendered).not.toContain(': error')
     expect(rendered).not.toContain('secret')
   })
@@ -815,10 +853,10 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('continue elsewhere', {}, 'other'), subs)
 
     expect(modelMock.mock.calls[0]?.[0]).toMatchObject({
-      clientConfig: { baseURL: 'https://inference.example.com/openai/v1' }
+      clientConfig: { baseURL: 'https://inference.example.com/openai/v1', maxRetries: 0 }
     })
     expect(modelMock.mock.calls[1]?.[0]).toMatchObject({
-      clientConfig: { baseURL: 'https://inference.example.com/openai/v1' }
+      clientConfig: { baseURL: 'https://inference.example.com/openai/v1', maxRetries: 0 }
     })
 
     await dispatch(
@@ -826,7 +864,7 @@ describe('/a', () => {
       subs
     )
     expect(modelMock.mock.calls[2]?.[0]).toMatchObject({
-      clientConfig: { baseURL: 'https://api.openai.com/v1' }
+      clientConfig: { baseURL: 'https://api.openai.com/v1', maxRetries: 0 }
     })
   })
 
@@ -1134,34 +1172,14 @@ describe('/a', () => {
     expect(tools).toHaveLength(14)
   })
 
-  it('automatically diagnoses a closed MCP connection without MCP tools', async () => {
+  it('does not retry a closed MCP connection', async () => {
     streamMock.mockReturnValueOnce(new Error('MCP error -32000: Connection closed'))
 
     const calls = await dispatch(agentCommandJSON('list my containers'), subs)
 
-    expect(agentMock).toHaveBeenCalledTimes(2)
-    expect(agentMock).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        systemPrompt: expect.stringContaining('Diagnose the reported MCP connection failure'),
-        tools: [
-          expect.objectContaining({ name: 'shell' }),
-          expect.objectContaining({ name: 'wait' }),
-          expect.objectContaining({ name: 'publish_html' }),
-          expect.objectContaining({ name: 'spotify_authenticate' }),
-          expect.objectContaining({ name: 'google_calendar_authenticate' }),
-          expect.objectContaining({ name: 'manage_mcp_servers' }),
-          expect.objectContaining({ name: 'manage_response_modals' })
-        ]
-      })
-    )
-    expect(streamMock).toHaveBeenNthCalledWith(
-      2,
-      expect.stringMatching(/docker MCP.*filesystem MCP.*playwright MCP/),
-      expect.anything()
-    )
-    expect(JSON.stringify(calls)).toContain('hello world')
-    expect(JSON.stringify(calls)).not.toContain('error: MCP error -32000: Connection closed')
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(calls)).toContain('error: MCP error -32000: Connection closed')
     expect(disconnectMock).not.toHaveBeenCalled()
   })
 
@@ -1192,6 +1210,7 @@ describe('/a', () => {
         modelId: 'gpt-5.4-mini',
         maxTokens: 2048,
         params: {
+          parallel_tool_calls: true,
           reasoning: { effort: 'high', summary: 'auto' },
           tools: [{ type: 'web_search' }]
         }
@@ -1212,11 +1231,69 @@ describe('/a', () => {
       expect.objectContaining({
         modelId: 'gpt-5.6-sol',
         params: {
+          parallel_tool_calls: true,
           reasoning: { effort: 'none' },
           tools: [{ type: 'web_search' }]
         }
       })
     )
+  })
+
+  it('omits sequential-thinking tools when effort is none', async () => {
+    mcpToolGroups.push(
+      [{ name: 'docker_tool' }],
+      [{ name: 'filesystem_tool' }],
+      [{ name: 'memory_tool' }],
+      [{ name: 'think' }],
+      [{ name: 'fetch_tool' }],
+      [{ name: 'time_tool' }],
+      [{ name: 'playwright_tool' }]
+    )
+
+    await dispatch(agentCommandJSON('answer quickly', {}, 'fast', { effort: 'none' }), subs)
+
+    const tools = (agentMock.mock.calls[0]![0] as { tools: Array<{ name: string }> }).tools
+    expect(tools.some(({ name }) => name.startsWith('sequential_thinking_'))).toBe(false)
+    expect(tools).toContainEqual(expect.objectContaining({ name: 'filesystem_filesystem_tool' }))
+  })
+
+  it('continues a session with the previous Responses API id', async () => {
+    responseIds.push('response-one', 'response-two')
+
+    await dispatch(agentCommandJSON('first question'), subs)
+    await dispatch(agentCommandJSON('follow up'), subs)
+
+    expect(modelMock).toHaveBeenCalledWith(expect.objectContaining({ stateful: true }))
+    expect(agentMock.mock.calls[1]?.[0]).toMatchObject({
+      messages: [],
+      modelState: { responseId: 'response-one' }
+    })
+    const middlewareResult = (await modelMiddlewareHandlers[0]?.({
+      messages: [
+        { role: 'user', content: 'question' },
+        { role: 'assistant', content: 'tool call' },
+        { role: 'user', content: 'tool result' }
+      ]
+    } as never)) as { messages: Array<{ content: string }> }
+    expect(middlewareResult.messages).toEqual([{ role: 'user', content: 'tool result' }])
+    expect(getStoredValue('gpt-session:default')).toContain('response-two')
+  })
+
+  it('rebuilds local history when the model changes', async () => {
+    responseIds.push('response-one')
+    await dispatch(agentCommandJSON('first question'), subs)
+
+    await dispatch(
+      agentCommandJSON('use another model', {}, 'default', { model: 'gpt-5.6-sol' }),
+      subs
+    )
+
+    expect(agentMock.mock.calls[1]?.[0]).toMatchObject({
+      messages: [
+        { role: 'user', content: [{ text: 'first question' }] },
+        { role: 'assistant', content: [{ text: '{"content":"hello world"}' }] }
+      ]
+    })
   })
 
   it('creates and lists web sessions with their persisted settings', async () => {
@@ -2115,13 +2192,27 @@ describe('/a', () => {
     expectStoredAgentHistory(-1, 'work question')
   })
 
-  it('serializes overlapping requests in the same session', async () => {
+  it('cancels an overlapping request in the same session', async () => {
     await Promise.all([
       dispatch(agentCommandJSON('first concurrent question'), subs),
       dispatch(agentCommandJSON('second concurrent question'), subs)
     ])
 
-    expectStoredAgentHistory(1, 'first concurrent question')
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    expect(streamMock).toHaveBeenCalledWith('second concurrent question', expect.anything())
+  })
+
+  it('cancels a running Discord request before starting its replacement', async () => {
+    streamMock.mockReturnValueOnce('waitForAbort')
+    const first = dispatch(agentCommandJSON('first long question'), subs)
+    await vi.waitFor(() => expect(streamMock).toHaveBeenCalledTimes(1))
+
+    const second = dispatch(agentCommandJSON('replacement question'), subs)
+    const [firstCalls, secondCalls] = await Promise.all([first, second])
+
+    expect(JSON.stringify(firstCalls)).toContain('cancelled')
+    expect(JSON.stringify(secondCalls)).toContain('hello world')
+    expect(streamMock).toHaveBeenNthCalledWith(2, 'replacement question', expect.anything())
   })
 
   it('does not inject session metadata into agent-owned output', async () => {

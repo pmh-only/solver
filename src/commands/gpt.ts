@@ -23,6 +23,7 @@ import type {
 } from 'discord.js'
 import {
   Agent,
+  InvokeModelStage,
   McpClient,
   tool,
   type MessageData,
@@ -235,6 +236,7 @@ interface GptContext {
   sessionName: string
   history: ConversationTurn[]
   modelHistory: MessageData[]
+  responseState?: ResponseState
   components: GptManagedComponent[]
   senderOnlyComponentIds: string[]
   modals: Record<string, GptManagedComponent>
@@ -254,6 +256,13 @@ interface StoredConversation {
   version: 2
   turns: ConversationTurn[]
   messages: MessageData[]
+  responseState?: ResponseState
+}
+
+interface ResponseState {
+  id: string
+  model: string
+  endpoint: string
 }
 
 interface AgentActivity {
@@ -298,28 +307,16 @@ const activeWebRuns = new Map<string, ActiveWebRun>()
 interface ActiveDiscordRun {
   prompt: string
   startedAt: string
+  controller: AbortController
   latestPayload: InteractionEditReplyOptions
   persisted: boolean
 }
 
 const activeDiscordRuns = new Map<string, ActiveDiscordRun>()
 
-function isMcpConnectionClosed(error: unknown): boolean {
-  let current = error
-  for (let depth = 0; depth < 5 && current; depth++) {
-    if (String(current).includes('MCP error -32000: Connection closed')) return true
-    current = current instanceof Error ? current.cause : undefined
-  }
-  return false
-}
-
-function isToolInputJsonError(error: unknown): boolean {
-  let current = error
-  for (let depth = 0; depth < 5 && current; depth++) {
-    if (String(current).toLowerCase().includes('unable to parse tool input json')) return true
-    current = current instanceof Error ? current.cause : undefined
-  }
-  return false
+function cancelActiveSession(key: string): void {
+  activeWebRuns.get(key)?.controller.abort()
+  activeDiscordRuns.get(key)?.controller.abort()
 }
 
 function replaceDuplicateTools<T extends { name: string }>(tools: T[]): T[] {
@@ -1100,6 +1097,16 @@ function validModelMessages(value: unknown): value is MessageData[] {
   )
 }
 
+function validResponseState(value: unknown): value is ResponseState {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    typeof (value as ResponseState).id === 'string' &&
+    typeof (value as ResponseState).model === 'string' &&
+    typeof (value as ResponseState).endpoint === 'string'
+  )
+}
+
 function legacyAgentMessages(history: ConversationTurn[]): MessageData[] {
   return history.map((turn) => ({
     role: turn.role,
@@ -1127,7 +1134,15 @@ function loadConversation(userId: string, sessionName: string): StoredConversati
       validConversationTurns((parsed as Partial<StoredConversation>).turns) &&
       validModelMessages((parsed as Partial<StoredConversation>).messages)
     ) {
-      return parsed as StoredConversation
+      const conversation = parsed as StoredConversation
+      return {
+        version: 2,
+        turns: conversation.turns,
+        messages: conversation.messages,
+        ...(validResponseState(conversation.responseState)
+          ? { responseState: conversation.responseState }
+          : {})
+      }
     }
     return { version: 2, turns: [], messages: [] }
   } catch {
@@ -1156,34 +1171,31 @@ function storeConversation(
           ...(status !== 'complete' ? { status } : {})
         }
       ],
-      messages
+      messages,
+      ...(ctx.responseState ? { responseState: ctx.responseState } : {})
     } satisfies StoredConversation)
   )
 }
 
 function loadContextConversation(ctx: GptContext): void {
   const conversation = loadConversation(ctx.userId, ctx.sessionName)
+  const responseState = conversation.responseState
+  const canContinueResponse =
+    responseState?.model === ctx.model && responseState.endpoint === loadOpenAIEndpoint()
   ctx.history = conversation.turns
-  ctx.modelHistory = conversation.messages
+  ctx.modelHistory =
+    conversation.messages.length > 0 || canContinueResponse
+      ? conversation.messages
+      : legacyAgentMessages(conversation.turns)
+  ctx.responseState = canContinueResponse ? responseState : undefined
 }
 
-function ensureTurnMessages(
-  ctx: GptContext,
-  messages: MessageData[],
-  assistantText: string
-): MessageData[] {
-  const appendedMessages = messages.slice(ctx.modelHistory.length)
-  if (!appendedMessages.some(({ role }) => role === 'user')) {
-    return [
-      ...ctx.modelHistory,
-      { role: 'user', content: [{ text: ctx.prompt }] },
-      { role: 'assistant', content: [{ text: assistantText }] }
-    ]
-  }
-  if (messages.at(-1)?.role !== 'assistant') {
-    return [...messages, { role: 'assistant', content: [{ text: assistantText }] }]
-  }
-  return messages
+function fallbackTurnMessages(ctx: GptContext, assistantText: string): MessageData[] {
+  return [
+    ...legacyAgentMessages(ctx.history),
+    { role: 'user', content: [{ text: ctx.prompt }] },
+    { role: 'assistant', content: [{ text: assistantText }] }
+  ]
 }
 
 async function runInSession(
@@ -1209,6 +1221,87 @@ function footerSessionName(sessionName: string): string {
 
 function keepEnd(value: string, maxLength: number): string {
   return maxLength > 0 ? value.slice(-maxLength) : ''
+}
+
+function readJsonString(
+  value: string,
+  start: number
+): { text: string; end: number; complete: boolean } {
+  let result = ''
+  for (let index = start + 1; index < value.length; index++) {
+    const char = value[index]!
+    if (char === '"') return { text: result, end: index, complete: true }
+    if (char !== '\\') {
+      result += char
+      continue
+    }
+
+    const escaped = value[++index]
+    if (escaped === undefined) break
+    if (escaped === 'u') {
+      const code = value.slice(index + 1, index + 5)
+      if (!/^[0-9a-f]{4}$/i.test(code)) break
+      result += String.fromCharCode(Number.parseInt(code, 16))
+      index += 4
+      continue
+    }
+    const escapes: Record<string, string> = {
+      '"': '"',
+      '\\': '\\',
+      '/': '/',
+      b: '\b',
+      f: '\f',
+      n: '\n',
+      r: '\r',
+      t: '\t'
+    }
+    result += escapes[escaped] ?? escaped
+  }
+  return { text: result, end: value.length, complete: false }
+}
+
+function streamedJsonContent(value: string): string {
+  let depth = 0
+  let expectingKey = false
+
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index]!
+    if (char === '{' || char === '[') {
+      depth++
+      if (depth === 1 && char === '{') expectingKey = true
+      continue
+    }
+    if (char === '}' || char === ']') {
+      depth--
+      continue
+    }
+    if (char === ',' && depth === 1) {
+      expectingKey = true
+      continue
+    }
+    if (char !== '"') continue
+
+    const parsed = readJsonString(value, index)
+    if (depth !== 1 || !expectingKey) {
+      if (!parsed.complete) return ''
+      index = parsed.end
+      continue
+    }
+    if (!parsed.complete) return ''
+
+    let valueStart = parsed.end + 1
+    while (/\s/.test(value[valueStart] ?? '')) valueStart++
+    if (value[valueStart] !== ':') return ''
+    valueStart++
+    while (/\s/.test(value[valueStart] ?? '')) valueStart++
+    expectingKey = false
+
+    if (parsed.text === 'content' && value[valueStart] === '"') {
+      return readJsonString(value, valueStart).text
+    }
+    index = parsed.end
+  }
+  return ''
 }
 
 function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usage?: Usage): string {
@@ -1241,7 +1334,8 @@ function legacyAgentPromptHeader(ctx: GptContext): string {
 
 function buildAgentProgressPayload(
   ctx: GptContext,
-  activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
+  activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false },
+  responsePreview = ''
 ): InteractionEditReplyOptions {
   const activityText = formatAgentActivity(activity)
   return {
@@ -1249,6 +1343,14 @@ function buildAgentProgressPayload(
     embeds: [],
     components: [
       ...agentPromptHeaderComponents(ctx),
+      ...(responsePreview
+        ? [
+            {
+              type: ComponentType.TextDisplay,
+              content: keepEnd(responsePreview, MAX_TEXT_DISPLAY_LENGTH)
+            } as GptManagedComponent
+          ]
+        : []),
       ...(activityText
         ? [{ type: ComponentType.TextDisplay, content: activityText } as GptManagedComponent]
         : []),
@@ -1548,10 +1650,11 @@ async function runGptStream(
     const response = JSON.stringify({ content: 'no OpenAI API token configured' })
     const payload = buildAgentPayload(response, token, ctx)
     await callbacks.editPayload(payload)
+    ctx.responseState = undefined
     storeConversation(
       ctx,
       response,
-      ensureTurnMessages(ctx, ctx.modelHistory, 'no OpenAI API token configured'),
+      fallbackTurnMessages(ctx, 'no OpenAI API token configured'),
       JSON.stringify(payload)
     )
     callbacks.stored?.()
@@ -1576,7 +1679,7 @@ async function runGptStream(
   let lastProgressPayload = ''
 
   const updateProgress = async (force = false): Promise<void> => {
-    const payload = buildAgentProgressPayload(ctx, activity)
+    const payload = buildAgentProgressPayload(ctx, activity, streamedJsonContent(responseContent))
     const serializedPayload = JSON.stringify(payload)
     const now = Date.now()
     if (serializedPayload === lastProgressPayload || (!force && now - lastProgressUpdate < 1000))
@@ -1594,12 +1697,13 @@ async function runGptStream(
       .join('; ')
     const systemInstruction = [
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
-      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
+      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
       'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,
       'When using the coding agent, submit the request once and avoid repeatedly polling for status unless there is a concrete need to check.',
+      'Call all independent tools together in the same turn instead of waiting for one result before requesting another.',
       process.env.WEB_DOMAIN?.trim()
         ? 'Use publish_html to create a persistent single-file web page at a new unique URL under the configured web domain.'
         : 'Use publish_html to create a persistent single-file web page at a new unique /shared/<uuid> path. WEB_DOMAIN is not configured, so tell the user that its public absolute URL is unavailable.',
@@ -1612,14 +1716,22 @@ async function runGptStream(
       .filter(Boolean)
       .join('\n')
 
+    const endpoint = loadOpenAIEndpoint()
+    const responseState =
+      ctx.responseState?.model === ctx.model && ctx.responseState.endpoint === endpoint
+        ? ctx.responseState
+        : undefined
+    if (!responseState) ctx.responseState = undefined
     const model = new OpenAIModel({
       api: 'responses',
+      stateful: true,
       modelId: ctx.model,
       apiKey,
-      clientConfig: { baseURL: loadOpenAIEndpoint() },
+      clientConfig: { baseURL: endpoint, maxRetries: 0 },
       maxTokens: ctx.maxTokens,
       params: {
         tools: [{ type: 'web_search' }],
+        parallel_tool_calls: true,
         reasoning:
           ctx.effort === 'none' ? { effort: 'none' } : { effort: ctx.effort, summary: 'auto' }
       }
@@ -1647,11 +1759,14 @@ async function runGptStream(
         ? localTools
         : replaceDuplicateTools([
             ...localTools,
-            ...[...agentMcpConnections.values()].flatMap(({ tools }) => tools)
+            ...[...agentMcpConnections]
+              .filter(([name]) => ctx.effort !== 'none' || name !== 'sequential_thinking')
+              .flatMap(([, { tools }]) => tools)
           ])
       agent = new Agent({
         model,
-        messages: ctx.modelHistory,
+        messages: responseState ? [] : ctx.modelHistory,
+        ...(responseState ? { modelState: { responseId: responseState.id } } : {}),
         systemPrompt: diagnosing
           ? [
               systemInstruction,
@@ -1661,7 +1776,22 @@ async function runGptStream(
               .join('\n')
           : systemInstruction,
         tools: agentTools,
+        toolExecutor: 'concurrent',
+        retryStrategy: null,
         printer: false
+      })
+      agent.addMiddleware(InvokeModelStage.Input, async (context) => {
+        if (!agent.modelState.get('responseId')) return context
+        let lastAssistant = -1
+        for (let index = context.messages.length - 1; index >= 0; index--) {
+          if (context.messages[index]?.role === 'assistant') {
+            lastAssistant = index
+            break
+          }
+        }
+        return lastAssistant < 0
+          ? context
+          : { ...context, messages: context.messages.slice(lastAssistant + 1) }
       })
       currentAgent = agent
       await consumeAgentStream(agent, prompt, diagnosing)
@@ -1685,12 +1815,17 @@ async function runGptStream(
             if (event.event.type === 'modelContentBlockDeltaEvent') {
               if (event.event.delta.type === 'textDelta') {
                 contentBlockStarted = false
+                const hadResponsePreview = Boolean(streamedJsonContent(responseContent))
                 if (!activity.responseStarted) {
                   activity.responseStarted = true
                   activityChanged = true
                   forceProgressUpdate = true
                 }
                 responseContent += event.event.delta.text
+                activityChanged = true
+                if (!hadResponsePreview && streamedJsonContent(responseContent)) {
+                  forceProgressUpdate = true
+                }
               } else if (
                 event.event.delta.type === 'reasoningContentDelta' &&
                 event.event.delta.text
@@ -1744,6 +1879,14 @@ async function runGptStream(
         }
       } finally {
         modelMessages = agent.messages.map((message) => message.toJSON())
+        const responseId = agent.modelState?.get('responseId')
+        if (typeof responseId === 'string' && responseId !== responseState?.id) {
+          ctx.responseState = { id: responseId, model: ctx.model, endpoint }
+          modelMessages = []
+        } else if (responseState) {
+          ctx.responseState = undefined
+          modelMessages = fallbackTurnMessages(ctx, responseContent || '(no response)')
+        }
         if (diagnosing) {
           const userMessage = modelMessages[ctx.modelHistory.length]
           if (userMessage?.role === 'user') userMessage.content = [{ text: ctx.prompt }]
@@ -1751,62 +1894,11 @@ async function runGptStream(
       }
     }
 
-    let retried = false
-    const retryFromCurrentState = async (error: unknown): Promise<void> => {
-      retried = true
-      for (const usedTool of activity.tools) {
-        if (usedTool.status === 'running') usedTool.status = 'error'
-      }
-      await updateProgress(true)
-      responseContent = ''
-      usage = undefined
-      activity.responseStarted = false
-      const message = error instanceof Error ? error.message : String(error)
-      const toolGuidance = isToolInputJsonError(error)
-        ? ' Ensure every tool input is one complete valid JSON object that exactly matches its schema.'
-        : ''
-      const originalRequest = currentAgent ? '' : `The original request was: ${ctx.prompt}\n`
-      await streamAgent(
-        `${originalRequest}The previous attempt failed with this error: ${message}\nContinue from the current state and complete the original request. Do not repeat tool calls that already succeeded unless necessary.${toolGuidance} Return one complete valid Discord response JSON object.`,
-        false,
-        true
-      )
-    }
-
-    try {
-      await streamAgent(ctx.prompt)
-    } catch (error) {
-      if (controller.signal.aborted) throw error
-      if (isMcpConnectionClosed(error)) {
-        retried = true
-        responseContent = ''
-        usage = undefined
-        activity.reasoning = ''
-        activity.tools = []
-        activity.responseStarted = false
-        const integrations = [...agentMcpConnections.keys()]
-          .map((name) => `${name} MCP`)
-          .join(' and ')
-        await streamAgent(
-          `The original request was: ${ctx.prompt}\n\nThe agent encountered "MCP error -32000: Connection closed" while loading or using ${integrations}. Diagnose what likely went wrong and tell the user how to recover. If possible, also answer the original request without MCP tools.`,
-          true
-        )
-      } else {
-        await retryFromCurrentState(error)
-      }
-    }
+    await streamAgent(ctx.prompt)
 
     if (!controller.signal.aborted) {
-      let response = responseContent || JSON.stringify({ content: '(no response)' })
-      let payload: InteractionEditReplyOptions
-      try {
-        payload = buildAgentPayload(response, token, ctx, usage, activity)
-      } catch (error) {
-        if (retried) throw error
-        await retryFromCurrentState(error)
-        response = responseContent || JSON.stringify({ content: '(no response)' })
-        payload = buildAgentPayload(response, token, ctx, usage, activity)
-      }
+      const response = responseContent || JSON.stringify({ content: '(no response)' })
+      const payload = buildAgentPayload(response, token, ctx, usage, activity)
       await callbacks.editPayload(payload)
       storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
       conversationStored = true
@@ -1821,6 +1913,7 @@ async function runGptStream(
     }
 
     const errMsg = error instanceof Error ? error.message : 'unknown error'
+    ctx.responseState = undefined
     for (const usedTool of activity.tools) {
       if (usedTool.status === 'running') usedTool.status = 'error'
     }
@@ -1830,14 +1923,15 @@ async function runGptStream(
     storeConversation(
       ctx,
       response,
-      ensureTurnMessages(ctx, modelMessages, `error: ${errMsg}`),
+      fallbackTurnMessages(ctx, `error: ${errMsg}`),
       JSON.stringify(payload)
     )
     conversationStored = true
     callbacks.stored?.()
   } finally {
     if (controller.signal.aborted && !conversationStored) {
-      modelMessages = ensureTurnMessages(ctx, modelMessages, 'Cancelled by user')
+      ctx.responseState = undefined
+      modelMessages = fallbackTurnMessages(ctx, 'Cancelled by user')
       const payload = buildAgentCancelledPayload(ctx, activity)
       storeConversation(
         ctx,
@@ -2129,6 +2223,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   if (prompt === '/clear') {
     await interaction.deferReply()
+    cancelActiveSession(sessionKey(sessionName))
     await runInSession(interaction.user.id, sessionName, async () => {
       beginSessionCommand(interaction.user.id, sessionName)
       try {
@@ -2191,38 +2286,49 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
 
   const callbacks = makeCallbacks(interaction, pub)
   const key = sessionKey(sessionName)
-  await runInSession(interaction.user.id, sessionName, async () => {
-    const active: ActiveDiscordRun = {
-      prompt,
-      startedAt: new Date().toISOString(),
-      latestPayload: buildAgentProgressPayload(ctx),
-      persisted: false
-    }
-    activeDiscordRuns.set(key, active)
-    const sharedCallbacks: StreamCallbacks = {
-      editMain: callbacks.editMain,
-      editPayload: async (payload) => {
-        active.latestPayload = payload
-        await callbacks.editPayload(payload)
-      },
-      stored: () => {
-        active.persisted = true
+  cancelActiveSession(key)
+  const active: ActiveDiscordRun = {
+    prompt,
+    startedAt: new Date().toISOString(),
+    controller: new AbortController(),
+    latestPayload: buildAgentProgressPayload(ctx),
+    persisted: false
+  }
+  activeDiscordRuns.set(key, active)
+  try {
+    await runInSession(interaction.user.id, sessionName, async () => {
+      const sharedCallbacks: StreamCallbacks = {
+        editMain: callbacks.editMain,
+        editPayload: async (payload) => {
+          active.latestPayload = payload
+          await callbacks.editPayload(payload)
+        },
+        stored: () => {
+          active.persisted = true
+        }
       }
-    }
-    beginSessionCommand(interaction.user.id, sessionName)
-    try {
-      loadContextConversation(ctx)
-      storeGptContext(token, ctx)
-      await runGptStream(sharedCallbacks, ctx, token)
-    } finally {
-      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
-        deleteGptContext(token)
-      else storeGptContext(token, ctx)
-      finishSessionCommand(interaction.user.id, sessionName)
-      if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
-    }
-  })
-  if (Date.now() - startedAt >= SLOW_RESPONSE_MS) {
+      beginSessionCommand(interaction.user.id, sessionName)
+      try {
+        if (active.controller.signal.aborted) {
+          await callbacks.editPayload(
+            buildAgentCancelledPayload(ctx, { reasoning: '', tools: [], responseStarted: false })
+          )
+          return
+        }
+        loadContextConversation(ctx)
+        storeGptContext(token, ctx)
+        await runGptStream(sharedCallbacks, ctx, token, active.controller.signal)
+      } finally {
+        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
+          deleteGptContext(token)
+        else storeGptContext(token, ctx)
+        finishSessionCommand(interaction.user.id, sessionName)
+      }
+    })
+  } finally {
+    if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
+  }
+  if (!active.controller.signal.aborted && Date.now() - startedAt >= SLOW_RESPONSE_MS) {
     await interaction.followUp({
       content: '완료되었습니다.',
       allowedMentions: { parse: [] }
@@ -2428,7 +2534,7 @@ export async function runWebAgent(
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
   const key = sessionKey(sessionName)
-  activeWebRuns.get(key)?.controller.abort()
+  cancelActiveSession(key)
   const controller = new AbortController()
   const abort = () => controller.abort()
   if (signal?.aborted) controller.abort()
