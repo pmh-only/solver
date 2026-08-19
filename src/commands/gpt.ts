@@ -714,7 +714,7 @@ function lazyMcpToolLoader(getAgent: () => Agent, effort: EffortLevel) {
   return tool({
     name: 'load_mcp_tools',
     description:
-      'Discover and load MCP tools only when the request needs an external capability. First use list to inspect available servers and their tools, then use load with only the required server names. Loaded tools become available immediately in the current request.',
+      'Discover and load MCP tools only when the request needs an external capability. Available server names are provided in the system prompt. Load the required servers directly when their purpose is clear, or use list first to inspect their tools. Loaded tools become available immediately in the current request.',
     inputSchema: z.object({
       action: z.enum(['list', 'load']),
       servers: z
@@ -1769,20 +1769,26 @@ async function runGptStream(
     await updateProgress(true)
     timing?.span('initial progress delivery', phaseStarted)
     phaseStarted = performance.now()
-    if (ctx.toolsEnabled) await initializeAgentMcpRuntime()
+    await initializeAgentMcpRuntime()
     timing?.span('MCP runtime initialization', phaseStarted)
+    const availableMcpServers = [...agentMcpConnections.keys()].filter(
+      (name) => ctx.effort !== 'none' || name !== 'sequential_thinking'
+    )
     const mcpFailures = ctx.toolsEnabled
       ? [...agentMcpFailures].map(([name, message]) => `${name}: ${message}`).join('; ')
       : ''
     const systemInstruction = [
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
+      availableMcpServers.length > 0
+        ? `Available MCP servers: ${availableMcpServers.join(', ')}.`
+        : 'No MCP servers are currently available.',
       ctx.toolsEnabled
         ? 'Use the manage_response_modals tool before your final JSON when a response button should open a modal.'
         : null,
       ctx.toolsEnabled
         ? 'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.'
-        : 'MCP tool schemas are not loaded by default. When the request could benefit from an external capability, use load_mcp_tools to inspect the MCP catalog and load only the required servers. Do not load MCP tools for requests you can answer directly.',
+        : 'MCP tool schemas are not loaded by default. When the request could benefit from an external capability, use load_mcp_tools to load only the required servers. Inspect the catalog first only when the server names do not make the required capability clear. Do not load MCP tools for requests you can answer directly.',
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,

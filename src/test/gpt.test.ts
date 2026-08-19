@@ -651,9 +651,12 @@ describe('/a', () => {
     for (const [options] of agentMock.mock.calls) {
       expect(options).toEqual(
         expect.objectContaining({
+          systemPrompt: expect.stringContaining('Available MCP servers:'),
           tools: [expect.objectContaining({ name: 'load_mcp_tools' })]
         })
       )
+      expect(options.systemPrompt).toContain('docker')
+      expect(options.systemPrompt).toContain('filesystem')
     }
   })
 
