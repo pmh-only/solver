@@ -537,7 +537,7 @@ function validateField(field, data) {
   return ''
 }
 function controlsDisabled(disabled) {
-  ;['#model-select', '#effort', '#max-tokens', '#debug-mode'].forEach(
+  ;['#model-select', '#effort', '#max-tokens', '#tools-enabled', '#debug-mode'].forEach(
     (id) => (queryElement(id).disabled = disabled)
   )
 }
@@ -580,6 +580,7 @@ function renderSessionState(data) {
   queryElement('#effort').value = data.settings.effort
   queryElement('#max-tokens').value = data.settings.maxTokens
   queryElement('#max-tokens-value').value = data.settings.maxTokens
+  queryElement('#tools-enabled').checked = data.settings.toolsEnabled
 }
 async function loadModels() {
   try {
@@ -997,6 +998,7 @@ queryElement('#composer').addEventListener('submit', async (e) => {
     model: queryElement('#model-select').value.trim(),
     effort: queryElement('#effort').value,
     maxTokens: Number(queryElement('#max-tokens').value),
+    toolsEnabled: queryElement('#tools-enabled').checked,
     debug: queryElement('#debug-mode').checked
   }
   queryElement('#prompt').value = ''

@@ -245,6 +245,7 @@ export function agentCommandJSON(
     model?: string
     effort?: string
     tokens?: number
+    tools?: boolean | null
     systemPrompt?: string
     resetSystemPrompt?: boolean
     openAIEndpoint?: string
@@ -263,6 +264,9 @@ export function agentCommandJSON(
         ...(settings.model ? [{ name: 'model', value: settings.model, type: 3 }] : []),
         ...(settings.effort ? [{ name: 'effort', value: settings.effort, type: 3 }] : []),
         ...(settings.tokens ? [{ name: 'tokens', value: settings.tokens, type: 4 }] : []),
+        ...(settings.tools !== null
+          ? [{ name: 'tools', value: settings.tools ?? true, type: 5 }]
+          : []),
         ...(settings.systemPrompt
           ? [{ name: 'system_prompt', value: settings.systemPrompt, type: 3 }]
           : []),

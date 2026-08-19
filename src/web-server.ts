@@ -513,6 +513,7 @@ async function handleApiRequest(
           model: typeof body.model === 'string' ? body.model : undefined,
           effort: typeof body.effort === 'string' ? body.effort : undefined,
           maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
+          toolsEnabled: typeof body.toolsEnabled === 'boolean' ? body.toolsEnabled : undefined,
           runId,
           timing
         },

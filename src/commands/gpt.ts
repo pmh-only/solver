@@ -233,6 +233,7 @@ interface GptContext {
   model: string
   effort: EffortLevel
   maxTokens: number
+  toolsEnabled: boolean
   verbosity: VerbosityLevel
   userId: string
   sessionName: string
@@ -277,6 +278,7 @@ interface GptSessionSettings {
   model: string
   effort: EffortLevel
   maxTokens: number
+  toolsEnabled: boolean
 }
 
 const GPT_CONTEXT_KEY = 'gpt-ctx'
@@ -770,6 +772,7 @@ function loadGptContext(token: string): GptContext | null {
       throw new Error('Invalid sender-only component ids.')
     }
     if (!Array.isArray(parsed.modelHistory)) parsed.modelHistory = []
+    if (typeof parsed.toolsEnabled !== 'boolean') parsed.toolsEnabled = false
     if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
       parsed.modals = {}
     }
@@ -1037,7 +1040,8 @@ function loadSessionSettings(userId: string, sessionName: string): GptSessionSet
   const defaults: GptSessionSettings = {
     model: DEFAULT_MODEL,
     effort: 'medium',
-    maxTokens: DEFAULT_MAX_TOKENS
+    maxTokens: DEFAULT_MAX_TOKENS,
+    toolsEnabled: false
   }
   const stored = getStoredValue(settingsKey(sessionName))
   if (!stored) return defaults
@@ -1056,7 +1060,9 @@ function loadSessionSettings(userId: string, sessionName: string): GptSessionSet
         settings.maxTokens >= 256 &&
         settings.maxTokens <= 16384
           ? settings.maxTokens
-          : defaults.maxTokens
+          : defaults.maxTokens,
+      toolsEnabled:
+        typeof settings.toolsEnabled === 'boolean' ? settings.toolsEnabled : defaults.toolsEnabled
     }
   } catch {
     return defaults
@@ -1687,7 +1693,11 @@ async function runGptStream(
   const activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
   let lastProgressUpdate = 0
   let lastProgressPayload = ''
-  let firstUpstreamEvent = false
+  let openAIRequestStarted = false
+  let responseCreated = false
+  let firstReasoningToken = false
+  let firstFunctionCall = false
+  let firstWebSearchResult = false
   let firstResponseToken = false
   const toolStarts = new Map<string, { name: string; startedAt: number }>()
 
@@ -1707,23 +1717,34 @@ async function runGptStream(
     await updateProgress(true)
     timing?.span('initial progress delivery', phaseStarted)
     phaseStarted = performance.now()
-    await initializeAgentMcpRuntime()
+    if (ctx.toolsEnabled) await initializeAgentMcpRuntime()
     timing?.span('MCP runtime initialization', phaseStarted)
-    const mcpFailures = [...agentMcpFailures]
-      .map(([name, message]) => `${name}: ${message}`)
-      .join('; ')
+    const mcpFailures = ctx.toolsEnabled
+      ? [...agentMcpFailures].map(([name, message]) => `${name}: ${message}`).join('; ')
+      : ''
     const systemInstruction = [
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
-      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself. Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
-      'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.',
+      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
+      ctx.toolsEnabled
+        ? 'Use the manage_response_modals tool before your final JSON when a response button should open a modal.'
+        : null,
+      ctx.toolsEnabled
+        ? 'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.'
+        : null,
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,
-      'When using the coding agent, submit the request once and avoid repeatedly polling for status unless there is a concrete need to check.',
-      'Call all independent tools together in the same turn instead of waiting for one result before requesting another.',
-      process.env.WEB_DOMAIN?.trim()
-        ? 'Use publish_html to create a persistent single-file web page at a new unique URL under the configured web domain.'
-        : 'Use publish_html to create a persistent single-file web page at a new unique /shared/<uuid> path. WEB_DOMAIN is not configured, so tell the user that its public absolute URL is unavailable.',
+      ctx.toolsEnabled
+        ? 'When using the coding agent, submit the request once and avoid repeatedly polling for status unless there is a concrete need to check.'
+        : null,
+      ctx.toolsEnabled
+        ? 'Call all independent tools together in the same turn instead of waiting for one result before requesting another.'
+        : null,
+      ctx.toolsEnabled
+        ? process.env.WEB_DOMAIN?.trim()
+          ? 'Use publish_html to create a persistent single-file web page at a new unique URL under the configured web domain.'
+          : 'Use publish_html to create a persistent single-file web page at a new unique /shared/<uuid> path. WEB_DOMAIN is not configured, so tell the user that its public absolute URL is unavailable.'
+        : null,
       ctx.verbosity === 'brief'
         ? 'Be concise and to the point. Keep responses short.'
         : ctx.verbosity === 'detailed'
@@ -1747,8 +1768,7 @@ async function runGptStream(
       clientConfig: { baseURL: endpoint, maxRetries: 0 },
       maxTokens: ctx.maxTokens,
       params: {
-        tools: [{ type: 'web_search' }],
-        parallel_tool_calls: true,
+        ...(ctx.toolsEnabled ? { tools: [{ type: 'web_search' }], parallel_tool_calls: true } : {}),
         reasoning:
           ctx.effort === 'none' ? { effort: 'none' } : { effort: ctx.effort, summary: 'auto' }
       }
@@ -1761,26 +1781,28 @@ async function runGptStream(
         return
       }
 
-      const modalTool = interactionModalTool(token, ctx)
       let agent: Agent
-      const manageMcpServersTool = mcpServerManagementTool(() => agent)
-      const localTools = [
-        shellTool(controller.signal),
-        waitTool(controller.signal),
-        publishHtmlTool,
-        spotifyAuthenticationTool,
-        googleCalendarAuthenticationTool,
-        manageMcpServersTool,
-        modalTool
-      ]
-      const agentTools = diagnosing
-        ? localTools
-        : replaceDuplicateTools([
-            ...localTools,
-            ...[...agentMcpConnections]
-              .filter(([name]) => ctx.effort !== 'none' || name !== 'sequential_thinking')
-              .flatMap(([, { tools }]) => tools)
-          ])
+      const localTools = ctx.toolsEnabled
+        ? [
+            shellTool(controller.signal),
+            waitTool(controller.signal),
+            publishHtmlTool,
+            spotifyAuthenticationTool,
+            googleCalendarAuthenticationTool,
+            mcpServerManagementTool(() => agent),
+            interactionModalTool(token, ctx)
+          ]
+        : []
+      const agentTools = !ctx.toolsEnabled
+        ? []
+        : diagnosing
+          ? localTools
+          : replaceDuplicateTools([
+              ...localTools,
+              ...[...agentMcpConnections]
+                .filter(([name]) => ctx.effort !== 'none' || name !== 'sequential_thinking')
+                .flatMap(([, { tools }]) => tools)
+            ])
       agent = new Agent({
         model,
         messages: responseState ? [] : ctx.modelHistory,
@@ -1825,16 +1847,19 @@ async function runGptStream(
       try {
         for await (const event of agent.stream(prompt, { cancelSignal: controller.signal })) {
           if (controller.signal.aborted) break
-          if (!firstUpstreamEvent) {
-            firstUpstreamEvent = true
-            timing?.mark('first upstream event received')
+          if (event.type === 'beforeModelCallEvent' && !openAIRequestStarted) {
+            openAIRequestStarted = true
+            timing?.mark('OpenAI request started')
           }
 
           let activityChanged = false
           let forceProgressUpdate = false
 
           if (event.type === 'modelStreamUpdateEvent') {
-            if (event.event.type === 'modelContentBlockDeltaEvent') {
+            if (event.event.type === 'modelMessageStartEvent' && !responseCreated) {
+              responseCreated = true
+              timing?.mark('OpenAI response.created received')
+            } else if (event.event.type === 'modelContentBlockDeltaEvent') {
               if (event.event.delta.type === 'textDelta') {
                 contentBlockStarted = false
                 const hadResponsePreview = Boolean(streamedJsonContent(responseContent))
@@ -1857,6 +1882,10 @@ async function runGptStream(
                 event.event.delta.text
               ) {
                 if (contentBlockStarted) activity.reasoning = ''
+                if (!firstReasoningToken) {
+                  firstReasoningToken = true
+                  timing?.mark('first reasoning token received')
+                }
                 contentBlockStarted = false
                 if (!activity.reasoning || activity.responseStarted) forceProgressUpdate = true
                 activity.responseStarted = false
@@ -1867,6 +1896,10 @@ async function runGptStream(
                 event.event.delta.citations.length > 0 &&
                 !activity.tools.some(({ id }) => id === 'web_search')
               ) {
+                if (!firstWebSearchResult) {
+                  firstWebSearchResult = true
+                  timing?.mark('first web search result received')
+                }
                 activity.tools.push({
                   id: 'web_search',
                   name: 'web_search',
@@ -1877,6 +1910,10 @@ async function runGptStream(
               }
             } else if (event.event.type === 'modelContentBlockStartEvent') {
               if (event.event.start?.type === 'toolUseStart') {
+                if (!firstFunctionCall) {
+                  firstFunctionCall = true
+                  timing?.mark('first function call received')
+                }
                 contentBlockStarted = false
                 activity.tools.push({
                   id: event.event.start.toolUseId,
@@ -2309,10 +2346,12 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   const requestedModel = interaction.options.getString('model')
   const requestedEffort = interaction.options.getString('effort') as EffortLevel | null
   const requestedMaxTokens = interaction.options.getInteger('tokens')
+  const requestedToolsEnabled = interaction.options.getBoolean('tools')
   const settings: GptSessionSettings = {
     model: requestedModel ?? storedSettings.model,
     effort: requestedEffort ?? storedSettings.effort,
-    maxTokens: requestedMaxTokens ?? storedSettings.maxTokens
+    maxTokens: requestedMaxTokens ?? storedSettings.maxTokens,
+    toolsEnabled: requestedToolsEnabled ?? storedSettings.toolsEnabled
   }
   storeSessionSettings(interaction.user.id, sessionName, settings)
   const pub = true
@@ -2324,6 +2363,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     model: settings.model,
     effort: settings.effort,
     maxTokens: settings.maxTokens,
+    toolsEnabled: settings.toolsEnabled,
     verbosity: 'normal',
     userId: interaction.user.id,
     sessionName,
@@ -2426,6 +2466,7 @@ export interface WebAgentRequest {
   model?: string
   effort?: string
   maxTokens?: number
+  toolsEnabled?: boolean
   runId?: string
   timing?: RequestTiming
 }
@@ -2594,7 +2635,8 @@ export async function runWebAgent(
   const settings: GptSessionSettings = {
     model: request.model?.trim() || storedSettings.model,
     effort: effort as EffortLevel,
-    maxTokens
+    maxTokens,
+    toolsEnabled: request.toolsEnabled ?? storedSettings.toolsEnabled
   }
   if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
   storeSessionSettings(userId, sessionName, settings)
@@ -2610,6 +2652,7 @@ export async function runWebAgent(
     model: settings.model,
     effort: settings.effort,
     maxTokens: settings.maxTokens,
+    toolsEnabled: settings.toolsEnabled,
     verbosity: 'normal',
     userId,
     sessionName,

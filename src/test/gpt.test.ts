@@ -194,6 +194,11 @@ vi.mock('@strands-agents/sdk', () => ({
     async *stream(prompt: string, options: unknown) {
       this.messages.push(this.message({ role: 'user', content: [{ text: prompt }] }))
       const streamResult = streamMock(prompt, options)
+      yield { type: 'beforeModelCallEvent' }
+      yield {
+        type: 'modelStreamUpdateEvent',
+        event: { type: 'modelMessageStartEvent', role: 'assistant' }
+      }
       const responseId = responseIds.shift()
       if (responseId) this.modelState.set('responseId', responseId)
       if (streamResult instanceof Error) throw streamResult
@@ -460,6 +465,7 @@ describe('/a', () => {
       'model',
       'effort',
       'tokens',
+      'tools',
       'system_prompt',
       'reset_system_prompt',
       'openai_endpoint',
@@ -484,6 +490,7 @@ describe('/a', () => {
       min_value: 256,
       max_value: 16384
     })
+    expect(command.options?.[5]).toMatchObject({ name: 'tools', required: false })
   })
 
   it('suggests known models without requiring the submitted value to match', async () => {
@@ -630,6 +637,22 @@ describe('/a', () => {
     ])
   })
 
+  it('uses a tool-free model request by default', async () => {
+    await dispatch(agentCommandJSON('answer directly', {}, undefined, { tools: null }), subs)
+    await dispatch(agentCommandJSON('continue directly', {}, undefined, { tools: null }), subs)
+
+    for (const [options] of modelMock.mock.calls) {
+      expect(options).toEqual(
+        expect.objectContaining({
+          params: { reasoning: { effort: 'medium', summary: 'auto' } }
+        })
+      )
+    }
+    for (const [options] of agentMock.mock.calls) {
+      expect(options).toEqual(expect.objectContaining({ tools: [] }))
+    }
+  })
+
   it('posts a separate completion message when the response takes at least 30 seconds', async () => {
     let now = 1_000_000
     vi.spyOn(Date, 'now').mockImplementation(() => now)
@@ -658,7 +681,10 @@ describe('/a', () => {
 
   it('reports detailed lifecycle timing only when debug mode is enabled', async () => {
     const normalCalls = await dispatch(agentCommandJSON('normal request'), subs)
-    const debugCalls = await dispatch(agentCommandJSON('debug request', {}, undefined, { debug: true }), subs)
+    const debugCalls = await dispatch(
+      agentCommandJSON('debug request', {}, undefined, { debug: true }),
+      subs
+    )
     const report = debugCalls.find(
       (call) => call.method === 'POST' && JSON.stringify(call.body).includes('Debug timing')
     )
@@ -666,7 +692,11 @@ describe('/a', () => {
     expect(JSON.stringify(normalCalls)).not.toContain('Debug timing')
     expect(JSON.stringify(report?.body)).toContain('Discord acknowledgement')
     expect(JSON.stringify(report?.body)).toContain('session queue wait')
-    expect(JSON.stringify(report?.body)).toContain('first upstream event received')
+    expect(JSON.stringify(report?.body)).toContain('OpenAI request started')
+    expect(JSON.stringify(report?.body)).toContain('OpenAI response.created received')
+    expect(JSON.stringify(report?.body)).toContain('first reasoning token received')
+    expect(JSON.stringify(report?.body)).toContain('first function call received')
+    expect(JSON.stringify(report?.body)).toContain('first web search result received')
     expect(JSON.stringify(report?.body)).toContain('first response token received')
     expect(JSON.stringify(report?.body)).toContain('final response delivery')
     expect(JSON.stringify(report?.body)).toContain('total to timing report')
@@ -1319,7 +1349,12 @@ describe('/a', () => {
     expect(created).toEqual({
       sessions: ['default', 'project notes'],
       selectedSession: 'project notes',
-      settings: { model: 'gpt-5.4', effort: 'medium', maxTokens: 4096 }
+      settings: {
+        model: 'gpt-5.4',
+        effort: 'medium',
+        maxTokens: 4096,
+        toolsEnabled: false
+      }
     })
 
     await runWebAgent(
@@ -1337,7 +1372,12 @@ describe('/a', () => {
     expect(loadWebSessionState('web-user', 'project notes')).toEqual({
       sessions: ['default', 'project notes'],
       selectedSession: 'project notes',
-      settings: { model: 'gpt-5.4-mini', effort: 'high', maxTokens: 2048 }
+      settings: {
+        model: 'gpt-5.4-mini',
+        effort: 'high',
+        maxTokens: 2048,
+        toolsEnabled: false
+      }
     })
     expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
   })
@@ -1378,7 +1418,12 @@ describe('/a', () => {
   it('interrupts an active wait when the web request is cancelled', async () => {
     streamMock.mockReturnValueOnce('waitInTool')
     const running = runWebAgent(
-      { userId: 'web-user', prompt: 'wait for deployment', runId: 'waiting-run' },
+      {
+        userId: 'web-user',
+        prompt: 'wait for deployment',
+        runId: 'waiting-run',
+        toolsEnabled: true
+      },
       async () => undefined
     )
     await vi.waitFor(() => expect(streamMock).toHaveBeenCalled())
@@ -1927,9 +1972,12 @@ describe('/a', () => {
       components_json: JSON.stringify(webComponents)
     })
     const updates: unknown[] = []
-    await runWebAgent({ userId: 'web-owner', prompt: 'build controls' }, async (payload) => {
-      updates.push(payload)
-    })
+    await runWebAgent(
+      { userId: 'web-owner', prompt: 'build controls', toolsEnabled: true },
+      async (payload) => {
+        updates.push(payload)
+      }
+    )
     const rendered = JSON.stringify(updates.at(-1))
 
     for (const [stableId, values] of [
@@ -1987,9 +2035,12 @@ describe('/a', () => {
       ]
     })
     const updates: unknown[] = []
-    await runWebAgent({ userId: 'web-owner', prompt: 'configure' }, async (payload) => {
-      updates.push(payload)
-    })
+    await runWebAgent(
+      { userId: 'web-owner', prompt: 'configure', toolsEnabled: true },
+      async (payload) => {
+        updates.push(payload)
+      }
+    )
     const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:configure/)?.[0]
     const opened = await runWebInteraction(
       { userId: 'web-owner', customId: actionId! },
@@ -2086,9 +2137,12 @@ describe('/a', () => {
       ]
     })
     const updates: unknown[] = []
-    await runWebAgent({ userId: 'web-owner', prompt: 'preferences' }, async (payload) => {
-      updates.push(payload)
-    })
+    await runWebAgent(
+      { userId: 'web-owner', prompt: 'preferences', toolsEnabled: true },
+      async (payload) => {
+        updates.push(payload)
+      }
+    )
     const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:preferences/)?.[0]
     const opened = await runWebInteraction(
       { userId: 'web-owner', customId: actionId! },
@@ -2176,9 +2230,12 @@ describe('/a', () => {
       ]
     })
     const updates: unknown[] = []
-    await runWebAgent({ userId: 'web-owner', prompt: 'upload' }, async (payload) => {
-      updates.push(payload)
-    })
+    await runWebAgent(
+      { userId: 'web-owner', prompt: 'upload', toolsEnabled: true },
+      async (payload) => {
+        updates.push(payload)
+      }
+    )
     const actionId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:upload/)?.[0]
     const opened = await runWebInteraction(
       { userId: 'web-owner', customId: actionId! },

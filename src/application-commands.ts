@@ -51,6 +51,9 @@ export const agentCommand = new SlashCommandBuilder()
       .setMinValue(256)
       .setMaxValue(16384)
   )
+  .addBooleanOption((option) =>
+    option.setName('tools').setDescription('enable agent and web search tools for this session')
+  )
   .addStringOption((option) =>
     option.setName('system_prompt').setDescription('persistent instructions for this session')
   )
