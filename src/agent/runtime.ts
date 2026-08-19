@@ -93,6 +93,7 @@ export const GPT_MODAL_ID = 'gpt-modal'
 
 const DEFAULT_MAX_TOKENS = 4096
 const MAX_TEXT_DISPLAY_LENGTH = 4000
+const MAX_RESPONSE_CORRECTION_RETRIES = 2
 const SLOW_RESPONSE_MS = 30_000
 const GPT_INTERACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SPOTIFY_MCP_PATH = fileURLToPath(
@@ -1322,10 +1323,6 @@ function agentPromptHeaderComponents(ctx: GptContext): GptManagedComponent[] {
   ]
 }
 
-function legacyAgentPromptHeader(ctx: GptContext): string {
-  return `**${ctx.displayPrompt}**\n\n-# --------------------------------\n\n`
-}
-
 function buildAgentProgressPayload(
   ctx: GptContext,
   activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false },
@@ -1370,52 +1367,11 @@ function buildAgentCancelledPayload(
 
 function parseJsonObject(input: string): Record<string, unknown> {
   const trimmed = input.trim()
-  const json = trimmed.startsWith('```')
-    ? trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-    : trimmed
-  const parsed: unknown = JSON.parse(json)
+  const parsed: unknown = JSON.parse(trimmed)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('The response must be a JSON object.')
   }
   return parsed as Record<string, unknown>
-}
-
-function appendFooterToEmbed(embed: Record<string, unknown>, footer: string): void {
-  const current = embed.footer
-  const plainFooter = footer.replace(/^-# /, '')
-  const currentText =
-    current &&
-    typeof current === 'object' &&
-    typeof (current as Record<string, unknown>).text === 'string'
-      ? ((current as Record<string, unknown>).text as string)
-      : ''
-  const available = Math.max(0, 2048 - plainFooter.length - (currentText ? 1 : 0))
-  const text = `${currentText.slice(0, available)}${currentText ? '\n' : ''}${plainFooter}`
-  embed.footer = {
-    ...(current && typeof current === 'object' ? current : {}),
-    text
-  }
-}
-
-function normalizePoll(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const poll = structuredClone(value) as Record<string, unknown>
-  const answers = Array.isArray(poll.answers)
-    ? poll.answers.map((answer) => {
-        if (!answer || typeof answer !== 'object') return answer
-        const raw = answer as Record<string, unknown>
-        return raw.poll_media && typeof raw.poll_media === 'object' ? raw.poll_media : raw
-      })
-    : poll.answers
-  return {
-    question: poll.question,
-    answers,
-    duration: poll.duration,
-    allowMultiselect: poll.allowMultiselect ?? poll.allow_multiselect,
-    ...(poll.layoutType !== undefined || poll.layout_type !== undefined
-      ? { layoutType: poll.layoutType ?? poll.layout_type }
-      : {})
-  }
 }
 
 function buildAgentPayload(
@@ -1428,12 +1384,10 @@ function buildAgentPayload(
   const raw = parseJsonObject(response)
   const allowed = new Set([
     'content',
-    'embeds',
     'components',
     'allowed_mentions',
     'allowedMentions',
     'attachments',
-    'poll',
     'flags'
   ])
   for (const key of Object.keys(raw)) {
@@ -1441,14 +1395,22 @@ function buildAgentPayload(
   }
 
   const payload = { ...raw } as Record<string, unknown>
+  if (payload.content !== undefined && payload.content !== null) {
+    throw new Error('The content field must be omitted or null for Components V2 responses.')
+  }
+  if (!Array.isArray(payload.components) || payload.components.length === 0) {
+    throw new Error('Components V2 responses must contain a non-empty components array.')
+  }
+  if (!Number.isInteger(payload.flags) || ((payload.flags as number) & 32768) === 0) {
+    throw new Error('Components V2 responses must set the flags field to include 32768.')
+  }
   if ('allowed_mentions' in payload) {
     payload.allowedMentions = payload.allowed_mentions
     delete payload.allowed_mentions
   }
-  if ('poll' in payload) payload.poll = normalizePoll(payload.poll)
 
   const { components, senderOnlyIds } = validateComponents(
-    JSON.stringify(payload.components ?? []),
+    JSON.stringify(payload.components),
     token
   )
   ctx.components = components
@@ -1458,68 +1420,63 @@ function buildAgentPayload(
       delete ctx.modals[triggerId]
     }
   }
-  const flags = typeof payload.flags === 'number' ? payload.flags : 0
-  const hasLegacyOnlyContent =
-    (Array.isArray(payload.embeds) && payload.embeds.length > 0) || payload.poll != null
-  const usesComponentsV2 =
-    (flags & MessageFlags.IsComponentsV2) !== 0 ||
-    components.some((component) => component.type !== ComponentType.ActionRow) ||
-    !hasLegacyOnlyContent
+  const flags = payload.flags as number
   const footer = usageFooter(ctx.model, ctx.effort, ctx.maxTokens, usage)
   const activityText = formatAgentActivity(activity)
 
-  if (usesComponentsV2) {
-    const content = typeof payload.content === 'string' ? payload.content : ''
-    const header = agentPromptHeaderComponents(ctx)
-    if (content) {
-      header.push({
-        type: ComponentType.TextDisplay,
-        content: keepEnd(content, MAX_TEXT_DISPLAY_LENGTH)
-      })
-    }
-
-    const activityComponents = activityText
-      ? [{ type: ComponentType.TextDisplay, content: activityText }]
-      : []
-    if (header.length + components.length + activityComponents.length >= 10) {
-      throw new Error(
-        `At most ${9 - header.length - activityComponents.length} top-level response components may be used so the request prompt, divider, activity, and token footer can be appended.`
-      )
-    }
-    components.unshift(...header)
-    components.push(...activityComponents)
-    components.push({ type: ComponentType.TextDisplay, content: footer })
-    payload.content = null
-    payload.embeds = []
-    payload.components = components
-    payload.flags = flags | MessageFlags.IsComponentsV2
-  } else {
-    payload.components = components
-    const promptHeader = legacyAgentPromptHeader(ctx)
-    const embeds = Array.isArray(payload.embeds)
-      ? (structuredClone(payload.embeds) as Record<string, unknown>[])
-      : []
-    if (embeds.length > 0) {
-      appendFooterToEmbed(embeds[embeds.length - 1]!, footer)
-      payload.embeds = embeds
-      const content = typeof payload.content === 'string' ? payload.content : ''
-      const activity = activityText ? `\n\n${activityText}` : ''
-      const available = Math.max(0, 2000 - promptHeader.length - activity.length)
-      payload.content = `${promptHeader}${keepEnd(content, available)}${activity}`
-    } else {
-      const content = typeof payload.content === 'string' ? payload.content : ''
-      const activity = activityText ? `\n\n${activityText}` : ''
-      const footerSection = `\n\n${footer}`
-      const available = Math.max(
-        0,
-        2000 - promptHeader.length - activity.length - footerSection.length
-      )
-      payload.content = `${promptHeader}${keepEnd(content, available)}${activity}${footerSection}`
-    }
-    payload.flags = flags & MessageFlags.SuppressEmbeds
+  const header = agentPromptHeaderComponents(ctx)
+  const activityComponents = activityText
+    ? [{ type: ComponentType.TextDisplay, content: activityText }]
+    : []
+  if (header.length + components.length + activityComponents.length >= 10) {
+    throw new Error(
+      `At most ${9 - header.length - activityComponents.length} top-level response components may be used so the request prompt, divider, activity, and token footer can be appended.`
+    )
   }
+  components.unshift(...header)
+  components.push(...activityComponents)
+  components.push({ type: ComponentType.TextDisplay, content: footer })
+  payload.content = null
+  payload.components = components
+  payload.flags = flags
 
   return payload as InteractionEditReplyOptions
+}
+
+function responseFailureDetail(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error)
+  const value = error as Record<string, unknown>
+  const details: string[] = [error instanceof Error ? error.message : String(error)]
+  if (typeof value.code === 'number' || typeof value.code === 'string') {
+    details.push(`code=${String(value.code)}`)
+  }
+  if (typeof value.status === 'number') details.push(`status=${value.status}`)
+  const rawError = value.rawError
+  if (rawError && typeof rawError === 'object') {
+    const raw = rawError as Record<string, unknown>
+    const safeRaw = {
+      ...(raw.code !== undefined ? { code: raw.code } : {}),
+      ...(raw.message !== undefined ? { message: raw.message } : {}),
+      ...(raw.errors !== undefined ? { errors: raw.errors } : {})
+    }
+    if (Object.keys(safeRaw).length > 0) details.push(`discord=${JSON.stringify(safeRaw)}`)
+  }
+  return details.join('; ').slice(0, 8_000)
+}
+
+function correctionPrompt(
+  originalRequest: string,
+  previousOutput: string,
+  failureType: 'validation' | 'Discord API',
+  detail: string
+): string {
+  return [
+    'Your previous Discord response was rejected. Return a corrected replacement as exactly one complete JSON object with no prose or Markdown fence.',
+    'The replacement must use raw Discord API component objects, include a non-empty components array, set flags to include 32768, and omit content or set it to null. Do not use embeds or polls.',
+    `Original request: ${JSON.stringify(originalRequest)}`,
+    `Previous output: ${JSON.stringify(previousOutput)}`,
+    `${failureType} error: ${detail}`
+  ].join('\n')
 }
 
 function tokenFromId(customId: string, baseId: string): string | null {
@@ -1644,7 +1601,10 @@ async function runGptStream(
   const apiKey = loadOpenAIApiKey()
   if (!apiKey) {
     let phaseStarted = performance.now()
-    const response = JSON.stringify({ content: 'no OpenAI API token configured' })
+    const response = JSON.stringify({
+      components: [{ type: ComponentType.TextDisplay, content: 'no OpenAI API token configured' }],
+      flags: MessageFlags.IsComponentsV2
+    })
     const payload = buildAgentPayload(response, token, ctx)
     timing?.span('fallback payload build', phaseStarted)
     phaseStarted = performance.now()
@@ -1713,7 +1673,7 @@ async function runGptStream(
       : ''
     const systemInstruction = [
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
-      'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
+      'Return the complete user-visible Discord message as exactly one JSON object with no surrounding prose or Markdown fence. It must contain a non-empty components array of raw Discord API component objects and a numeric flags field that includes 32768 for Components V2. Never populate content: omit it or set it to null. Do not use embeds or polls. You may also use allowed_mentions and attachments from the Discord API. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
       availableMcpServers.length > 0
         ? `Available MCP servers and capabilities: ${describeMcpServers(availableMcpServers)}.`
         : 'No MCP servers are currently available.',
@@ -1966,18 +1926,75 @@ async function runGptStream(
     }
 
     if (!controller.signal.aborted) {
-      phaseStarted = performance.now()
-      const response = responseContent || JSON.stringify({ content: '(no response)' })
-      const payload = buildAgentPayload(response, token, ctx, usage, activity)
-      timing?.span('final payload build', phaseStarted)
-      phaseStarted = performance.now()
-      await callbacks.editPayload(payload)
-      timing?.span('final response delivery', phaseStarted)
-      phaseStarted = performance.now()
-      storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
-      timing?.span('conversation persistence', phaseStarted)
-      conversationStored = true
-      callbacks.stored?.()
+      if (!responseContent) {
+        responseContent = JSON.stringify({
+          components: [{ type: ComponentType.TextDisplay, content: '(no response)' }],
+          flags: MessageFlags.IsComponentsV2
+        })
+      }
+
+      for (let correctionAttempt = 0; ; correctionAttempt++) {
+        const response = responseContent
+        let payload: InteractionEditReplyOptions
+        try {
+          phaseStarted = performance.now()
+          payload = buildAgentPayload(response, token, ctx, usage, activity)
+          timing?.span('final payload build', phaseStarted)
+        } catch (error) {
+          const detail = responseFailureDetail(error)
+          console.warn(
+            `Agent Discord response validation failed (attempt ${correctionAttempt + 1}/${MAX_RESPONSE_CORRECTION_RETRIES + 1}): ${detail}`
+          )
+          if (correctionAttempt >= MAX_RESPONSE_CORRECTION_RETRIES) {
+            throw new Error(
+              `Agent response validation failed after ${MAX_RESPONSE_CORRECTION_RETRIES + 1} attempts: ${detail}`,
+              { cause: error }
+            )
+          }
+          responseContent = ''
+          phaseStarted = performance.now()
+          await streamAgent(
+            correctionPrompt(ctx.prompt, response, 'validation', detail),
+            false,
+            true
+          )
+          timing?.span('response correction stream', phaseStarted)
+          continue
+        }
+
+        try {
+          phaseStarted = performance.now()
+          await callbacks.editPayload(payload)
+          timing?.span('final response delivery', phaseStarted)
+        } catch (error) {
+          const detail = responseFailureDetail(error)
+          console.warn(
+            `Discord rejected agent response (attempt ${correctionAttempt + 1}/${MAX_RESPONSE_CORRECTION_RETRIES + 1}): ${detail}`
+          )
+          if (correctionAttempt >= MAX_RESPONSE_CORRECTION_RETRIES) {
+            throw new Error(
+              `Discord rejected the agent response after ${MAX_RESPONSE_CORRECTION_RETRIES + 1} attempts: ${detail}`,
+              { cause: error }
+            )
+          }
+          responseContent = ''
+          phaseStarted = performance.now()
+          await streamAgent(
+            correctionPrompt(ctx.prompt, response, 'Discord API', detail),
+            false,
+            true
+          )
+          timing?.span('response correction stream', phaseStarted)
+          continue
+        }
+
+        phaseStarted = performance.now()
+        storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
+        timing?.span('conversation persistence', phaseStarted)
+        conversationStored = true
+        callbacks.stored?.()
+        break
+      }
     }
   } catch (error) {
     if (
@@ -1988,11 +2005,15 @@ async function runGptStream(
     }
 
     const errMsg = error instanceof Error ? error.message : 'unknown error'
+    console.error('Agent response failed', error)
     ctx.responseState = undefined
     for (const usedTool of activity.tools) {
       if (usedTool.status === 'running') usedTool.status = 'error'
     }
-    const response = JSON.stringify({ content: `error: ${errMsg}` })
+    const response = JSON.stringify({
+      components: [{ type: ComponentType.TextDisplay, content: `error: ${errMsg}` }],
+      flags: MessageFlags.IsComponentsV2
+    })
     const payload = buildAgentPayload(response, token, ctx, usage, activity)
     await callbacks.editPayload(payload)
     storeConversation(
@@ -2010,7 +2031,10 @@ async function runGptStream(
       const payload = buildAgentCancelledPayload(ctx, activity)
       storeConversation(
         ctx,
-        JSON.stringify({ content: 'Cancelled by user' }),
+        JSON.stringify({
+          components: [{ type: ComponentType.TextDisplay, content: 'Cancelled by user' }],
+          flags: MessageFlags.IsComponentsV2
+        }),
         modelMessages,
         JSON.stringify(payload),
         'cancelled'

@@ -359,10 +359,13 @@ vi.mock('@strands-agents/sdk', () => ({
             ? responsePayload
             : JSON.stringify(
                 responsePayload ?? {
-                  content: 'hello world',
-                  ...(typeof componentAction?.components_json === 'string'
-                    ? { components: JSON.parse(componentAction.components_json) }
-                    : {})
+                  components: [
+                    { type: 10, content: 'hello world' },
+                    ...(typeof componentAction?.components_json === 'string'
+                      ? JSON.parse(componentAction.components_json)
+                      : [])
+                  ],
+                  flags: MessageFlags.IsComponentsV2
                 }
               )
         yield {
@@ -417,7 +420,14 @@ function expectStoredAgentHistory(callIndex: number, prompt: string): void {
         })
       ]
     },
-    { role: 'assistant', content: [{ text: '{"content":"hello world"}' }] }
+    {
+      role: 'assistant',
+      content: [
+        {
+          text: '{"components":[{"type":10,"content":"hello world"}],"flags":32768}'
+        }
+      ]
+    }
   ])
 }
 
@@ -788,27 +798,15 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
-  it('streams response content before the final edit', async () => {
+  it('does not populate content while streaming a Components V2 response', async () => {
     const calls = await dispatch(agentCommandJSON('answer now'), subs)
     const progressEdits = calls
       .filter((call) => call.method === 'PATCH')
       .slice(0, -1)
-      .map((call) => JSON.stringify(call.body))
+      .map((call) => call.body as { content?: unknown; flags?: number })
 
-    expect(progressEdits.some((edit) => edit.includes('hello world'))).toBe(true)
-  })
-
-  it('streams only the top-level content field', async () => {
-    responsePayloads.push('{"embeds":[{"content":"nested content"}],"content":"visible answer"}')
-
-    const calls = await dispatch(agentCommandJSON('answer now'), subs)
-    const progressEdits = calls
-      .filter((call) => call.method === 'PATCH')
-      .slice(0, -1)
-      .map((call) => JSON.stringify(call.body))
-
-    expect(progressEdits.some((edit) => edit.includes('visible answer'))).toBe(true)
-    expect(progressEdits.every((edit) => !edit.includes('nested content'))).toBe(true)
+    expect(progressEdits.every((edit) => edit.content === null || edit.content === '')).toBe(true)
+    expect(progressEdits.every((edit) => edit.flags === MessageFlags.IsComponentsV2)).toBe(true)
   })
 
   it('aggregates repeated tool uses without exposing reasoning or statuses', async () => {
@@ -836,7 +834,7 @@ describe('/a', () => {
 
     expect(JSON.stringify(finalEdit)).toContain('(no response)')
     expect(JSON.stringify(finalEdit)).not.toContain('Unexpected token')
-    expect(getStoredValue('gpt-session:default')).toContain('{\\"content\\":\\"(no response)\\"}')
+    expect(getStoredValue('gpt-session:default')).toContain('(no response)')
   })
 
   it('does not retry malformed tool input JSON', async () => {
@@ -859,15 +857,34 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).toContain('error: tool execution failed')
   })
 
-  it('does not retry malformed response JSON', async () => {
-    responsePayloads.push('not valid JSON', { content: 'repaired response' })
+  it('retries malformed response JSON with the original request, previous output, and error', async () => {
+    responsePayloads.push('not valid JSON', {
+      components: [{ type: 10, content: 'repaired response' }],
+      flags: MessageFlags.IsComponentsV2
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const calls = await dispatch(agentCommandJSON('show status'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(calls)).not.toContain('repaired response')
-    expect(JSON.stringify(calls)).toContain('error: Unexpected token')
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(calls)).toContain('repaired response')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Original request: "show status"')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Previous output: "not valid JSON"')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('validation error:')
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('validation failed'))
+  })
+
+  it('stops correcting after the bounded retry limit and renders a final error', async () => {
+    responsePayloads.push('bad one', 'bad two', 'bad three')
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const calls = await dispatch(agentCommandJSON('show status'), subs)
+
+    expect(streamMock).toHaveBeenCalledTimes(3)
+    expect(JSON.stringify(calls)).toContain('Agent response validation failed after 3 attempts')
+    expect(errorLog).toHaveBeenCalledWith('Agent response failed', expect.any(Error))
   })
 
   it('retains compact tool counts if malformed tool input persists', async () => {
@@ -975,33 +992,60 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).not.toContain('override-secret-token')
   })
 
-  it('preserves raw Discord embeds and appends token usage to the last footer', async () => {
-    responsePayloads.push({
-      embeds: [{ title: 'Status', description: 'Everything is healthy', footer: { text: 'Live' } }],
-      allowed_mentions: { parse: [] }
-    })
+  it('corrects populated content into raw Components V2 output', async () => {
+    responsePayloads.push(
+      '{"content":"legacy response","components":[{"type":10,"content":"status"}],"flags":32768}',
+      {
+        components: [{ type: 10, content: 'Everything is healthy' }],
+        flags: MessageFlags.IsComponentsV2,
+        allowed_mentions: { parse: [] }
+      }
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     const calls = await dispatch(agentCommandJSON('show status'), subs)
     const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
-      content?: string
-      embeds: Array<{ footer?: { text?: string } }>
-      components: unknown[]
+      content?: string | null
+      components: Array<{ content?: string }>
+      flags: number
       allowed_mentions?: unknown
     }
 
-    expect(edit.embeds[0]?.footer?.text).toContain('Live\nTokens used:')
-    expect(edit.components).toEqual([])
+    expect(edit.content).toBe('')
+    expect(edit.flags).toBe(MessageFlags.IsComponentsV2)
+    expect(JSON.stringify(edit.components)).toContain('Everything is healthy')
+    expect(JSON.stringify(edit.components)).not.toContain('legacy response')
     expect(edit.allowed_mentions).toEqual({ parse: [] })
-    expect(JSON.stringify(edit.content)).toContain('**show status**')
-    expect(JSON.stringify(edit.content)).toContain('-# --------------------------------')
-    expect(JSON.stringify(edit.content)).toContain('(docker_listx1, web_searchx1)')
-    expect(JSON.stringify(edit.content)).not.toContain('**Reasoning**')
+    expect(streamMock.mock.calls[1]?.[0]).toContain(
+      'content field must be omitted or null for Components V2 responses'
+    )
   })
 
-  it('renders content inside Components V2 after the request prompt and a divider', async () => {
+  it('corrects a response that omits the Components V2 flag', async () => {
+    responsePayloads.push(
+      { components: [{ type: 10, content: 'Missing flag' }] },
+      {
+        components: [{ type: 10, content: 'Flag repaired' }],
+        flags: MessageFlags.IsComponentsV2
+      }
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const calls = await dispatch(agentCommandJSON('show status'), subs)
+
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(calls.at(-1)?.body)).toContain('Flag repaired')
+    expect(streamMock.mock.calls[1]?.[0]).toContain(
+      'Components V2 responses must set the flags field to include 32768'
+    )
+  })
+
+  it('renders raw Components V2 after the request prompt and a divider', async () => {
     responsePayloads.push({
-      content: 'Rendered response',
-      components: [{ type: 10, content: 'Additional context' }],
+      components: [
+        { type: 10, content: 'Rendered response' },
+        { type: 10, content: 'Additional context' }
+      ],
       flags: MessageFlags.IsComponentsV2
     })
 
@@ -1025,8 +1069,11 @@ describe('/a', () => {
     expect(edit.components.at(-2)?.content).not.toContain('**Reasoning**')
   })
 
-  it('keeps the end of an oversized response', async () => {
-    responsePayloads.push({ content: `${'old '.repeat(1_000)}latest result` })
+  it('accepts the maximum text-display length', async () => {
+    responsePayloads.push({
+      components: [{ type: 10, content: `${'x'.repeat(3987)}latest result` }],
+      flags: MessageFlags.IsComponentsV2
+    })
 
     const calls = await dispatch(agentCommandJSON('show the result'), subs)
     const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
@@ -1036,30 +1083,46 @@ describe('/a', () => {
 
     expect(response).toHaveLength(4000)
     expect(response.endsWith('latest result')).toBe(true)
-    expect(response.startsWith('old old')).toBe(false)
   })
 
-  it('accepts raw Discord API poll JSON', async () => {
-    responsePayloads.push({
-      content: 'Vote now',
-      poll: {
-        question: { text: 'Preferred release day?' },
-        answers: [{ poll_media: { text: 'Tuesday' } }, { poll_media: { text: 'Thursday' } }],
-        duration: 24,
-        allow_multiselect: true
+  it('retries a Discord API rejection with concrete details', async () => {
+    responsePayloads.push(
+      {
+        components: [{ type: 10, content: 'First response' }],
+        flags: MessageFlags.IsComponentsV2
+      },
+      {
+        components: [{ type: 10, content: 'Corrected response' }],
+        flags: MessageFlags.IsComponentsV2
+      }
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let rejected = false
+
+    const calls = await dispatch(agentCommandJSON('show deployment'), subs, {
+      patchError: (body) => {
+        if (rejected || !JSON.stringify(body).includes('First response')) return undefined
+        rejected = true
+        return Object.assign(new Error('Invalid Form Body'), {
+          code: 50035,
+          status: 400,
+          rawError: {
+            code: 50035,
+            message: 'Invalid Form Body',
+            errors: { components: { _errors: [{ message: 'Component is invalid' }] } }
+          },
+          url: 'https://discord.example/webhooks/secret-token'
+        })
       }
     })
 
-    const calls = await dispatch(agentCommandJSON('create a release poll'), subs)
-    const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
-      poll?: { answers?: Array<{ poll_media?: { text?: string } }>; allow_multiselect?: boolean }
-    }
-
-    expect(edit.poll?.answers?.map((answer) => answer.poll_media?.text)).toEqual([
-      'Tuesday',
-      'Thursday'
-    ])
-    expect(edit.poll?.allow_multiselect).toBe(true)
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(calls.at(-1)?.body)).toContain('Corrected response')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Original request: "show deployment"')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Previous output:')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Discord API error: Invalid Form Body')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Component is invalid')
+    expect(streamMock.mock.calls[1]?.[0]).not.toContain('secret-token')
   })
 
   it('gives the agent Spotify MCP tools when Spotify is configured', async () => {
@@ -1387,7 +1450,14 @@ describe('/a', () => {
     expect(agentMock.mock.calls[1]?.[0]).toMatchObject({
       messages: [
         { role: 'user', content: [{ text: 'first question' }] },
-        { role: 'assistant', content: [{ text: '{"content":"hello world"}' }] }
+        {
+          role: 'assistant',
+          content: [
+            {
+              text: '{"components":[{"type":10,"content":"hello world"}],"flags":32768}'
+            }
+          ]
+        }
       ]
     })
   })
@@ -1747,7 +1817,7 @@ describe('/a', () => {
         messages: expect.arrayContaining([
           expect.objectContaining({
             role: 'assistant',
-            content: [{ text: expect.stringContaining('{"content":"hello world","components":') }]
+            content: [{ text: expect.stringContaining('{"components":') }]
           })
         ])
       })
@@ -1759,8 +1829,8 @@ describe('/a', () => {
 
   it('restricts sender-only components while leaving the parameter out of Discord JSON', async () => {
     responsePayloads.push({
-      content: 'Choose an action',
       components: [
+        { type: 10, content: 'Choose an action' },
         {
           type: 1,
           components: [
@@ -1773,7 +1843,8 @@ describe('/a', () => {
             }
           ]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const initialCalls = await dispatch(agentCommandJSON('create a private action'), subs)
     const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
@@ -1816,8 +1887,8 @@ describe('/a', () => {
 
   it('persists web button payloads and routes custom-id clicks through the agent interaction flow', async () => {
     responsePayloads.push({
-      content: 'Choose an action',
       components: [
+        { type: 10, content: 'Choose an action' },
         {
           type: 1,
           components: [
@@ -1844,7 +1915,8 @@ describe('/a', () => {
             }
           ]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const updates: unknown[] = []
     await runWebAgent(
@@ -1862,7 +1934,10 @@ describe('/a', () => {
     expect(renderedJson).not.toContain('sender_only')
     expect(loadWebConversation('web-user').at(-1)?.content).toBe(renderedJson)
 
-    responsePayloads.push({ content: 'Continued from the button' })
+    responsePayloads.push({
+      components: [{ type: 10, content: 'Continued from the button' }],
+      flags: MessageFlags.IsComponentsV2
+    })
     const interactionUpdates: unknown[] = []
     await runWebComponentInteraction(
       { userId: 'web-user', customId: customId! },
@@ -1945,13 +2020,14 @@ describe('/a', () => {
       })
     })
     responsePayloads.push({
-      content: 'Choose settings',
       components: [
+        { type: 10, content: 'Choose settings' },
         {
           type: 1,
           components: [{ type: 2, custom_id: 'configure', label: 'Configure', style: 1 }]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
 
     const initialCalls = await dispatch(agentCommandJSON('build a configurable report'), subs)
@@ -2039,7 +2115,10 @@ describe('/a', () => {
     ] as const) {
       const customId = rendered.match(new RegExp(`gpt-action:[^"\\\\]+:${stableId}`))?.[0]
       expect(customId).toBeTruthy()
-      responsePayloads.push({ content: 'updated', components: webComponents })
+      responsePayloads.push({
+        components: [{ type: 10, content: 'updated' }, ...webComponents],
+        flags: MessageFlags.IsComponentsV2
+      })
       await runWebInteraction(
         { userId: 'web-owner', customId: customId!, values: [...values] },
         async () => {}
@@ -2075,13 +2154,14 @@ describe('/a', () => {
       })
     })
     responsePayloads.push({
-      content: 'Choose settings',
       components: [
+        { type: 10, content: 'Choose settings' },
         {
           type: 1,
           components: [{ type: 2, custom_id: 'configure', label: 'Configure', style: 1 }]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const updates: unknown[] = []
     await runWebAgent(
@@ -2120,7 +2200,10 @@ describe('/a', () => {
       )
     ).rejects.toThrow('Modal field validation failed')
 
-    responsePayloads.push({ content: 'configured' })
+    responsePayloads.push({
+      components: [{ type: 10, content: 'configured' }],
+      flags: MessageFlags.IsComponentsV2
+    })
     await runWebInteraction(
       {
         userId: 'web-owner',
@@ -2183,7 +2266,8 @@ describe('/a', () => {
           type: 1,
           components: [{ type: 2, custom_id: 'preferences', label: 'Preferences', style: 1 }]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const updates: unknown[] = []
     await runWebAgent(
@@ -2199,7 +2283,10 @@ describe('/a', () => {
     )
     const modalId = 'modal' in opened ? String(opened.modal.custom_id) : ''
 
-    responsePayloads.push({ content: 'saved' })
+    responsePayloads.push({
+      components: [{ type: 10, content: 'saved' }],
+      flags: MessageFlags.IsComponentsV2
+    })
     await runWebInteraction(
       {
         userId: 'web-owner',
@@ -2226,8 +2313,8 @@ describe('/a', () => {
 
   it('allows sender-only components through the authenticated single-user web UI', async () => {
     responsePayloads.push({
-      content: 'Private action',
       components: [
+        { type: 10, content: 'Private action' },
         {
           type: 1,
           components: [
@@ -2240,7 +2327,8 @@ describe('/a', () => {
             }
           ]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const updates: unknown[] = []
     await runWebAgent({ userId: 'web-owner', prompt: 'private control' }, async (payload) => {
@@ -2248,7 +2336,10 @@ describe('/a', () => {
     })
     const customId = JSON.stringify(updates.at(-1)).match(/gpt-action:[^"\\]+:private-action/)?.[0]
 
-    responsePayloads.push({ content: 'Private action completed' })
+    responsePayloads.push({
+      components: [{ type: 10, content: 'Private action completed' }],
+      flags: MessageFlags.IsComponentsV2
+    })
     await expect(
       runWebInteraction({ userId: 'another-user', customId: customId! }, async () => {})
     ).resolves.toEqual({ updated: true })
@@ -2276,7 +2367,8 @@ describe('/a', () => {
           type: 1,
           components: [{ type: 2, custom_id: 'upload', label: 'Upload', style: 1 }]
         }
-      ]
+      ],
+      flags: MessageFlags.IsComponentsV2
     })
     const updates: unknown[] = []
     await runWebAgent(

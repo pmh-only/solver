@@ -43,7 +43,11 @@ export interface RestCall {
 /** Raw Discord API interaction object (partial — only fields the handler uses) */
 export type RawInteraction = Record<string, unknown>
 
-function makeClient(): { client: Client; calls: RestCall[] } {
+interface DispatchOptions {
+  patchError?: (body: unknown, calls: RestCall[]) => Error | undefined
+}
+
+function makeClient(options: DispatchOptions = {}): { client: Client; calls: RestCall[] } {
   const client = new Client({ intents: [] })
   ;(client as { token: string | null }).token = 'test.token.here'
 
@@ -63,14 +67,16 @@ function makeClient(): { client: Client; calls: RestCall[] } {
   }
   ;(client.rest as unknown as Record<string, unknown>).patch = async (
     route: unknown,
-    options: { body?: unknown; files?: unknown[] }
+    request: { body?: unknown; files?: unknown[] }
   ) => {
     calls.push({
       method: 'PATCH',
       route: String(route),
-      body: options?.body ?? null,
-      files: options?.files ?? []
+      body: request?.body ?? null,
+      files: request?.files ?? []
     })
+    const error = options.patchError?.(request?.body ?? null, calls)
+    if (error) throw error
     // discord.js editReply() expects a Message-like object back
     return { id: '0', type: 0, content: '', embeds: [], components: [], attachments: [], flags: 0 }
   }
@@ -613,9 +619,10 @@ export function modalJSON(
 /** Run raw interaction JSON through the full handler, return captured REST calls */
 export async function dispatch(
   raw: RawInteraction,
-  subcommands: Collection<string, Subcommand>
+  subcommands: Collection<string, Subcommand>,
+  options: DispatchOptions = {}
 ): Promise<RestCall[]> {
-  const { client, calls } = makeClient()
+  const { client, calls } = makeClient(options)
   const handler = createHandler(subcommands)
   const interaction = buildInteraction(client, raw)
   await handler(interaction)
