@@ -27,6 +27,8 @@ import {
   McpClient,
   tool,
   type MessageData,
+  type ContentBlockData,
+  type InvokeArgs,
   type Tool,
   type ToolContext
 } from '@strands-agents/sdk'
@@ -82,6 +84,7 @@ import {
 import { formatTimingReport, RequestTiming } from '../request-timing.js'
 import { AGENT_EFFORT_OPTIONS, type EffortLevel } from './config.js'
 import { streamedJsonContent } from './streaming-json.js'
+import { receiveAgentAttachment } from './attachment.js'
 
 export { AGENT_COMMAND_NAME, AGENT_EFFORT_OPTIONS } from './config.js'
 
@@ -245,6 +248,7 @@ type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 interface GptContext {
   prompt: string
   displayPrompt: string
+  input: ContentBlockData[]
   pub: boolean
   model: string
   effort: EffortLevel
@@ -785,7 +789,7 @@ type GptComponent = ContainerBuilder | AnyRow | GptManagedComponent
 function storeGptContext(token: string, ctx: GptContext) {
   setStoredValue(
     `${GPT_CONTEXT_KEY}:${token}`,
-    JSON.stringify({ ...ctx, history: [], modelHistory: [] })
+    JSON.stringify({ ...ctx, input: [], history: [], modelHistory: [] })
   )
 }
 
@@ -840,6 +844,7 @@ function loadGptContext(token: string): GptContext | null {
       throw new Error('Invalid sender-only component ids.')
     }
     if (!Array.isArray(parsed.modelHistory)) parsed.modelHistory = []
+    if (!Array.isArray(parsed.input)) parsed.input = []
     if (typeof parsed.toolsEnabled !== 'boolean') parsed.toolsEnabled = false
     if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
       parsed.modals = {}
@@ -1727,7 +1732,7 @@ async function runGptStream(
     })
     timing?.mark('OpenAI model configured')
     let currentAgent: Agent | undefined
-    const streamAgent = async (prompt: string, diagnosing = false, continueCurrent = false) => {
+    const streamAgent = async (prompt: InvokeArgs, diagnosing = false, continueCurrent = false) => {
       if (continueCurrent && currentAgent) {
         await consumeAgentStream(currentAgent, prompt)
         return
@@ -1791,7 +1796,7 @@ async function runGptStream(
 
     async function consumeAgentStream(
       agent: Agent,
-      prompt: string,
+      prompt: InvokeArgs,
       diagnosing = false
     ): Promise<void> {
       let contentBlockStarted = false
@@ -1920,7 +1925,7 @@ async function runGptStream(
 
     const modelStreamStarted = performance.now()
     try {
-      await streamAgent(ctx.prompt)
+      await streamAgent(ctx.input.length > 0 ? ctx.input : ctx.prompt)
     } finally {
       timing?.span('model and tool stream', modelStreamStarted)
     }
@@ -2291,6 +2296,9 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   const timing = debug ? new RequestTiming() : undefined
   timing?.mark('Discord interaction received')
   const prompt = interaction.options.getString('prompt', true).trim()
+  const attachment = interaction.options.getAttachment('attachment')
+  if (prompt === '/clear' && attachment) throw new Error('attachments cannot be used with /clear')
+  const attachmentInput = attachment ? await receiveAgentAttachment(attachment) : undefined
   const requestedSession = interaction.options.getString('session')?.trim()
   const sessionName =
     requestedSession || getStoredValue(selectedSessionKey()) || DEFAULT_SESSION_NAME
@@ -2374,7 +2382,15 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt,
-    displayPrompt: prompt,
+    displayPrompt: attachmentInput
+      ? `${prompt}\n-# Attachment: ${escapeMarkdown(attachmentInput.displayName)}`
+      : prompt,
+    input: attachmentInput
+      ? [
+          { text: `${prompt}\n\nAttached file: ${attachmentInput.displayName}` },
+          attachmentInput.content
+        ]
+      : [],
     pub,
     model: settings.model,
     effort: settings.effort,
@@ -2664,6 +2680,7 @@ export async function runWebAgent(
   const ctx: GptContext = {
     prompt,
     displayPrompt: prompt,
+    input: [],
     pub: true,
     model: settings.model,
     effort: settings.effort,

@@ -1,4 +1,4 @@
-import { Collection } from 'discord.js'
+import { Collection, ComponentType, MessageFlags } from 'discord.js'
 import type { Interaction } from 'discord.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHandler } from '../handler.js'
@@ -48,10 +48,11 @@ describe('/a error handling', () => {
     await createHandler(new Collection<string, Subcommand>())(interaction)
 
     expect(reply).toHaveBeenCalledWith({
-      content: 'error: agent startup failed',
       embeds: [],
-      components: [],
-      attachments: []
+      components: [{ type: ComponentType.TextDisplay, content: 'error: agent startup failed' }],
+      attachments: [],
+      flags: MessageFlags.IsComponentsV2,
+      allowedMentions: { parse: [] }
     })
   })
 
@@ -67,10 +68,11 @@ describe('/a error handling', () => {
     await createHandler(new Collection<string, Subcommand>())(interaction)
 
     expect(editReply).toHaveBeenCalledWith({
-      content: 'error: late agent failure',
       embeds: [],
-      components: [],
-      attachments: []
+      components: [{ type: ComponentType.TextDisplay, content: 'error: late agent failure' }],
+      attachments: [],
+      flags: MessageFlags.IsComponentsV2,
+      allowedMentions: { parse: [] }
     })
   })
 })

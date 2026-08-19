@@ -10,6 +10,9 @@ export const agentCommand = new SlashCommandBuilder()
       .setDescription('what to ask, or /clear to reset session')
       .setRequired(true)
   )
+  .addAttachmentOption((option) =>
+    option.setName('attachment').setDescription('photo or document to include with the prompt')
+  )
   .addStringOption((option) =>
     option
       .setName('session')

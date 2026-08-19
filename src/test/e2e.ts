@@ -257,15 +257,41 @@ export function agentCommandJSON(
     openAIEndpoint?: string
     resetOpenAIEndpoint?: boolean
     debug?: boolean
+    attachment?: {
+      name: string
+      size: number
+      contentType: string
+      url?: string
+    }
   } = {}
 ): RawInteraction {
+  const attachmentId = '555555555555555555'
   return commandJSON('', {
     data: {
       id: '888888888888888887',
       name: 'a',
       type: 1,
+      ...(settings.attachment
+        ? {
+            resolved: {
+              attachments: {
+                [attachmentId]: {
+                  id: attachmentId,
+                  filename: settings.attachment.name,
+                  size: settings.attachment.size,
+                  url:
+                    settings.attachment.url ??
+                    `https://cdn.discordapp.com/attachments/1/2/${encodeURIComponent(settings.attachment.name)}`,
+                  proxy_url: `https://media.discordapp.net/attachments/1/2/${encodeURIComponent(settings.attachment.name)}`,
+                  content_type: settings.attachment.contentType
+                }
+              }
+            }
+          }
+        : {}),
       options: [
         { name: 'prompt', value: prompt, type: 3 },
+        ...(settings.attachment ? [{ name: 'attachment', value: attachmentId, type: 11 }] : []),
         ...(session ? [{ name: 'session', value: session, type: 3 }] : []),
         ...(settings.model ? [{ name: 'model', value: settings.model, type: 3 }] : []),
         ...(settings.effort ? [{ name: 'effort', value: settings.effort, type: 3 }] : []),

@@ -191,8 +191,16 @@ vi.mock('@strands-agents/sdk', () => ({
       return { ...serialized, toJSON: () => structuredClone(serialized) }
     }
 
-    async *stream(prompt: string, options: unknown) {
-      this.messages.push(this.message({ role: 'user', content: [{ text: prompt }] }))
+    async *stream(prompt: unknown, options: unknown) {
+      this.messages.push(
+        this.message({
+          role: 'user',
+          content:
+            typeof prompt === 'string'
+              ? [{ text: prompt }]
+              : structuredClone(prompt as Record<string, unknown>[])
+        })
+      )
       const streamResult = streamMock(prompt, options)
       yield { type: 'beforeModelCallEvent' }
       yield {
@@ -471,6 +479,7 @@ describe('/a', () => {
     expect(command.name).toBe('a')
     expect(command.options?.map((option) => option.name)).toEqual([
       'prompt',
+      'attachment',
       'session',
       'model',
       'effort',
@@ -484,23 +493,152 @@ describe('/a', () => {
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({
+      name: 'attachment',
+      required: false,
+      type: 11
+    })
+    expect(command.options?.[2]).toMatchObject({
       name: 'session',
       required: false,
       autocomplete: true
     })
-    expect(command.options?.[2]).toMatchObject({
+    expect(command.options?.[3]).toMatchObject({
       name: 'model',
       required: false,
       autocomplete: true
     })
-    expect(command.options?.[3]).toMatchObject({ name: 'effort', required: false })
-    expect(command.options?.[4]).toMatchObject({
+    expect(command.options?.[4]).toMatchObject({ name: 'effort', required: false })
+    expect(command.options?.[5]).toMatchObject({
       name: 'tokens',
       required: false,
       min_value: 256,
       max_value: 16384
     })
-    expect(command.options?.[5]).toMatchObject({ name: 'tools', required: false })
+    expect(command.options?.[6]).toMatchObject({ name: 'tools', required: false })
+  })
+
+  it('downloads a safely named photo and passes its bytes to the agent', async () => {
+    const image = Uint8Array.from([0x89, 0x50, 0x4e, 0x47])
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(image, { headers: { 'content-type': 'image/png' } }))
+
+    const calls = await dispatch(
+      agentCommandJSON('describe this', {}, undefined, {
+        attachment: {
+          name: '../../quarterly report.png',
+          size: image.byteLength,
+          contentType: 'image/png'
+        }
+      }),
+      subs
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: 'cdn.discordapp.com' }),
+      expect.objectContaining({ redirect: 'error', signal: expect.any(AbortSignal) })
+    )
+    expect(streamMock).toHaveBeenCalledWith(
+      [
+        { text: 'describe this\n\nAttached file: quarterly_report.png' },
+        { image: { format: 'png', source: { bytes: image } } }
+      ],
+      expect.anything()
+    )
+    const edits = calls.filter((call) => call.method === 'PATCH').map((call) => call.body) as Array<
+      Record<string, unknown>
+    >
+    expect(edits.at(-1)?.content ?? '').toBe('')
+    expect(JSON.stringify(edits)).toContain('quarterly')
+    expect(JSON.stringify(edits)).not.toContain('../')
+  })
+
+  it('passes supported documents to the agent with a safe filename', async () => {
+    const document = new TextEncoder().encode('{"status":"ok"}')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(document, { headers: { 'content-type': 'application/json' } })
+    )
+
+    await dispatch(
+      agentCommandJSON('summarize', {}, undefined, {
+        attachment: {
+          name: '..\\unsafe name.json',
+          size: document.byteLength,
+          contentType: 'application/json'
+        }
+      }),
+      subs
+    )
+
+    expect(streamMock.mock.calls[0]?.[0]).toEqual([
+      { text: 'summarize\n\nAttached file: unsafe_name.json' },
+      {
+        document: {
+          name: 'unsafe_name.json',
+          format: 'json',
+          source: { bytes: document }
+        }
+      }
+    ])
+  })
+
+  it('returns a content-free Components V2 error for invalid attachment types', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const calls = await dispatch(
+      agentCommandJSON('inspect', {}, undefined, {
+        attachment: {
+          name: 'payload.exe',
+          size: 100,
+          contentType: 'application/octet-stream'
+        }
+      }),
+      subs
+    )
+    const callback = getCallback(calls) as {
+      data: { content?: unknown; components: unknown[]; flags: number }
+    }
+
+    expect(callback.data.content ?? '').toBe('')
+    expect(callback.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(callback.data.components)).toContain('attachment type is unsupported')
+    expect(streamMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects attachments larger than 10 MiB before downloading', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const calls = await dispatch(
+      agentCommandJSON('inspect', {}, undefined, {
+        attachment: {
+          name: 'large.pdf',
+          size: 10 * 1024 * 1024 + 1,
+          contentType: 'application/pdf'
+        }
+      }),
+      subs
+    )
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(JSON.stringify(getCallback(calls))).toContain('attachment exceeds the 10 MiB limit')
+    expect(streamMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects attachment downloads whose type does not match Discord metadata', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const file = new TextEncoder().encode('not a png')
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(file, { headers: { 'content-type': 'text/plain' } })
+    )
+
+    const calls = await dispatch(
+      agentCommandJSON('inspect', {}, undefined, {
+        attachment: { name: 'photo.png', size: file.byteLength, contentType: 'image/png' }
+      }),
+      subs
+    )
+
+    expect(JSON.stringify(getCallback(calls))).toContain('attachment type is unsupported')
+    expect(streamMock).not.toHaveBeenCalled()
   })
 
   it('suggests known models without requiring the submitted value to match', async () => {

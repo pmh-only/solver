@@ -705,7 +705,18 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
       if (interaction.isChatInputCommand() && interaction.commandName === AGENT_COMMAND_NAME) {
         const message = error instanceof Error ? error.message : String(error)
-        const reply = { content: `error: ${message}`, embeds: [], components: [], attachments: [] }
+        const reply = {
+          embeds: [],
+          components: [
+            {
+              type: ComponentType.TextDisplay,
+              content: `error: ${message.slice(0, 3_900)}`
+            }
+          ],
+          attachments: [],
+          flags: MessageFlags.IsComponentsV2 as const,
+          allowedMentions: { parse: [] as const }
+        }
         if (interaction.deferred) await interaction.editReply(reply)
         else if (interaction.replied) await interaction.followUp(reply)
         else await interaction.reply(reply)
