@@ -5,6 +5,7 @@ let state = {
   promptSessionName: 'default',
   renderedSession: null,
   historySignatures: new Map(),
+  debugTimings: new Map(),
   settingsSignature: '',
   runs: new Map(),
   starting: new Set(),
@@ -569,6 +570,9 @@ function renderSessionOptions(sessions) {
       .join('') + '<option value="">+ New session</option>'
   select.value = state.sessionName
 }
+function debugTimingKey(sessionName, assistantIndex) {
+  return sessionName + '\n' + assistantIndex
+}
 function renderSessionState(data) {
   renderSessionOptions(data.sessions)
   state.settingsSignature = JSON.stringify(data.settings)
@@ -603,7 +607,13 @@ async function history(name = state.sessionName, version = state.loadVersion) {
     state.renderedSession = name
     state.historySignatures.set(name, signature)
     queryElement('#messages').innerHTML = turns.length ? '' : empty()
-    turns.forEach((t) => message(t.role, t.content, t.startedAt || new Date(), t.runId, t.status))
+    let assistantIndex = 0
+    turns.forEach((t) => {
+      let target = message(t.role, t.content, t.startedAt || new Date(), t.runId, t.status)
+      if (t.role !== 'assistant') return
+      let timing = state.debugTimings.get(debugTimingKey(name, assistantIndex++))
+      if (timing) renderTiming(target, timing.server, timing.browser)
+    })
   }
   renderRunControls()
   if (!local) scheduleSessionPoll(version)
@@ -867,13 +877,15 @@ async function sendPrompt(prompt, name, settings) {
     failed = false,
     browserStarted = performance.now(),
     browserTiming = {},
-    serverTiming
+    serverTiming,
+    assistantIndex
   try {
     if (state.runs.has(name)) await cancelRun(name, true)
     if (name === state.sessionName) {
       state.historySignatures.delete(name)
       queryElement('#messages .empty')?.remove()
       message('user', prompt)
+      assistantIndex = messages.querySelectorAll('.assistant').length
       pending = message('assistant', '')
       pending.querySelector('.body').innerHTML = '<span class="status">Starting assistant...</span>'
     }
@@ -917,6 +929,11 @@ async function sendPrompt(prompt, name, settings) {
     }
     if (settings.debug) {
       browserTiming.streamComplete = performance.now() - browserStarted
+      if (assistantIndex !== undefined)
+        state.debugTimings.set(debugTimingKey(name, assistantIndex), {
+          server: serverTiming,
+          browser: browserTiming
+        })
       let target = runId ? runMessage(runId) : pending
       if (target) renderTiming(target, serverTiming, browserTiming)
     }
@@ -989,6 +1006,8 @@ queryElement('#composer').addEventListener('submit', async (e) => {
       state.starting.add(name)
       renderRunControls()
       await api('/api/chat/clear', { method: 'POST', body: JSON.stringify({ sessionName: name }) })
+      for (let key of state.debugTimings.keys())
+        if (key.startsWith(name + '\n')) state.debugTimings.delete(key)
       state.runs.delete(name)
       await history(name, state.loadVersion)
     } catch (err) {

@@ -76,6 +76,8 @@ describe('web server', () => {
     expect(html).toContain('id="max-tokens"')
     expect(html).toContain('id="debug-mode"')
     expect(script).toContain('renderTiming(target, serverTiming, browserTiming)')
+    expect(script).toContain('state.debugTimings.get(debugTimingKey(name, assistantIndex++))')
+    expect(script).toContain('state.debugTimings.set(debugTimingKey(name, assistantIndex)')
     expect(script).toContain("api('/models')")
     expect(script).toContain("api('/api/chat/sessions'")
     expect(script).toContain('sessionName: name')
