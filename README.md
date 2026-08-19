@@ -167,6 +167,11 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Publishing complete single-file HTML pages at unique `WEB_DOMAIN/shared/<random_uuid>` URLs; pages
   are stored under `data/shared/` and survive bot restarts
 
+By default, `/a` receives only a lightweight MCP discovery tool. It can inspect the MCP catalog and
+load the required server tools during the current request, avoiding the cost of sending every MCP
+tool schema on requests that do not need tools. Enable **Tools** to provide all agent, web search, and
+MCP tools immediately for the session.
+
 Docker MCP requires access to a Docker daemon, typically by mounting `/var/run/docker.sock` at the
 same path. The runtime image includes the Docker CLI, `kubectl`, Chromium, `uvx`, and the packaged
 Node.js MCP servers. `kubectl` is pinned at image build time and can be overridden with the

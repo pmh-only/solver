@@ -637,7 +637,7 @@ describe('/a', () => {
     ])
   })
 
-  it('uses a tool-free model request by default', async () => {
+  it('offers on-demand MCP discovery without loading all tools by default', async () => {
     await dispatch(agentCommandJSON('answer directly', {}, undefined, { tools: null }), subs)
     await dispatch(agentCommandJSON('continue directly', {}, undefined, { tools: null }), subs)
 
@@ -649,8 +649,47 @@ describe('/a', () => {
       )
     }
     for (const [options] of agentMock.mock.calls) {
-      expect(options).toEqual(expect.objectContaining({ tools: [] }))
+      expect(options).toEqual(
+        expect.objectContaining({
+          tools: [expect.objectContaining({ name: 'load_mcp_tools' })]
+        })
+      )
     }
+  })
+
+  it('lets the agent discover and load selected MCP tools on demand', async () => {
+    mcpToolGroups.push(
+      [{ name: 'list_containers', description: 'List Docker containers' }],
+      [{ name: 'read_file', description: 'Read a file' }],
+      ...Array.from({ length: 5 }, (_, index) => [{ name: `other_${index}` }])
+    )
+    await dispatch(agentCommandJSON('inspect containers', {}, undefined, { tools: null }), subs)
+
+    const loader = registeredAgentTools.get('load_mcp_tools') as {
+      callback: (input: { action: 'list' | 'load'; servers?: string[] }) => Promise<string>
+    }
+    const catalog = JSON.parse(await loader.callback({ action: 'list' })) as {
+      servers: Array<{ name: string; tools: Array<{ name: string }> }>
+    }
+    expect(catalog.servers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'docker',
+          tools: [expect.objectContaining({ name: 'docker_list_containers' })]
+        }),
+        expect.objectContaining({
+          name: 'filesystem',
+          tools: [expect.objectContaining({ name: 'filesystem_read_file' })]
+        })
+      ])
+    )
+
+    await expect(loader.callback({ action: 'load', servers: ['docker'] })).resolves.toBe(
+      'Loaded 1 MCP tool from docker: docker_list_containers.'
+    )
+    expect(toolRegistryAddMock).toHaveBeenLastCalledWith([
+      expect.objectContaining({ name: 'docker_list_containers' })
+    ])
   })
 
   it('posts a separate completion message when the response takes at least 30 seconds', async () => {

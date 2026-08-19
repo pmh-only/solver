@@ -710,6 +710,58 @@ function mcpServerManagementTool(getAgent: () => Agent) {
   })
 }
 
+function lazyMcpToolLoader(getAgent: () => Agent, effort: EffortLevel) {
+  return tool({
+    name: 'load_mcp_tools',
+    description:
+      'Discover and load MCP tools only when the request needs an external capability. First use list to inspect available servers and their tools, then use load with only the required server names. Loaded tools become available immediately in the current request.',
+    inputSchema: z.object({
+      action: z.enum(['list', 'load']),
+      servers: z
+        .array(mcpServerNameSchema)
+        .max(MAX_STORED_MCP_SERVERS)
+        .optional()
+        .describe('MCP server names returned by list; required for load')
+    }),
+    callback: async ({ action, servers }) => {
+      await initializeAgentMcpRuntime()
+      const availableConnections = [...agentMcpConnections].filter(
+        ([name]) => effort !== 'none' || name !== 'sequential_thinking'
+      )
+      if (action === 'list') {
+        const catalog = availableConnections.map(([name, { tools }]) => ({
+          name,
+          tools: tools.map(({ name: toolName, description }) => ({
+            name: toolName,
+            ...(description ? { description } : {})
+          }))
+        }))
+        return JSON.stringify({
+          servers: catalog,
+          ...(agentMcpFailures.size > 0 ? { failures: Object.fromEntries(agentMcpFailures) } : {})
+        })
+      }
+
+      if (!servers?.length) return 'servers is required when loading MCP tools.'
+      const requested = new Set(servers)
+      const unknown = servers.filter(
+        (name) => !availableConnections.some(([availableName]) => availableName === name)
+      )
+      if (unknown.length > 0) {
+        return `Unknown or unavailable MCP server${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}. Use list to inspect the available servers.`
+      }
+
+      const loadedTools = replaceDuplicateTools(
+        availableConnections
+          .filter(([name]) => requested.has(name))
+          .flatMap(([, { tools }]) => tools)
+      )
+      getAgent().toolRegistry.addOrReplace(loadedTools)
+      return `Loaded ${loadedTools.length} MCP tool${loadedTools.length === 1 ? '' : 's'} from ${servers.join(', ')}${loadedTools.length > 0 ? `: ${loadedTools.map(({ name }) => name).join(', ')}` : ''}.`
+    }
+  })
+}
+
 type AnyRow = ActionRowBuilder<StringSelectMenuBuilder> | ActionRowBuilder<ButtonBuilder>
 
 type GptComponent = ContainerBuilder | AnyRow | GptManagedComponent
@@ -1730,7 +1782,7 @@ async function runGptStream(
         : null,
       ctx.toolsEnabled
         ? 'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.'
-        : null,
+        : 'MCP tool schemas are not loaded by default. When the request could benefit from an external capability, use load_mcp_tools to inspect the MCP catalog and load only the required servers. Do not load MCP tools for requests you can answer directly.',
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,
@@ -1792,9 +1844,9 @@ async function runGptStream(
             mcpServerManagementTool(() => agent),
             interactionModalTool(token, ctx)
           ]
-        : []
+        : [lazyMcpToolLoader(() => agent, ctx.effort)]
       const agentTools = !ctx.toolsEnabled
-        ? []
+        ? localTools
         : diagnosing
           ? localTools
           : replaceDuplicateTools([
