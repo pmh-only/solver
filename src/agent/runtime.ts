@@ -123,6 +123,28 @@ const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
 const MCP_FILESYSTEM_ROOT = '/'
 const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
+const MCP_SERVER_CAPABILITIES: Record<string, string> = {
+  docker: 'inspect and manage Docker containers, images, volumes, and networks',
+  filesystem: 'read, search, create, and modify local files',
+  memory: 'store and retrieve persistent knowledge and user-provided facts',
+  sequential_thinking: 'work through complex multi-step reasoning',
+  fetch: 'retrieve current content from URLs and web APIs',
+  time: 'get current times and convert time zones',
+  playwright: 'browse and interact with websites in a real browser',
+  spotify: 'search Spotify and manage playback and playlists',
+  google_calendar: 'read and manage Google Calendar events',
+  mail: 'read, search, and manage email'
+}
+
+function describeMcpServers(names: string[]): string {
+  return names
+    .map((name) => {
+      const capability = MCP_SERVER_CAPABILITIES[name]
+      return capability ? `${name} (${capability})` : name
+    })
+    .join('; ')
+}
+
 function shellTool(signal: AbortSignal) {
   return tool({
     name: 'shell',
@@ -707,7 +729,7 @@ function lazyMcpToolLoader(getAgent: () => Agent, effort: EffortLevel) {
   return tool({
     name: 'load_mcp_tools',
     description:
-      'Discover and load MCP tools only when the request needs an external capability. Available server names are provided in the system prompt. Load the required servers directly when their purpose is clear, or use list first to inspect their tools. Loaded tools become available immediately in the current request.',
+      'Discover and load MCP tools for requests that depend on current or external information, local files or services, private account data, persistent memory, browser interaction, or real-world actions. Available servers and their capabilities are provided in the system prompt. Load the required servers directly when their purpose is clear, or use list first to inspect their tools. Loaded tools become available immediately in the current request.',
     inputSchema: z.object({
       action: z.enum(['list', 'load']),
       servers: z
@@ -1693,14 +1715,14 @@ async function runGptStream(
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
       'Return the complete user-visible Discord message as one JSON object and no surrounding prose or Markdown fence. When content is present, make it the first property so it can be streamed while the rest of the response is generated. You may use content, embeds, components, allowed_mentions, attachments, poll, and flags from the Discord API. Use raw Discord API component objects and set flag 32768 for Components V2. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
       availableMcpServers.length > 0
-        ? `Available MCP servers: ${availableMcpServers.join(', ')}.`
+        ? `Available MCP servers and capabilities: ${describeMcpServers(availableMcpServers)}.`
         : 'No MCP servers are currently available.',
       ctx.toolsEnabled
         ? 'Use the manage_response_modals tool before your final JSON when a response button should open a modal.'
         : null,
       ctx.toolsEnabled
         ? 'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.'
-        : 'MCP tool schemas are not loaded by default. When the request could benefit from an external capability, use load_mcp_tools to load only the required servers. Inspect the catalog first only when the server names do not make the required capability clear. Do not load MCP tools for requests you can answer directly.',
+        : 'MCP tool schemas are not loaded by default. Before answering, decide whether the request depends on current or external information, local files or services, private account data, persistent memory, browser interaction, or a real-world action. If it does, use load_mcp_tools and then the loaded tools instead of relying on general knowledge or claiming the capability is unavailable. Load servers directly from the capability descriptions when the match is clear; inspect the catalog first when it is not. Skip MCP only for static, general questions that are fully answerable without external context or actions.',
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,

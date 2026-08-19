@@ -651,12 +651,19 @@ describe('/a', () => {
     for (const [options] of agentMock.mock.calls) {
       expect(options).toEqual(
         expect.objectContaining({
-          systemPrompt: expect.stringContaining('Available MCP servers:'),
+          systemPrompt: expect.stringContaining('Available MCP servers and capabilities:'),
           tools: [expect.objectContaining({ name: 'load_mcp_tools' })]
         })
       )
       expect(options.systemPrompt).toContain('docker')
-      expect(options.systemPrompt).toContain('filesystem')
+      expect(options.systemPrompt).toContain('inspect and manage Docker containers')
+      expect(options.systemPrompt).toContain(
+        'filesystem (read, search, create, and modify local files)'
+      )
+      expect(options.systemPrompt).toContain(
+        'Before answering, decide whether the request depends on'
+      )
+      expect(options.systemPrompt).toContain('use load_mcp_tools and then the loaded tools')
     }
   })
 
