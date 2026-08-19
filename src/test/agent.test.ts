@@ -765,6 +765,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_mcp_servers' }),
+          expect.objectContaining({ name: 'load_mcp_tools' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
           ...Array(7).fill(expect.anything())
         ]
@@ -785,10 +786,12 @@ describe('/a', () => {
     ])
   })
 
-  it('offers on-demand MCP discovery without loading all tools by default', async () => {
+  it('keeps native tools available while offering MCP discovery without loading MCP tools', async () => {
+    mcpActions.push({ action: 'list' })
     await dispatch(agentCommandJSON('answer directly', {}, undefined, { tools: null }), subs)
     await dispatch(agentCommandJSON('continue directly', {}, undefined, { tools: null }), subs)
 
+    expect(mcpActionResults).toContain('No persistent MCP servers are attached.')
     for (const [options] of modelMock.mock.calls) {
       expect(options).toEqual(
         expect.objectContaining({
@@ -800,7 +803,16 @@ describe('/a', () => {
       expect(options).toEqual(
         expect.objectContaining({
           systemPrompt: expect.stringContaining('Available MCP servers and capabilities:'),
-          tools: [expect.objectContaining({ name: 'load_mcp_tools' })]
+          tools: [
+            expect.objectContaining({ name: 'shell' }),
+            expect.objectContaining({ name: 'wait' }),
+            expect.objectContaining({ name: 'publish_html' }),
+            expect.objectContaining({ name: 'spotify_authenticate' }),
+            expect.objectContaining({ name: 'google_calendar_authenticate' }),
+            expect.objectContaining({ name: 'manage_mcp_servers' }),
+            expect.objectContaining({ name: 'load_mcp_tools' }),
+            expect.objectContaining({ name: 'manage_response_modals' })
+          ]
         })
       )
       expect(options.systemPrompt).toContain('docker')
@@ -812,6 +824,12 @@ describe('/a', () => {
         'Before answering, decide whether the request depends on'
       )
       expect(options.systemPrompt).toContain('use load_mcp_tools and then the loaded tools')
+      expect(options.systemPrompt).toContain(
+        'Use manage_mcp_servers to list, attach, replace, remove'
+      )
+      expect(options.tools.some(({ name }: { name: string }) => name.startsWith('docker_'))).toBe(
+        false
+      )
     }
   })
 
@@ -1278,7 +1296,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1298,7 +1316,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1312,7 +1330,7 @@ describe('/a', () => {
 
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(13).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
       })
     )
     expect(JSON.stringify(calls)).toContain('hello world')
@@ -1466,7 +1484,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'docker_get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'docker_get-current-time' }))
-    expect(tools).toHaveLength(14)
+    expect(tools).toHaveLength(15)
   })
 
   it('does not retry a closed MCP connection', async () => {
@@ -1552,6 +1570,8 @@ describe('/a', () => {
     const tools = (agentMock.mock.calls[0]![0] as { tools: Array<{ name: string }> }).tools
     expect(tools.some(({ name }) => name.startsWith('sequential_thinking_'))).toBe(false)
     expect(tools).toContainEqual(expect.objectContaining({ name: 'filesystem_filesystem_tool' }))
+    expect(tools).toContainEqual(expect.objectContaining({ name: 'manage_mcp_servers' }))
+    expect(tools).toContainEqual(expect.objectContaining({ name: 'load_mcp_tools' }))
   })
 
   it('continues a session with the previous Responses API id', async () => {

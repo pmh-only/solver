@@ -1673,21 +1673,20 @@ async function runGptStream(
     const availableMcpServers = [...agentMcpConnections.keys()].filter(
       (name) => ctx.effort !== 'none' || name !== 'sequential_thinking'
     )
-    const mcpFailures = ctx.toolsEnabled
-      ? [...agentMcpFailures].map(([name, message]) => `${name}: ${message}`).join('; ')
-      : ''
+    const mcpFailures = [...agentMcpFailures]
+      .map(([name, message]) => `${name}: ${message}`)
+      .join('; ')
     const systemInstruction = [
       loadEffectiveSystemPrompt(ctx.userId, ctx.sessionName),
       'Return the complete user-visible Discord message as exactly one JSON object with no surrounding prose or Markdown fence. It must contain a non-empty components array of raw Discord API component objects and a numeric flags field that includes 32768 for Components V2. Never populate content: omit it or set it to null. Do not use embeds or polls. You may also use allowed_mentions and attachments from the Discord API. Interactive custom_id values must be unique stable lowercase ids of 1-32 characters. Add sender_only: true to an interactive component when only the user who sent the original request should be allowed to use it; omit it or set it to false to allow everyone. Component interactions are sent back to you. The application appends token usage at the bottom, so do not add token statistics yourself.',
       availableMcpServers.length > 0
         ? `Available MCP servers and capabilities: ${describeMcpServers(availableMcpServers)}.`
         : 'No MCP servers are currently available.',
-      ctx.toolsEnabled
-        ? 'Use the manage_response_modals tool before your final JSON when a response button should open a modal.'
+      'Use the manage_response_modals tool before your final JSON when a response button should open a modal.',
+      'Use manage_mcp_servers to list, attach, replace, remove, or restart persistent MCP servers when needed. Tools from a successfully attached or restarted server are available immediately in the current request.',
+      !ctx.toolsEnabled
+        ? 'MCP tool schemas are not loaded by default. Before answering, decide whether the request depends on current or external information, local files or services, private account data, persistent memory, browser interaction, or a real-world action. If it does, use load_mcp_tools and then the loaded tools instead of relying on general knowledge or claiming the capability is unavailable. Load servers directly from the capability descriptions when the match is clear; inspect the catalog first when it is not. Skip MCP only for static, general questions that are fully answerable without external context or actions.'
         : null,
-      ctx.toolsEnabled
-        ? 'Use manage_mcp_servers to list, attach, replace, or remove persistent MCP servers when needed. Tools from a successfully attached server are available immediately in the current request.'
-        : 'MCP tool schemas are not loaded by default. Before answering, decide whether the request depends on current or external information, local files or services, private account data, persistent memory, browser interaction, or a real-world action. If it does, use load_mcp_tools and then the loaded tools instead of relying on general knowledge or claiming the capability is unavailable. Load servers directly from the capability descriptions when the match is clear; inspect the catalog first when it is not. Skip MCP only for static, general questions that are fully answerable without external context or actions.',
       mcpFailures
         ? `These MCP servers failed to boot and their tools are unavailable: ${mcpFailures}. Diagnose and repair each failure using the available tools when relevant to the request. You may use shell for local runtime problems or manage_mcp_servers to correct a persistent server configuration. Do not pretend a failed MCP tool is available.`
         : null,
@@ -1739,23 +1738,21 @@ async function runGptStream(
       }
 
       let agent: Agent
-      const localTools = ctx.toolsEnabled
-        ? [
-            shellTool(controller.signal),
-            waitTool(controller.signal),
-            publishHtmlTool,
-            spotifyAuthenticationTool,
-            googleCalendarAuthenticationTool,
-            mcpServerManagementTool(() => agent),
-            interactionModalTool(token, ctx)
-          ]
-        : [lazyMcpToolLoader(() => agent, ctx.effort)]
-      const agentTools = !ctx.toolsEnabled
-        ? localTools
-        : diagnosing
-          ? localTools
+      const nativeTools = [
+        shellTool(controller.signal),
+        waitTool(controller.signal),
+        publishHtmlTool,
+        spotifyAuthenticationTool,
+        googleCalendarAuthenticationTool,
+        mcpServerManagementTool(() => agent),
+        lazyMcpToolLoader(() => agent, ctx.effort),
+        interactionModalTool(token, ctx)
+      ]
+      const agentTools =
+        !ctx.toolsEnabled || diagnosing
+          ? nativeTools
           : replaceDuplicateTools([
-              ...localTools,
+              ...nativeTools,
               ...[...agentMcpConnections]
                 .filter(([name]) => ctx.effort !== 'none' || name !== 'sequential_thinking')
                 .flatMap(([, { tools }]) => tools)
