@@ -249,6 +249,7 @@ export function agentCommandJSON(
     resetSystemPrompt?: boolean
     openAIEndpoint?: string
     resetOpenAIEndpoint?: boolean
+    debug?: boolean
   } = {}
 ): RawInteraction {
   return commandJSON('', {
@@ -273,7 +274,8 @@ export function agentCommandJSON(
           : []),
         ...(settings.resetOpenAIEndpoint
           ? [{ name: 'reset_openai_endpoint', value: true, type: 5 }]
-          : [])
+          : []),
+        ...(settings.debug ? [{ name: 'debug', value: true, type: 5 }] : [])
       ]
     },
     ...overrides

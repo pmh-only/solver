@@ -102,6 +102,29 @@ small {
   margin-left: 0;
   padding-left: 12px;
 }
+.debug-timing {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.debug-timing summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.debug-timing pre {
+  margin: 8px 0 0;
+  padding: 0;
+  white-space: pre-wrap;
+  background: transparent;
+}
+.debug-control input {
+  width: 18px;
+  height: 18px;
+  margin: 6px auto 0;
+}
 .embed {
   border-left: 4px solid #5865f2;
   background: #2b2d31;

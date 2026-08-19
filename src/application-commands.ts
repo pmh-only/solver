@@ -65,6 +65,9 @@ export const agentCommand = new SlashCommandBuilder()
   .addBooleanOption((option) =>
     option.setName('reset_openai_endpoint').setDescription('restore the official OpenAI endpoint')
   )
+  .addBooleanOption((option) =>
+    option.setName('debug').setDescription('show detailed request and response timing')
+  )
 
 export const applicationCommands = [
   {

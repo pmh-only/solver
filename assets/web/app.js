@@ -536,7 +536,7 @@ function validateField(field, data) {
   return ''
 }
 function controlsDisabled(disabled) {
-  ;['#model-select', '#effort', '#max-tokens'].forEach(
+  ;['#model-select', '#effort', '#max-tokens', '#debug-mode'].forEach(
     (id) => (queryElement(id).disabled = disabled)
   )
 }
@@ -864,7 +864,10 @@ async function sendPrompt(prompt, name, settings) {
   renderRunControls()
   let pending,
     runId,
-    failed = false
+    failed = false,
+    browserStarted = performance.now(),
+    browserTiming = {},
+    serverTiming
   try {
     if (state.runs.has(name)) await cancelRun(name, true)
     if (name === state.sessionName) {
@@ -879,14 +882,18 @@ async function sendPrompt(prompt, name, settings) {
       reader = r.body.getReader(),
       decoder = new TextDecoder(),
       buffer = ''
+    if (settings.debug) browserTiming.responseHeaders = performance.now() - browserStarted
     while (true) {
       let { done, value } = await reader.read()
+      if (settings.debug && value?.length && browserTiming.firstByte === undefined)
+        browserTiming.firstByte = performance.now() - browserStarted
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
       let lines = buffer.split('\n')
       buffer = lines.pop() || ''
       for (let line of lines) {
         if (!line) continue
         let update = JSON.parse(line)
+        if (update.timing) serverTiming = update.timing
         if (update.runId) {
           runId = update.runId
           state.runs.set(name, { id: runId, local: true })
@@ -900,11 +907,18 @@ async function sendPrompt(prompt, name, settings) {
             : null
         if (target && update.payload)
           target.querySelector('.body').innerHTML = payload(update.payload)
+        if (settings.debug && target && update.payload && browserTiming.firstRender === undefined)
+          browserTiming.firstRender = performance.now() - browserStarted
         if (target && update.error)
           target.querySelector('.body').innerHTML =
             '<span class="status error">' + esc(update.error) + '</span>'
       }
       if (done) break
+    }
+    if (settings.debug) {
+      browserTiming.streamComplete = performance.now() - browserStarted
+      let target = runId ? runMessage(runId) : pending
+      if (target) renderTiming(target, serverTiming, browserTiming)
     }
   } catch (err) {
     failed = true
@@ -923,6 +937,32 @@ async function sendPrompt(prompt, name, settings) {
     renderRunControls()
   }
 }
+function timingMs(value) {
+  return Number.isFinite(value) ? Number(value).toFixed(1) + ' ms' : 'n/a'
+}
+function renderTiming(target, server, browser) {
+  let rows = []
+  if (server)
+    rows.push(
+      ...(server.entries || []).map((entry) =>
+        entry.durationMs === undefined
+          ? entry.name + ': +' + timingMs(entry.startMs)
+          : entry.name + ': ' + timingMs(entry.durationMs) + ' (+' + timingMs(entry.startMs) + ')'
+      ),
+      'server total: ' + timingMs(server.totalMs)
+    )
+  rows.push(
+    'browser response headers: ' + timingMs(browser.responseHeaders),
+    'browser first byte: ' + timingMs(browser.firstByte),
+    'browser first render: ' + timingMs(browser.firstRender),
+    'browser stream complete: ' + timingMs(browser.streamComplete)
+  )
+  let details = document.createElement('details')
+  details.className = 'debug-timing'
+  details.open = true
+  details.innerHTML = '<summary>Debug timing</summary><pre>' + esc(rows.join('\n')) + '</pre>'
+  target.querySelector('.body').append(details)
+}
 queryElement('#cancel-run').onclick = async () => {
   try {
     await cancelRun()
@@ -939,7 +979,8 @@ queryElement('#composer').addEventListener('submit', async (e) => {
   let settings = {
     model: queryElement('#model-select').value.trim(),
     effort: queryElement('#effort').value,
-    maxTokens: Number(queryElement('#max-tokens').value)
+    maxTokens: Number(queryElement('#max-tokens').value),
+    debug: queryElement('#debug-mode').checked
   }
   queryElement('#prompt').value = ''
   queryElement('#prompt').style.height = 'auto'

@@ -463,7 +463,8 @@ describe('/a', () => {
       'system_prompt',
       'reset_system_prompt',
       'openai_endpoint',
-      'reset_openai_endpoint'
+      'reset_openai_endpoint',
+      'debug'
     ])
     expect(command.options?.[0]).toMatchObject({ name: 'prompt', required: true })
     expect(command.options?.[1]).toMatchObject({
@@ -653,6 +654,22 @@ describe('/a', () => {
     expect(calls.some((call) => call.method === 'POST' && call.route.includes('/webhooks/'))).toBe(
       false
     )
+  })
+
+  it('reports detailed lifecycle timing only when debug mode is enabled', async () => {
+    const normalCalls = await dispatch(agentCommandJSON('normal request'), subs)
+    const debugCalls = await dispatch(agentCommandJSON('debug request', {}, undefined, { debug: true }), subs)
+    const report = debugCalls.find(
+      (call) => call.method === 'POST' && JSON.stringify(call.body).includes('Debug timing')
+    )
+
+    expect(JSON.stringify(normalCalls)).not.toContain('Debug timing')
+    expect(JSON.stringify(report?.body)).toContain('Discord acknowledgement')
+    expect(JSON.stringify(report?.body)).toContain('session queue wait')
+    expect(JSON.stringify(report?.body)).toContain('first upstream event received')
+    expect(JSON.stringify(report?.body)).toContain('first response token received')
+    expect(JSON.stringify(report?.body)).toContain('final response delivery')
+    expect(JSON.stringify(report?.body)).toContain('total to timing report')
   })
 
   it('reuses MCP clients across agent turns', async () => {

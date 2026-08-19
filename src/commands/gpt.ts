@@ -35,6 +35,7 @@ import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { randomUUID } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -78,6 +79,7 @@ import {
   getSpotifyMcpEnvironment,
   loadSpotifyConfiguration
 } from '../spotify-auth.js'
+import { formatTimingReport, RequestTiming } from '../request-timing.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
@@ -1643,20 +1645,28 @@ async function runGptStream(
   callbacks: StreamCallbacks,
   ctx: GptContext,
   token: string,
-  externalSignal?: AbortSignal
+  externalSignal?: AbortSignal,
+  timing?: RequestTiming
 ): Promise<void> {
+  timing?.mark('agent stream started')
   const apiKey = loadOpenAIApiKey()
   if (!apiKey) {
+    let phaseStarted = performance.now()
     const response = JSON.stringify({ content: 'no OpenAI API token configured' })
     const payload = buildAgentPayload(response, token, ctx)
+    timing?.span('fallback payload build', phaseStarted)
+    phaseStarted = performance.now()
     await callbacks.editPayload(payload)
+    timing?.span('fallback response delivery', phaseStarted)
     ctx.responseState = undefined
+    phaseStarted = performance.now()
     storeConversation(
       ctx,
       response,
       fallbackTurnMessages(ctx, 'no OpenAI API token configured'),
       JSON.stringify(payload)
     )
+    timing?.span('conversation persistence', phaseStarted)
     callbacks.stored?.()
     return
   }
@@ -1677,6 +1687,9 @@ async function runGptStream(
   const activity: AgentActivity = { reasoning: '', tools: [], responseStarted: false }
   let lastProgressUpdate = 0
   let lastProgressPayload = ''
+  let firstUpstreamEvent = false
+  let firstResponseToken = false
+  const toolStarts = new Map<string, { name: string; startedAt: number }>()
 
   const updateProgress = async (force = false): Promise<void> => {
     const payload = buildAgentProgressPayload(ctx, activity, streamedJsonContent(responseContent))
@@ -1690,8 +1703,12 @@ async function runGptStream(
   }
 
   try {
+    let phaseStarted = performance.now()
     await updateProgress(true)
+    timing?.span('initial progress delivery', phaseStarted)
+    phaseStarted = performance.now()
     await initializeAgentMcpRuntime()
+    timing?.span('MCP runtime initialization', phaseStarted)
     const mcpFailures = [...agentMcpFailures]
       .map(([name, message]) => `${name}: ${message}`)
       .join('; ')
@@ -1736,6 +1753,7 @@ async function runGptStream(
           ctx.effort === 'none' ? { effort: 'none' } : { effort: ctx.effort, summary: 'auto' }
       }
     })
+    timing?.mark('OpenAI model configured')
     let currentAgent: Agent | undefined
     const streamAgent = async (prompt: string, diagnosing = false, continueCurrent = false) => {
       if (continueCurrent && currentAgent) {
@@ -1807,6 +1825,10 @@ async function runGptStream(
       try {
         for await (const event of agent.stream(prompt, { cancelSignal: controller.signal })) {
           if (controller.signal.aborted) break
+          if (!firstUpstreamEvent) {
+            firstUpstreamEvent = true
+            timing?.mark('first upstream event received')
+          }
 
           let activityChanged = false
           let forceProgressUpdate = false
@@ -1822,6 +1844,10 @@ async function runGptStream(
                   forceProgressUpdate = true
                 }
                 responseContent += event.event.delta.text
+                if (!firstResponseToken) {
+                  firstResponseToken = true
+                  timing?.mark('first response token received')
+                }
                 activityChanged = true
                 if (!hadResponsePreview && streamedJsonContent(responseContent)) {
                   forceProgressUpdate = true
@@ -1857,6 +1883,10 @@ async function runGptStream(
                   name: event.event.start.name,
                   status: 'running'
                 })
+                toolStarts.set(event.event.start.toolUseId, {
+                  name: event.event.start.name,
+                  startedAt: performance.now()
+                })
                 activityChanged = true
                 forceProgressUpdate = true
               } else {
@@ -1866,6 +1896,11 @@ async function runGptStream(
           }
           if (event.type === 'toolResultEvent') {
             const usedTool = activity.tools.find(({ id }) => id === event.result.toolUseId)
+            const toolStart = toolStarts.get(event.result.toolUseId)
+            if (toolStart) {
+              timing?.span(`tool ${toolStart.name}`, toolStart.startedAt)
+              toolStarts.delete(event.result.toolUseId)
+            }
             if (usedTool) {
               usedTool.status = event.result.status
               activityChanged = true
@@ -1894,13 +1929,24 @@ async function runGptStream(
       }
     }
 
-    await streamAgent(ctx.prompt)
+    const modelStreamStarted = performance.now()
+    try {
+      await streamAgent(ctx.prompt)
+    } finally {
+      timing?.span('model and tool stream', modelStreamStarted)
+    }
 
     if (!controller.signal.aborted) {
+      phaseStarted = performance.now()
       const response = responseContent || JSON.stringify({ content: '(no response)' })
       const payload = buildAgentPayload(response, token, ctx, usage, activity)
+      timing?.span('final payload build', phaseStarted)
+      phaseStarted = performance.now()
       await callbacks.editPayload(payload)
+      timing?.span('final response delivery', phaseStarted)
+      phaseStarted = performance.now()
       storeConversation(ctx, response, modelMessages, JSON.stringify(payload))
+      timing?.span('conversation persistence', phaseStarted)
       conversationStored = true
       callbacks.stored?.()
     }
@@ -2188,6 +2234,9 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
 
 export async function handleAgentCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const startedAt = Date.now()
+  const debug = interaction.options.getBoolean('debug') ?? false
+  const timing = debug ? new RequestTiming() : undefined
+  timing?.mark('Discord interaction received')
   const prompt = interaction.options.getString('prompt', true).trim()
   const requestedSession = interaction.options.getString('session')?.trim()
   const sessionName =
@@ -2222,6 +2271,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   }
 
   if (prompt === '/clear') {
+    const clearStarted = performance.now()
     await interaction.deferReply()
     cancelActiveSession(sessionKey(sessionName))
     await runInSession(interaction.user.id, sessionName, async () => {
@@ -2245,6 +2295,11 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
         finishSessionCommand(interaction.user.id, sessionName)
       }
     })
+    timing?.span('clear session and deliver response', clearStarted)
+    if (timing) {
+      timing.mark('agent request complete')
+      await sendDiscordTiming(interaction, timing)
+    }
     return
   }
 
@@ -2280,9 +2335,13 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
 
+  let phaseStarted = performance.now()
   await interaction.deferReply()
+  timing?.span('Discord acknowledgement', phaseStarted)
 
+  phaseStarted = performance.now()
   await interaction.editReply(buildAgentProgressPayload(ctx))
+  timing?.span('initial Discord response', phaseStarted)
 
   const callbacks = makeCallbacks(interaction, pub)
   const key = sessionKey(sessionName)
@@ -2296,7 +2355,9 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   }
   activeDiscordRuns.set(key, active)
   try {
+    const queueStarted = performance.now()
     await runInSession(interaction.user.id, sessionName, async () => {
+      timing?.span('session queue wait', queueStarted)
       const sharedCallbacks: StreamCallbacks = {
         editMain: callbacks.editMain,
         editPayload: async (payload) => {
@@ -2315,9 +2376,11 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
           )
           return
         }
+        const loadStarted = performance.now()
         loadContextConversation(ctx)
+        timing?.span('conversation load', loadStarted)
         storeGptContext(token, ctx)
-        await runGptStream(sharedCallbacks, ctx, token, active.controller.signal)
+        await runGptStream(sharedCallbacks, ctx, token, active.controller.signal, timing)
       } finally {
         if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
           deleteGptContext(token)
@@ -2328,12 +2391,32 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   } finally {
     if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
   }
+  if (timing && !active.controller.signal.aborted) {
+    timing.mark('agent request complete')
+    await sendDiscordTiming(interaction, timing)
+  }
   if (!active.controller.signal.aborted && Date.now() - startedAt >= SLOW_RESPONSE_MS) {
     await interaction.followUp({
       content: '완료되었습니다.',
       allowedMentions: { parse: [] }
     })
   }
+}
+
+async function sendDiscordTiming(
+  interaction: ChatInputCommandInteraction,
+  timing: RequestTiming
+): Promise<void> {
+  const lines = formatTimingReport(timing.snapshot()).split('\n')
+  let chunk = ''
+  for (const line of lines) {
+    if (chunk && chunk.length + line.length + 1 > 1900) {
+      await interaction.followUp({ content: chunk, allowedMentions: { parse: [] } })
+      chunk = '**Debug timing (continued)**'
+    }
+    chunk += `${chunk ? '\n' : ''}${line}`
+  }
+  if (chunk) await interaction.followUp({ content: chunk, allowedMentions: { parse: [] } })
 }
 
 export interface WebAgentRequest {
@@ -2344,6 +2427,7 @@ export interface WebAgentRequest {
   effort?: string
   maxTokens?: number
   runId?: string
+  timing?: RequestTiming
 }
 
 export interface WebInteractionField {
@@ -2488,6 +2572,8 @@ export async function runWebAgent(
   onUpdate: (payload: InteractionEditReplyOptions) => Promise<void>,
   signal?: AbortSignal
 ): Promise<void> {
+  const timing = request.timing
+  timing?.mark('web agent validation started')
   const userId = 'single-user'
   const prompt = request.prompt.trim()
   if (!prompt || prompt.length > 32_000)
@@ -2514,6 +2600,7 @@ export async function runWebAgent(
   storeSessionSettings(userId, sessionName, settings)
   registerAgentSession(userId, sessionName)
   selectSession(sessionName)
+  timing?.mark('web agent settings loaded')
 
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
@@ -2573,12 +2660,16 @@ export async function runWebAgent(
   }
 
   try {
+    const queueStarted = performance.now()
     await runInSession(userId, sessionName, async () => {
+      timing?.span('session queue wait', queueStarted)
       beginSessionCommand(userId, sessionName)
       try {
+        const loadStarted = performance.now()
         loadContextConversation(ctx)
+        timing?.span('conversation load', loadStarted)
         storeGptContext(token, ctx)
-        await runGptStream(callbacks, ctx, token, controller.signal)
+        await runGptStream(callbacks, ctx, token, controller.signal, timing)
       } finally {
         if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0)
           deleteGptContext(token)

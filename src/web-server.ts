@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import {
   runWebAgent,
   runWebComponentInteraction,
@@ -46,6 +47,7 @@ import {
   saveOidcSettings
 } from './web-auth.js'
 import { WEB_CSS, WEB_HTML, WEB_JS, WEB_MARKDOWN_JS } from './web-ui.js'
+import { RequestTiming } from './request-timing.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -176,7 +178,8 @@ function safeError(error: unknown): string {
 async function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  url: URL
+  url: URL,
+  requestStartedAt: number
 ): Promise<boolean> {
   const method = request.method ?? 'GET'
   if (url.pathname === '/api/session' && method === 'GET') {
@@ -487,6 +490,9 @@ async function handleApiRequest(
       return true
     }
     const body = (await readJson(request)) as Record<string, unknown>
+    const debug = body.debug === true
+    const timing = debug ? new RequestTiming(requestStartedAt) : undefined
+    timing?.mark('request body parsed and authorized')
     const runId = randomUUID()
     response.writeHead(200, {
       ...securityHeaders(),
@@ -494,6 +500,7 @@ async function handleApiRequest(
       'X-Accel-Buffering': 'no',
       Connection: 'keep-alive'
     })
+    timing?.mark('response headers sent')
     const write = (value: unknown) => {
       if (!response.destroyed) response.write(`${JSON.stringify(value)}\n`)
     }
@@ -506,12 +513,18 @@ async function handleApiRequest(
           model: typeof body.model === 'string' ? body.model : undefined,
           effort: typeof body.effort === 'string' ? body.effort : undefined,
           maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
-          runId
+          runId,
+          timing
         },
         async (payload) => write({ runId, payload })
       )
+      if (timing) {
+        timing.mark('server agent processing complete')
+        write({ runId, timing: timing.snapshot() })
+      }
       write({ runId, done: true })
     } catch (error) {
+      if (timing) write({ runId, timing: timing.snapshot() })
       write({ runId, error: safeError(error) })
     } finally {
       response.end()
@@ -567,6 +580,7 @@ export async function handleWebRequest(
   request: IncomingMessage,
   response: ServerResponse
 ): Promise<void> {
+  const requestStartedAt = performance.now()
   const method = request.method ?? 'GET'
   let url: URL
   try {
@@ -577,7 +591,11 @@ export async function handleWebRequest(
   }
 
   try {
-    if (url.pathname.startsWith('/api/') && (await handleApiRequest(request, response, url))) return
+    if (
+      url.pathname.startsWith('/api/') &&
+      (await handleApiRequest(request, response, url, requestStartedAt))
+    )
+      return
     if (url.pathname === '/auth/login' && method === 'GET') {
       if (!consumeStoredRateLimit(`web-rate:oidc:${remoteId(request)}`, 20, 15 * 60_000)) {
         sendJson(response, 429, { error: 'Too many login attempts' })

@@ -74,6 +74,8 @@ describe('web server', () => {
     expect(html).toContain('id="model-options"')
     expect(html).toContain('id="effort"')
     expect(html).toContain('id="max-tokens"')
+    expect(html).toContain('id="debug-mode"')
+    expect(script).toContain('renderTiming(target, serverTiming, browserTiming)')
     expect(script).toContain("api('/models')")
     expect(script).toContain("api('/api/chat/sessions'")
     expect(script).toContain('sessionName: name')
@@ -120,6 +122,50 @@ describe('web server', () => {
     expect(head.status).toBe(200)
     expect(await head.text()).toBe('')
     expect(Number(head.headers.get('content-length'))).toBeGreaterThan(0)
+  })
+
+  it('streams server lifecycle timing for debug chat requests only', async () => {
+    const origin = await startServer()
+    const { cookie, csrfToken } = createWebSessionForTests({
+      id: 'web:issuer:debug-user',
+      subject: 'debug-user',
+      name: 'Debug user',
+      admin: false,
+      allowed: true
+    })
+    const sendChat = (debug: boolean) =>
+      fetch(`${origin}/api/chat`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken
+        },
+        body: JSON.stringify({ prompt: debug ? 'debug request' : 'normal request', debug })
+      })
+
+    const normal = await (await sendChat(false)).text()
+    const debug = await (await sendChat(true)).text()
+    const updates = debug
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const timing = updates.find((update) => update.timing)?.timing as {
+      totalMs: number
+      entries: Array<{ name: string }>
+    }
+
+    expect(normal).not.toContain('"timing"')
+    expect(timing.totalMs).toBeGreaterThanOrEqual(0)
+    expect(timing.entries.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        'request body parsed and authorized',
+        'session queue wait',
+        'conversation load',
+        'agent stream started'
+      ])
+    )
+    expect(updates.at(-1)).toMatchObject({ done: true })
   })
 
   it('serves models loaded dynamically from OpenAI', async () => {
