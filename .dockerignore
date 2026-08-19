@@ -2,6 +2,6 @@
 .git
 .github
 .tmp
+.cache
 data
-dist
 node_modules

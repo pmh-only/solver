@@ -8,16 +8,6 @@ RUN corepack enable
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
-
-FROM deps AS build
-COPY tsconfig.json ./
-COPY src ./src
-RUN pnpm build
-
-FROM base AS prod-deps
-WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-lockfile --ignore-scripts
 
 FROM node:24-bookworm-slim AS runtime
@@ -45,9 +35,9 @@ RUN apt-get update \
     && usermod --login agent --home /home/agent --move-home node \
     && groupmod --new-name agent node
 COPY --from=ghcr.io/astral-sh/uv:0.11.31 /uv /uvx /usr/local/bin/
-COPY --from=prod-deps --chown=agent:agent /app/node_modules ./node_modules
-COPY --from=build --chown=agent:agent /app/package.json ./package.json
-COPY --from=build --chown=agent:agent /app/dist ./dist
+COPY --from=deps --chown=agent:agent /app/node_modules ./node_modules
+COPY --chown=agent:agent package.json ./package.json
+COPY --chown=agent:agent dist ./dist
 COPY --chown=agent:agent assets ./assets
 COPY --chmod=440 agent.sudoers /etc/sudoers.d/agent
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
