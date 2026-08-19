@@ -14,7 +14,7 @@ import {
   runWebAgent,
   runWebComponentInteraction,
   runWebInteraction
-} from '../commands/gpt.js'
+} from '../agent/index.js'
 import {
   clearStoredValues,
   getStoredValue,

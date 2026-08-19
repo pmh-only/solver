@@ -8,8 +8,8 @@ const { handleAgentCommandMock } = vi.hoisted(() => ({
   handleAgentCommandMock: vi.fn()
 }))
 
-vi.mock('../commands/gpt.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../commands/gpt.js')>()),
+vi.mock('../agent/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent/index.js')>()),
   handleAgentCommand: handleAgentCommandMock
 }))
 

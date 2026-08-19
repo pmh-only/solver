@@ -12,7 +12,7 @@ import {
   cancelWebAgent,
   createWebSession,
   loadWebSessionState
-} from './commands/gpt.js'
+} from './agent/index.js'
 import { handleGoogleCalendarCallback } from './google-calendar-auth.js'
 import { consumeStoredRateLimit, hasStoredValue } from './helpers/kv-store.js'
 import { readHostedHtml, readSharedHtml } from './hosted-page.js'

@@ -83,7 +83,7 @@ import {
   isGptActionComponentId,
   isGptModalId,
   loadAgentSessionNames
-} from './commands/gpt.js'
+} from './agent/index.js'
 import { loadModelsResponse } from './model-catalog.js'
 import { handleCoinButton, isCoinButtonId } from './commands/coin.js'
 import { handleRpsButton, isRpsButtonId } from './commands/rps.js'

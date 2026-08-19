@@ -219,7 +219,7 @@ part of one of those model IDs in `model` to confirm suggestions appear. Enter a
 as `vendor/custom-model-preview`, submit the command, and send another `/a` request with the same
 session but no `model`; both responses should display that exact custom value in their token-usage
 footer. The automated coverage can be run with
-`pnpm exec vitest run src/test/gpt.test.ts src/test/web-server.test.ts`.
+`pnpm exec vitest run src/test/agent.test.ts src/test/web-server.test.ts`.
 
 Create the Mail API key under `https://mail.pmh.codes/settings/api`, then set `MAIL_API_KEY` in the
 bot environment. The key is sent only to `https://mail.pmh.codes/api/external/v1/mcp` as a Bearer

@@ -70,12 +70,7 @@ describe('global system prompt', () => {
 
   it('combines the permanent global prompt with only the selected session prompt', () => {
     updateSystemPrompt({ prompt: 'Global instructions.' }, 'admin')
-    updateSessionSystemPrompt(
-      'user-1',
-      'work',
-      { prompt: 'Work-session instructions.' },
-      'user-1'
-    )
+    updateSessionSystemPrompt('user-1', 'work', { prompt: 'Work-session instructions.' }, 'user-1')
 
     expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Global instructions.')
     expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Work-session instructions.')

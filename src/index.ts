@@ -39,7 +39,7 @@ import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
 import { restoreStoredEnvironment } from './helpers/environment-store.js'
-import { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './commands/gpt.js'
+import { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './agent/index.js'
 
 restoreStoredEnvironment()
 

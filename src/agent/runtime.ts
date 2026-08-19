@@ -80,13 +80,16 @@ import {
   loadSpotifyConfiguration
 } from '../spotify-auth.js'
 import { formatTimingReport, RequestTiming } from '../request-timing.js'
+import { AGENT_EFFORT_OPTIONS, type EffortLevel } from './config.js'
+import { streamedJsonContent } from './streaming-json.js'
+
+export { AGENT_COMMAND_NAME, AGENT_EFFORT_OPTIONS } from './config.js'
 
 export const GPT_MODEL_SELECT_ID = 'gpt-model'
 export const GPT_EFFORT_SELECT_ID = 'gpt-effort'
 export const GPT_VERBOSITY_SELECT_ID = 'gpt-verbosity'
 export const GPT_ACTION_COMPONENT_ID = 'gpt-action'
 export const GPT_MODAL_ID = 'gpt-modal'
-export const AGENT_COMMAND_NAME = 'a'
 
 const DEFAULT_MAX_TOKENS = 4096
 const MAX_TEXT_DISPLAY_LENGTH = 4000
@@ -208,22 +211,12 @@ const googleCalendarAuthenticationTool = tool({
 
 const DEFAULT_MODEL = 'gpt-5.4'
 
-export const GPT_EFFORT_OPTIONS = [
-  { id: 'none', label: 'None' },
-  { id: 'minimal', label: 'Minimal' },
-  { id: 'low', label: 'Low' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'high', label: 'High' },
-  { id: 'xhigh', label: 'Extra high' }
-] as const
-
 const VERBOSITY_OPTIONS = [
   { id: 'brief', label: 'Brief' },
   { id: 'normal', label: 'Normal' },
   { id: 'detailed', label: 'Detailed' }
 ] as const
 
-type EffortLevel = (typeof GPT_EFFORT_OPTIONS)[number]['id']
 type VerbosityLevel = (typeof VERBOSITY_OPTIONS)[number]['id']
 
 interface GptContext {
@@ -1105,7 +1098,7 @@ function loadSessionSettings(userId: string, sessionName: string): GptSessionSet
     return {
       model: typeof model === 'string' && model.trim() ? model : defaults.model,
       effort:
-        effort && GPT_EFFORT_OPTIONS.some(({ id }) => id === effort) ? effort : defaults.effort,
+        effort && AGENT_EFFORT_OPTIONS.some(({ id }) => id === effort) ? effort : defaults.effort,
       maxTokens:
         Number.isInteger(settings.maxTokens) &&
         settings.maxTokens !== undefined &&
@@ -1281,87 +1274,6 @@ function footerSessionName(sessionName: string): string {
 
 function keepEnd(value: string, maxLength: number): string {
   return maxLength > 0 ? value.slice(-maxLength) : ''
-}
-
-function readJsonString(
-  value: string,
-  start: number
-): { text: string; end: number; complete: boolean } {
-  let result = ''
-  for (let index = start + 1; index < value.length; index++) {
-    const char = value[index]!
-    if (char === '"') return { text: result, end: index, complete: true }
-    if (char !== '\\') {
-      result += char
-      continue
-    }
-
-    const escaped = value[++index]
-    if (escaped === undefined) break
-    if (escaped === 'u') {
-      const code = value.slice(index + 1, index + 5)
-      if (!/^[0-9a-f]{4}$/i.test(code)) break
-      result += String.fromCharCode(Number.parseInt(code, 16))
-      index += 4
-      continue
-    }
-    const escapes: Record<string, string> = {
-      '"': '"',
-      '\\': '\\',
-      '/': '/',
-      b: '\b',
-      f: '\f',
-      n: '\n',
-      r: '\r',
-      t: '\t'
-    }
-    result += escapes[escaped] ?? escaped
-  }
-  return { text: result, end: value.length, complete: false }
-}
-
-function streamedJsonContent(value: string): string {
-  let depth = 0
-  let expectingKey = false
-
-  for (let index = 0; index < value.length; index++) {
-    const char = value[index]!
-    if (char === '{' || char === '[') {
-      depth++
-      if (depth === 1 && char === '{') expectingKey = true
-      continue
-    }
-    if (char === '}' || char === ']') {
-      depth--
-      continue
-    }
-    if (char === ',' && depth === 1) {
-      expectingKey = true
-      continue
-    }
-    if (char !== '"') continue
-
-    const parsed = readJsonString(value, index)
-    if (depth !== 1 || !expectingKey) {
-      if (!parsed.complete) return ''
-      index = parsed.end
-      continue
-    }
-    if (!parsed.complete) return ''
-
-    let valueStart = parsed.end + 1
-    while (/\s/.test(value[valueStart] ?? '')) valueStart++
-    if (value[valueStart] !== ':') return ''
-    valueStart++
-    while (/\s/.test(value[valueStart] ?? '')) valueStart++
-    expectingKey = false
-
-    if (parsed.text === 'content' && value[valueStart] === '"') {
-      return readJsonString(value, valueStart).text
-    }
-    index = parsed.end
-  }
-  return ''
 }
 
 function usageFooter(model: string, effort: EffortLevel, maxTokens: number, usage?: Usage): string {
@@ -1647,7 +1559,7 @@ function buildGptComponents(
           .setCustomId(`${GPT_EFFORT_SELECT_ID}:${token}`)
           .setPlaceholder(`Effort: ${effort}`)
           .addOptions(
-            GPT_EFFORT_OPTIONS.map((e) =>
+            AGENT_EFFORT_OPTIONS.map((e) =>
               new StringSelectMenuOptionBuilder().setLabel(e.label).setValue(e.id)
             )
           )
@@ -2684,7 +2596,7 @@ export async function runWebAgent(
 
   const storedSettings = loadSessionSettings(userId, sessionName)
   const effort = request.effort ?? storedSettings.effort
-  if (!GPT_EFFORT_OPTIONS.some(({ id }) => id === effort))
+  if (!AGENT_EFFORT_OPTIONS.some(({ id }) => id === effort))
     throw new Error('Invalid reasoning effort')
   const maxTokens = request.maxTokens ?? storedSettings.maxTokens
   if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 16_384) {

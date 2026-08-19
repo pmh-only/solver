@@ -117,9 +117,7 @@ export function updateSessionSystemPrompt(
     throw new Error('Session system prompt must not be empty')
   }
   if (candidate.prompt.length > MAX_SYSTEM_PROMPT_LENGTH) {
-    throw new Error(
-      `Session system prompt must not exceed ${MAX_SYSTEM_PROMPT_LENGTH} characters`
-    )
+    throw new Error(`Session system prompt must not exceed ${MAX_SYSTEM_PROMPT_LENGTH} characters`)
   }
   const name = validateSessionName(sessionName)
   const setting = storedSystemPromptSchema.parse({
