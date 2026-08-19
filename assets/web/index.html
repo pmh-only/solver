@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <title>Solver</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
@@ -11,6 +11,8 @@
     <main>
       <section id="auth-view" class="auth">
         <div class="card">
+          <div class="brand-mark" aria-hidden="true">S</div>
+          <span class="eyebrow">PRIVATE AI WORKSPACE</span>
           <h1>Ask Solver from anywhere.</h1>
           <p>
             Sign in through your organization's identity provider to start a private assistant
@@ -22,6 +24,10 @@
       </section>
       <section id="chat-view" class="chat" hidden>
         <header class="control-bar">
+          <div class="brand" aria-label="Solver">
+            <span class="brand-mark" aria-hidden="true">S</span>
+            <strong>Solver</strong>
+          </div>
           <label
             ><span>Session</span
             ><select id="session-select" aria-label="Session">
@@ -58,10 +64,10 @@
           ><label class="debug-control"
             ><span>Tools</span
             ><input id="tools-enabled" type="checkbox" aria-label="Agent tools" /></label
-          ><label class="debug-control"
-            ><span>Debug</span><input id="debug-mode" type="checkbox" aria-label="Debug timing"
-          /></label>
-          ><button class="admin-link" id="admin-prompt" hidden>Agent settings</button>
+           ><label class="debug-control"
+             ><span>Debug</span><input id="debug-mode" type="checkbox" aria-label="Debug timing"
+           /></label>
+           <button class="admin-link" id="admin-prompt" hidden>Agent settings</button>
         </header>
         <div class="message-pane">
           <div class="messages" id="messages" aria-live="polite"></div>
