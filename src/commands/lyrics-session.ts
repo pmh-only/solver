@@ -11,6 +11,7 @@ export const MIN_LYRICS_EDIT_INTERVAL_MS = 1_250
 export const EPHEMERAL_LYRICS_SESSION_MS = 14 * 60 * 1_000
 export const PUBLIC_LYRICS_SESSION_MS = 6 * 60 * 60 * 1_000
 export const MAX_LYRICS_OFFSET_MS = 30_000
+export const MAX_DISCORD_EDIT_COMPENSATION_MS = 1_000
 export const LYRICS_OFFSETS_KEY = 'lyrics-offsets'
 
 const LYRICS_RETRY_INTERVAL_MS = 30_000
@@ -60,6 +61,7 @@ export interface LiveLyricsSessionOptions {
   initialState: LiveLyricsState
   renderedView: LiveLyricsView
   initialOffsetMs?: number
+  initialRenderLatencyMs?: number
   startedAt?: number
   render: (view: LiveLyricsView) => Promise<void>
   onClose: () => void
@@ -75,6 +77,15 @@ function normalizedOffset(value: number): number {
   if (!Number.isFinite(value)) return 0
   const stepped = Math.round(value / 500) * 500
   return Math.max(-MAX_LYRICS_OFFSET_MS, Math.min(MAX_LYRICS_OFFSET_MS, stepped))
+}
+
+function normalizedRenderLatency(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(MAX_DISCORD_EDIT_COMPENSATION_MS, value))
+}
+
+function requestMidpoint(startedAt: number, finishedAt: number): number {
+  return startedAt + Math.max(0, finishedAt - startedAt) / 2
 }
 
 function readStoredLyricsOffsets(): Map<string, StoredLyricsOffset> {
@@ -260,7 +271,7 @@ export async function loadInitialLiveLyricsState(
     'now' | 'getCurrentTrack' | 'getLyricsForTrack'
   > = defaultDependencies
 ): Promise<LiveLyricsState> {
-  const now = dependencies.now()
+  const requestStartedAt = dependencies.now()
   let track: SpotifyCurrentTrack
   try {
     track = await dependencies.getCurrentTrack()
@@ -272,12 +283,12 @@ export async function loadInitialLiveLyricsState(
         lines: [],
         detail: 'Waiting for Spotify playback',
         anchorProgressMs: 0,
-        anchorTimeMs: now
+        anchorTimeMs: dependencies.now()
       }
     }
     throw error
   }
-  const sampledAt = dependencies.now()
+  const sampledAt = requestMidpoint(requestStartedAt, dependencies.now())
 
   try {
     return stateFromLyrics(await dependencies.getLyricsForTrack(track), sampledAt)
@@ -343,6 +354,7 @@ export class LiveLyricsSession {
   private lastRenderedKey: string
   private renderPending = false
   private offsetMs = 0
+  private renderLatencyMs: number
 
   constructor(options: LiveLyricsSessionOptions) {
     this.token = options.token
@@ -352,6 +364,7 @@ export class LiveLyricsSession {
     this.renderView = options.render
     this.onClose = options.onClose
     this.dependencies = { ...defaultDependencies, ...options.dependencies }
+    this.renderLatencyMs = normalizedRenderLatency(options.initialRenderLatencyMs ?? 0)
     this.offsetMs = normalizedOffset(
       options.initialOffsetMs ??
         (options.initialState.track
@@ -360,7 +373,7 @@ export class LiveLyricsSession {
     )
     this.startedAt = options.startedAt ?? this.dependencies.now()
     this.nextSyncAt = this.startedAt + SPOTIFY_RESYNC_INTERVAL_MS
-    this.lastEditAt = this.startedAt
+    this.lastEditAt = this.dependencies.now()
     this.lastRenderedKey = viewKey(options.renderedView)
   }
 
@@ -370,6 +383,20 @@ export class LiveLyricsSession {
 
   view(now = this.dependencies.now()): LiveLyricsView {
     return liveLyricsView(this.state, now, !this.active, this.offsetMs)
+  }
+
+  private viewForRender(now = this.dependencies.now()): LiveLyricsView {
+    return this.view(now + this.renderLatencyMs)
+  }
+
+  private async render(view: LiveLyricsView): Promise<void> {
+    const startedAt = this.dependencies.now()
+    await this.renderView(view)
+    const elapsed = this.dependencies.now() - startedAt
+    if (elapsed <= 0) return
+    const measured = normalizedRenderLatency(elapsed)
+    this.renderLatencyMs =
+      this.renderLatencyMs === 0 ? measured : (this.renderLatencyMs * 3 + measured) / 4
   }
 
   start(): void {
@@ -423,9 +450,9 @@ export class LiveLyricsSession {
       this.timer = null
     }
 
-    const view = this.view()
+    const view = this.viewForRender()
     try {
-      await this.renderView(view)
+      await this.render(view)
     } catch {
       this.finishWithoutRender()
       return this.view()
@@ -451,6 +478,7 @@ export class LiveLyricsSession {
   }
 
   private async synchronize(): Promise<void> {
+    const requestStartedAt = this.dependencies.now()
     let track: SpotifyCurrentTrack
     try {
       track = await this.dependencies.getCurrentTrack()
@@ -479,7 +507,7 @@ export class LiveLyricsSession {
     }
 
     if (!this.active) return
-    const sampledAt = this.dependencies.now()
+    const sampledAt = requestMidpoint(requestStartedAt, this.dependencies.now())
     const changedTrack = this.state.track?.uri !== track.uri
     if (changedTrack) this.offsetMs = normalizedOffset(this.dependencies.loadOffset(track.id))
     this.setTrackAnchor(track, sampledAt)
@@ -507,7 +535,7 @@ export class LiveLyricsSession {
   private async maybeRender(): Promise<void> {
     if (!this.active) return
     const now = this.dependencies.now()
-    const view = this.view(now)
+    const view = this.viewForRender(now)
     const key = viewKey(view)
     if (key === this.lastRenderedKey) {
       this.renderPending = false
@@ -519,7 +547,7 @@ export class LiveLyricsSession {
     }
 
     try {
-      await this.renderView(view)
+      await this.render(view)
     } catch {
       this.finishWithoutRender()
       return
@@ -557,7 +585,7 @@ export class LiveLyricsSession {
     const now = this.dependencies.now()
     let delay = Math.max(TIMER_FLOOR_MS, this.nextSyncAt - now)
 
-    if (viewKey(this.view(now)) !== this.lastRenderedKey) {
+    if (viewKey(this.viewForRender(now)) !== this.lastRenderedKey) {
       delay = Math.min(
         delay,
         Math.max(TIMER_FLOOR_MS, this.lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
@@ -569,7 +597,10 @@ export class LiveLyricsSession {
       const currentIndex = currentSyncedLineIndex(this.state.lines, progressMs)
       const nextLine = this.state.lines[currentIndex + 1]
       if (nextLine) {
-        delay = Math.min(delay, Math.max(TIMER_FLOOR_MS, nextLine.timeMs - progressMs + 25))
+        delay = Math.min(
+          delay,
+          Math.max(TIMER_FLOOR_MS, nextLine.timeMs - progressMs - this.renderLatencyMs + 25)
+        )
       }
     }
     if (this.renderPending) {

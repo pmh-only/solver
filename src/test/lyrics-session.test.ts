@@ -151,6 +151,53 @@ describe('synchronized lyrics parsing', () => {
 })
 
 describe('live lyrics scheduling', () => {
+  it('accounts for Spotify request and lyrics lookup latency in initial progress', async () => {
+    const currentTrack = track('one', 0)
+    const state = await loadInitialLiveLyricsState({
+      now: () => Date.now(),
+      getCurrentTrack: async () => {
+        vi.setSystemTime(200)
+        return currentTrack
+      },
+      getLyricsForTrack: async () => {
+        vi.setSystemTime(1_200)
+        return lyricsFor(currentTrack)
+      }
+    })
+
+    expect(state.anchorTimeMs).toBe(100)
+    expect(liveLyricsView(state, Date.now()).spotifyProgressMs).toBe(1_600)
+  })
+
+  it('starts Discord edits early by the measured render latency', async () => {
+    const currentTrack = track()
+    const state = stateFor(currentTrack, '[00:00.00] A\n[00:02.00] B')
+    const rendered: Array<{ at: number; index: number }> = []
+    const session = new LiveLyricsSession({
+      token: '0000000000000014',
+      ownerId: 'owner',
+      isPublic: true,
+      initialState: state,
+      renderedView: initialView(state),
+      initialRenderLatencyMs: 200,
+      render: async (view) => {
+        rendered.push({ at: Date.now(), index: view.currentIndex })
+      },
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+    session.start()
+
+    await vi.advanceTimersByTimeAsync(1_824)
+    expect(rendered).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(rendered).toEqual([{ at: 1_825, index: 1 }])
+    await session.stop('test complete', false)
+  })
+
   it('stores bounded offsets by Spotify track and removes zero offsets', () => {
     saveLyricsOffset('one', 750)
     saveLyricsOffset('two', -100_000)

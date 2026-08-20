@@ -238,6 +238,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     })
   }
 
+  const initialRenderStartedAt = Date.now()
   try {
     await render(initialView)
   } catch {
@@ -252,6 +253,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     initialState,
     renderedView: initialView,
     initialOffsetMs,
+    initialRenderLatencyMs: Date.now() - initialRenderStartedAt,
     startedAt: stored.startedAt,
     render,
     onClose: () => {
@@ -360,8 +362,10 @@ export const subcommand: Subcommand = {
     const publicChannelId = interaction.channelId
     let messageId = ''
     let durablePublic = false
+    let initialRenderLatencyMs = 0
 
     if (requestedPublic && publicChannelId) {
+      const renderStartedAt = Date.now()
       try {
         const created = (await interaction.client.rest.post(
           Routes.channelMessages(publicChannelId),
@@ -376,6 +380,7 @@ export const subcommand: Subcommand = {
         if (typeof created.id !== 'string') throw new Error('Discord did not return a message ID')
         messageId = created.id
         durablePublic = true
+        initialRenderLatencyMs = Date.now() - renderStartedAt
         await interaction.deleteReply().catch(() => {})
       } catch {
         durablePublic = false
@@ -383,6 +388,7 @@ export const subcommand: Subcommand = {
     }
 
     if (!durablePublic) {
+      const renderStartedAt = Date.now()
       const message = await interaction.editReply({
         components: initialReply.components,
         files: initialReply.files,
@@ -390,6 +396,7 @@ export const subcommand: Subcommand = {
         flags: MessageFlags.IsComponentsV2
       })
       messageId = message.id
+      initialRenderLatencyMs = Date.now() - renderStartedAt
     }
 
     const render = async (view: LiveLyricsView) => {
@@ -421,6 +428,7 @@ export const subcommand: Subcommand = {
       initialState,
       renderedView: initialView,
       initialOffsetMs,
+      initialRenderLatencyMs,
       render,
       onClose: () => {
         unregisterLyricsSession(token)
