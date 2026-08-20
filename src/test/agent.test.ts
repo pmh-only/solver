@@ -331,7 +331,16 @@ vi.mock('@strands-agents/sdk', () => ({
           }
         }
       }
-      if (streamResult === 'throwAfterActivity') {
+      if (
+        streamResult === 'throwAfterActivity' ||
+        streamResult === 'streamIncompleteAfterActivity'
+      ) {
+        if (streamResult === 'streamIncompleteAfterActivity') {
+          throw Object.assign(
+            new Error('502 Upstream websocket closed before response.completed'),
+            { status: 502, code: 'stream_incomplete' }
+          )
+        }
         throw new Error('unable to parse tool input JSON')
       }
       if (streamResult === 'multipleActivity') {
@@ -1016,6 +1025,18 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).toContain('error: tool execution failed')
   })
 
+  it('does not retry an incomplete upstream stream after tool activity', async () => {
+    streamMock.mockReturnValueOnce('streamIncompleteAfterActivity')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+
+    expect(streamMock).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(calls)).toContain(
+      'error: 502 Upstream websocket closed before response.completed'
+    )
+  })
+
   it('retries malformed response JSON with the original request, previous output, and error', async () => {
     responsePayloads.push('not valid JSON', {
       components: [{ type: 10, content: 'repaired response' }],
@@ -1604,6 +1625,46 @@ describe('/a', () => {
     } as never)) as { messages: Array<{ content: string }> }
     expect(middlewareResult.messages).toEqual([{ role: 'user', content: 'tool result' }])
     expect(getStoredValue('gpt-session:default')).toContain('response-two')
+  })
+
+  it('recovers stale Responses API state after an incomplete upstream stream', async () => {
+    responseIds.push('response-one')
+    await dispatch(agentCommandJSON('first question'), subs)
+    const cause = Object.assign(
+      new Error('502 Upstream websocket closed before response.completed'),
+      { status: 502, code: 'stream_incomplete' }
+    )
+    streamMock.mockReturnValueOnce(
+      new Error('502 Upstream websocket closed before response.completed', { cause })
+    )
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const calls = await dispatch(agentCommandJSON('follow up'), subs)
+
+    expect(streamMock).toHaveBeenCalledTimes(3)
+    expect(agentMock.mock.calls[1]?.[0]).toMatchObject({
+      messages: [],
+      modelState: { responseId: 'response-one' }
+    })
+    const retryOptions = agentMock.mock.calls[2]?.[0] as {
+      messages: unknown[]
+      modelState?: unknown
+    }
+    expect(retryOptions).not.toHaveProperty('modelState')
+    expect(retryOptions.messages).toEqual([
+      { role: 'user', content: [{ text: 'first question' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            text: '{"components":[{"type":10,"content":"hello world"}],"flags":32768}'
+          }
+        ]
+      }
+    ])
+    expect(JSON.stringify(calls)).toContain('hello world')
+    expect(JSON.stringify(calls)).not.toContain('Upstream websocket closed')
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('without stale response state'))
   })
 
   it('rebuilds local history when the model changes', async () => {

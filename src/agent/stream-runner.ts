@@ -36,8 +36,28 @@ import {
   type GptContext,
   type StreamCallbacks
 } from './runtime-types.js'
-import { fallbackTurnMessages, storeConversation } from './session-store.js'
+import {
+  fallbackHistoryMessages,
+  fallbackTurnMessages,
+  storeConversation
+} from './session-store.js'
 import { streamedJsonContent } from './streaming-json.js'
+
+function isIncompleteStreamError(error: unknown): boolean {
+  const seen = new Set<object>()
+  let current = error
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const value = current as Record<string, unknown>
+    const message = typeof value.message === 'string' ? value.message : ''
+    const incomplete =
+      value.code === 'stream_incomplete' ||
+      message.includes('Upstream websocket closed before response.completed')
+    if (incomplete && (value.status === undefined || value.status === 502)) return true
+    current = value.cause
+  }
+  return false
+}
 
 function buildSystemInstruction(
   ctx: GptContext,
@@ -157,7 +177,7 @@ export async function runGptStream(
     const availableServers = availableMcpServerNames(ctx.effort)
     const systemInstruction = buildSystemInstruction(ctx, availableServers, mcpFailureSummary())
     const endpoint = loadOpenAIEndpoint()
-    const responseState =
+    let responseState =
       ctx.responseState?.model === ctx.model && ctx.responseState.endpoint === endpoint
         ? ctx.responseState
         : undefined
@@ -356,8 +376,33 @@ export async function runGptStream(
     }
 
     const modelStreamStarted = performance.now()
+    const prompt = ctx.input.length > 0 ? ctx.input : ctx.prompt
     try {
-      await streamAgent(ctx.input.length > 0 ? ctx.input : ctx.prompt)
+      try {
+        await streamAgent(prompt)
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          responseContent ||
+          activity.tools.length > 0 ||
+          !isIncompleteStreamError(error)
+        ) {
+          throw error
+        }
+
+        console.warn(
+          `Agent upstream stream ended before completion; retrying ${responseState ? 'without stale response state' : 'with a fresh request'}`
+        )
+        if (responseState) ctx.modelHistory = fallbackHistoryMessages(ctx)
+        responseState = undefined
+        ctx.responseState = undefined
+        currentAgent = undefined
+        activity.reasoning = ''
+        activity.responseStarted = false
+        usage = undefined
+        timing?.mark('agent incomplete stream retry started')
+        await streamAgent(prompt)
+      }
     } finally {
       timing?.span('model and tool stream', modelStreamStarted)
     }

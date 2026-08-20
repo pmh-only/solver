@@ -287,9 +287,13 @@ export function loadContextConversation(ctx: GptContext): void {
   ctx.responseState = canContinueResponse ? responseState : undefined
 }
 
+export function fallbackHistoryMessages(ctx: GptContext): MessageData[] {
+  return legacyAgentMessages(ctx.history)
+}
+
 export function fallbackTurnMessages(ctx: GptContext, assistantText: string): MessageData[] {
   return [
-    ...legacyAgentMessages(ctx.history),
+    ...fallbackHistoryMessages(ctx),
     { role: 'user', content: [{ text: ctx.prompt }] },
     { role: 'assistant', content: [{ text: assistantText }] }
   ]
