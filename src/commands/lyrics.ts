@@ -123,6 +123,10 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
     ])
   }
 
+  const pronunciationSource = view.lines.find(
+    (line) => line.pronunciationSource
+  )?.pronunciationSource
+
   return summarySection(
     `Live lyrics: ${inlineText(view.track.name)}`,
     [
@@ -131,6 +135,11 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
       `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.spotifyProgressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`,
       `-# lyrics offset: ${formatOffset(view.offsetMs)}`,
       '-# timing: local transitions; Spotify correction every 5 seconds',
+      ...(pronunciationSource
+        ? [
+            `-# pronunciation: [Vocaloid Lyrics Wiki](${pronunciationSource}); [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)`
+          ]
+        : []),
       '-# source: LRCLIB'
     ],
     { label: 'Open in Spotify', url: `https://open.spotify.com/track/${view.track.id}` }

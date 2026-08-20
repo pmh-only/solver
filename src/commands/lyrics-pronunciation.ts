@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module'
 
+import type { SpotifyCurrentTrack } from './_lyrics.js'
 import type { SyncedLyricLine } from './lyrics-session.js'
+import { findVocaloidLyricsPronunciations } from './vocaloid-lyrics-wiki.js'
 
-const JAPANESE_KANA = /[\u3040-\u30ff]/
+const JAPANESE_TEXT = /[\u3040-\u30ff\u3400-\u9fff]/
 const HANGUL_BASE = 0xac00
 const HANGUL_END = 0xd7a3
 
@@ -143,6 +145,140 @@ const KANA_TO_HANGUL: Record<string, string> = {
   ゔぉ: '보'
 }
 
+const ROMAJI_TO_HIRAGANA: Record<string, string> = {
+  a: 'あ',
+  i: 'い',
+  u: 'う',
+  e: 'え',
+  o: 'お',
+  ka: 'か',
+  ki: 'き',
+  ku: 'く',
+  ke: 'け',
+  ko: 'こ',
+  ga: 'が',
+  gi: 'ぎ',
+  gu: 'ぐ',
+  ge: 'げ',
+  go: 'ご',
+  sa: 'さ',
+  shi: 'し',
+  si: 'し',
+  su: 'す',
+  se: 'せ',
+  so: 'そ',
+  za: 'ざ',
+  ji: 'じ',
+  zi: 'じ',
+  zu: 'ず',
+  ze: 'ぜ',
+  zo: 'ぞ',
+  ta: 'た',
+  chi: 'ち',
+  ti: 'ち',
+  tsu: 'つ',
+  tu: 'つ',
+  te: 'て',
+  to: 'と',
+  da: 'だ',
+  di: 'ぢ',
+  du: 'づ',
+  de: 'で',
+  do: 'ど',
+  na: 'な',
+  ni: 'に',
+  nu: 'ぬ',
+  ne: 'ね',
+  no: 'の',
+  ha: 'は',
+  hi: 'ひ',
+  fu: 'ふ',
+  hu: 'ふ',
+  he: 'へ',
+  ho: 'ほ',
+  ba: 'ば',
+  bi: 'び',
+  bu: 'ぶ',
+  be: 'べ',
+  bo: 'ぼ',
+  pa: 'ぱ',
+  pi: 'ぴ',
+  pu: 'ぷ',
+  pe: 'ぺ',
+  po: 'ぽ',
+  ma: 'ま',
+  mi: 'み',
+  mu: 'む',
+  me: 'め',
+  mo: 'も',
+  ya: 'や',
+  yu: 'ゆ',
+  yo: 'よ',
+  ra: 'ら',
+  ri: 'り',
+  ru: 'る',
+  re: 'れ',
+  ro: 'ろ',
+  wa: 'わ',
+  wo: 'を',
+  kya: 'きゃ',
+  kyu: 'きゅ',
+  kyo: 'きょ',
+  gya: 'ぎゃ',
+  gyu: 'ぎゅ',
+  gyo: 'ぎょ',
+  sha: 'しゃ',
+  shu: 'しゅ',
+  sho: 'しょ',
+  sya: 'しゃ',
+  syu: 'しゅ',
+  syo: 'しょ',
+  ja: 'じゃ',
+  ju: 'じゅ',
+  jo: 'じょ',
+  jya: 'じゃ',
+  jyu: 'じゅ',
+  jyo: 'じょ',
+  cha: 'ちゃ',
+  chu: 'ちゅ',
+  cho: 'ちょ',
+  tya: 'ちゃ',
+  tyu: 'ちゅ',
+  tyo: 'ちょ',
+  nya: 'にゃ',
+  nyu: 'にゅ',
+  nyo: 'にょ',
+  hya: 'ひゃ',
+  hyu: 'ひゅ',
+  hyo: 'ひょ',
+  bya: 'びゃ',
+  byu: 'びゅ',
+  byo: 'びょ',
+  pya: 'ぴゃ',
+  pyu: 'ぴゅ',
+  pyo: 'ぴょ',
+  mya: 'みゃ',
+  myu: 'みゅ',
+  myo: 'みょ',
+  rya: 'りゃ',
+  ryu: 'りゅ',
+  ryo: 'りょ',
+  she: 'しぇ',
+  je: 'じぇ',
+  che: 'ちぇ',
+  fa: 'ふぁ',
+  fi: 'ふぃ',
+  fe: 'ふぇ',
+  fo: 'ふぉ',
+  wi: 'うぃ',
+  we: 'うぇ',
+  va: 'ゔぁ',
+  vi: 'ゔぃ',
+  vu: 'ゔ',
+  ve: 'ゔぇ',
+  vo: 'ゔぉ'
+}
+
 let analyzerPromise: Promise<JapaneseAnalyzer> | undefined
 
 async function getAnalyzer(): Promise<JapaneseAnalyzer> {
@@ -221,15 +357,80 @@ export function hiraganaToKorean(value: string): string {
   return result.replace(/\s+/g, ' ').trim()
 }
 
+export function romajiToHiragana(value: string): string {
+  const input = value.normalize('NFKC').toLocaleLowerCase('en-US')
+  let result = ''
+  for (let index = 0; index < input.length;) {
+    const current = input[index]!
+    const next = input[index + 1] ?? ''
+    if (/[^a-z]/.test(current)) {
+      result += current
+      index++
+      continue
+    }
+    if (current !== 'n' && current === next && /[bcdfghjklmpqrstvwxyz]/.test(current)) {
+      result += 'っ'
+      index++
+      continue
+    }
+    if (current === 'n' && (next === "'" || !next || !/[aeiouy]/.test(next))) {
+      result += 'ん'
+      index += next === "'" ? 2 : 1
+      continue
+    }
+
+    let matched = false
+    for (const length of [3, 2, 1]) {
+      const kana = ROMAJI_TO_HIRAGANA[input.slice(index, index + length)]
+      if (!kana) continue
+      result += kana
+      index += length
+      matched = true
+      break
+    }
+    if (!matched) {
+      result += current
+      index++
+    }
+  }
+  return result
+}
+
+function romajiToKorean(value: string): string {
+  return hiraganaToKorean(romajiToHiragana(value))
+}
+
 export async function addKoreanPronunciations(
-  lines: SyncedLyricLine[]
+  lines: SyncedLyricLine[],
+  track?: SpotifyCurrentTrack,
+  fetcher: typeof fetch = fetch
 ): Promise<SyncedLyricLine[]> {
-  if (!lines.some((line) => JAPANESE_KANA.test(line.text))) return lines
+  if (!lines.some((line) => JAPANESE_TEXT.test(line.text))) return lines
+
+  let wikiMatch = null
+  if (track) {
+    try {
+      wikiMatch = await findVocaloidLyricsPronunciations(track, lines, romajiToKorean, fetcher)
+    } catch {
+      // Network and wiki format failures fall back to local analysis.
+    }
+  }
+
+  const sourcedLines = lines.map((line, index) => {
+    const pronunciation = wikiMatch?.pronunciations.get(index)
+    return pronunciation && wikiMatch
+      ? { ...line, pronunciation, pronunciationSource: wikiMatch.sourceUrl }
+      : line
+  })
+  if (sourcedLines.every((line) => line.pronunciation || !JAPANESE_TEXT.test(line.text))) {
+    return sourcedLines
+  }
 
   try {
     const analyzer = await getAnalyzer()
     return await Promise.all(
-      lines.map(async (line) => {
+      sourcedLines.map(async (line) => {
+        if (line.pronunciation) return line
         if (!/[\u3040-\u30ff\u3400-\u9fff]/.test(line.text)) return line
         const tokens = await analyzer.parse(line.text)
         const hiragana = katakanaToHiragana(
@@ -240,6 +441,6 @@ export async function addKoreanPronunciations(
       })
     )
   } catch {
-    return lines
+    return sourcedLines
   }
 }

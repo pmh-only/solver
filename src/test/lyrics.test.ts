@@ -432,6 +432,33 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('## 君の名は\\n-# 키미노나와')
   })
 
+  it('attributes pronunciation sourced from Vocaloid Lyrics Wiki', () => {
+    const sourceUrl = 'https://vocaloidlyrics.miraheze.org/wiki/Test_Song'
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines: [
+        { timeMs: 0, text: '君の名は', pronunciation: '키미노나와', pronunciationSource: sourceUrl }
+      ],
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: 0,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      offsetMs: 0,
+      stopped: false
+    }
+    const rendered = JSON.stringify(
+      formatLiveLyrics(view).map((component) =>
+        typeof component === 'string' ? component : component.toJSON()
+      )
+    )
+
+    expect(rendered).toContain(`[Vocaloid Lyrics Wiki](${sourceUrl})`)
+    expect(rendered).toContain('CC BY-SA 4.0')
+  })
+
   it('separates lines merged into a synchronized block with slashes', () => {
     const view: LiveLyricsView = {
       mode: 'lyrics',

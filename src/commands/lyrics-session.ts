@@ -25,6 +25,7 @@ export interface SyncedLyricLine {
   timeMs: number
   text: string
   pronunciation?: string
+  pronunciationSource?: string
 }
 
 export type LiveLyricsMode = 'lyrics' | 'idle' | 'unavailable' | 'error' | 'stopped'
@@ -204,6 +205,7 @@ export function groupRapidSyncedLyrics(
       if (current.pronunciation || line.pronunciation) {
         current.pronunciation = `${current.pronunciation ?? ''}\n${line.pronunciation ?? ''}`
       }
+      current.pronunciationSource ??= line.pronunciationSource
     } else {
       grouped.push({ ...line })
     }
@@ -259,7 +261,7 @@ async function stateFromLyrics(result: CurrentTrackLyrics, now: number): Promise
   }
 
   const lines = groupRapidSyncedLyrics(
-    await addKoreanPronunciations(parseSyncedLyrics(result.match?.syncedLyrics))
+    await addKoreanPronunciations(parseSyncedLyrics(result.match?.syncedLyrics), result.track)
   )
   if (lines.length === 0) {
     return {
