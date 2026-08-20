@@ -29,9 +29,23 @@ export interface LrcLibTrack {
 
 export interface CurrentTrackLyrics {
   track: SpotifyCurrentTrack
-  match: LrcLibTrack
+  match: LrcLibTrack | null
   lyrics: string | null
   synchronized: boolean
+}
+
+export class NoSpotifyPlaybackError extends Error {
+  constructor() {
+    super('No Spotify track is currently playing')
+    this.name = 'NoSpotifyPlaybackError'
+  }
+}
+
+export class SpotifyAuthenticationError extends Error {
+  constructor() {
+    super('Spotify is not authenticated; authenticate it through `/a` first')
+    this.name = 'SpotifyAuthenticationError'
+  }
 }
 
 function resultText(value: JSONValue): string {
@@ -62,7 +76,7 @@ function parseClock(value: string): number {
 export function parseSpotifyCurrentTrack(value: JSONValue): SpotifyCurrentTrack {
   const output = resultText(value)
   if (output.trim() === 'Nothing is currently playing.') {
-    throw new Error('No Spotify track is currently playing')
+    throw new NoSpotifyPlaybackError()
   }
 
   const lines = output.split(/\r?\n/)
@@ -253,10 +267,9 @@ function plainFromSynced(value: string): string {
     .trim()
 }
 
-async function getCurrentTrackLyrics(): Promise<CurrentTrackLyrics> {
-  let track: SpotifyCurrentTrack
+async function getCurrentTrack(): Promise<SpotifyCurrentTrack> {
   try {
-    track = parseSpotifyCurrentTrack(
+    return parseSpotifyCurrentTrack(
       await callAgentMcpTool(
         'spotify',
         'get_now_playing',
@@ -265,19 +278,24 @@ async function getCurrentTrackLyrics(): Promise<CurrentTrackLyrics> {
       )
     )
   } catch (error) {
+    if (error instanceof NoSpotifyPlaybackError) throw error
     const message = error instanceof Error ? error.message : String(error)
     if (
       /spotify MCP (?:is not configured|is unavailable)|not authenticated|token refresh failed|SPOTIFY_CLIENT_ID environment variable is not set/i.test(
         message
       )
     ) {
-      throw new Error('Spotify is not authenticated; authenticate it through `/a` first')
+      throw new SpotifyAuthenticationError()
     }
     throw error
   }
+}
 
+async function getLyricsForTrack(track: SpotifyCurrentTrack): Promise<CurrentTrackLyrics> {
   const match = await findLyrics(track)
-  if (!match) throw new Error('No lyrics were found for the current track')
+  if (!match) {
+    return { track, match: null, lyrics: null, synchronized: false }
+  }
 
   const plainLyrics = match.plainLyrics?.trim()
   const syncedLyrics = match.syncedLyrics?.trim()
@@ -289,6 +307,12 @@ async function getCurrentTrackLyrics(): Promise<CurrentTrackLyrics> {
   }
 }
 
+async function getCurrentTrackLyrics(): Promise<CurrentTrackLyrics> {
+  return getLyricsForTrack(await getCurrentTrack())
+}
+
 export const lyricsClient = {
-  getCurrentTrackLyrics
+  getCurrentTrack,
+  getCurrentTrackLyrics,
+  getLyricsForTrack
 }
