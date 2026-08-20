@@ -25,6 +25,7 @@ import {
   MAX_LYRICS_OFFSET_MS,
   getLyricsSession,
   liveLyricsView,
+  loadLyricsOffset,
   loadInitialLiveLyricsState,
   registerLyricsSession,
   stopActiveLyricsSessions,
@@ -52,8 +53,9 @@ function formatClock(milliseconds: number): string {
 }
 
 function formatOffset(milliseconds: number): string {
-  const seconds = Math.trunc(milliseconds / 1_000)
-  return `${seconds > 0 ? '+' : ''}${seconds}s`
+  const seconds = milliseconds / 1_000
+  const value = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)
+  return `${seconds > 0 ? '+' : ''}${value}s`
 }
 
 function trackHeader(view: LiveLyricsView): TopLevelComponent {
@@ -118,12 +120,22 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
 function controlButtons(view: LiveLyricsView, token: string) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:minus`)
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:minus-one`)
       .setLabel('-1s')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(view.stopped || view.offsetMs <= -MAX_LYRICS_OFFSET_MS),
     new ButtonBuilder()
-      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:plus`)
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:minus-half`)
+      .setLabel('-0.5s')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(view.stopped || view.offsetMs <= -MAX_LYRICS_OFFSET_MS),
+    new ButtonBuilder()
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:plus-half`)
+      .setLabel('+0.5s')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(view.stopped || view.offsetMs >= MAX_LYRICS_OFFSET_MS),
+    new ButtonBuilder()
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:plus-one`)
       .setLabel('+1s')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(view.stopped || view.offsetMs >= MAX_LYRICS_OFFSET_MS),
@@ -153,13 +165,21 @@ function parseLyricsControl(customId: string): LyricsControl | null {
   if (stop?.[1]) return { token: stop[1], action: 'stop' }
 
   const offset = customId.match(
-    new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:([a-f0-9]{16}):(minus|plus)$`)
+    new RegExp(
+      `^${LYRICS_OFFSET_BUTTON_ID}:([a-f0-9]{16}):(minus-one|minus-half|plus-half|plus-one)$`
+    )
   )
   if (!offset?.[1] || !offset[2]) return null
+  const deltas: Record<string, number> = {
+    'minus-one': -1_000,
+    'minus-half': -500,
+    'plus-half': 500,
+    'plus-one': 1_000
+  }
   return {
     token: offset[1],
     action: 'offset',
-    deltaMs: offset[2] === 'plus' ? 1_000 : -1_000
+    deltaMs: deltas[offset[2]]!
   }
 }
 
@@ -225,7 +245,8 @@ export const subcommand: Subcommand = {
     const requestedPublic = flags.has('pub')
 
     let session: LiveLyricsSession
-    const initialView = liveLyricsView(initialState)
+    const initialOffsetMs = initialState.track ? loadLyricsOffset(initialState.track.id) : 0
+    const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
 
     const initialReply = liveLyricsReply(initialView, token, args, flags)
     const publicChannelId = interaction.channelId
@@ -291,6 +312,7 @@ export const subcommand: Subcommand = {
       isPublic: durablePublic,
       initialState,
       renderedView: initialView,
+      initialOffsetMs,
       render,
       onClose: () => unregisterLyricsSession(token)
     })

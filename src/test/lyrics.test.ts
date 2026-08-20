@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import * as mcpRuntime from '../agent/mcp-runtime.js'
 import {
@@ -16,9 +16,11 @@ import {
 import {
   clearLyricsSessions,
   currentSyncedLineIndex,
+  LYRICS_OFFSETS_KEY,
   parseSyncedLyrics,
   type LiveLyricsView
 } from '../commands/lyrics-session.js'
+import { deleteStoredValue } from '../helpers/kv-store.js'
 import {
   autocompleteJSON,
   buttonJSON,
@@ -118,8 +120,13 @@ async function startCommand(input = 'lyrics', options: DispatchOptions = {}) {
   })
 }
 
+beforeEach(() => {
+  deleteStoredValue(LYRICS_OFFSETS_KEY)
+})
+
 afterEach(async () => {
   await clearLyricsSessions()
+  deleteStoredValue(LYRICS_OFFSETS_KEY)
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -141,11 +148,15 @@ describe('lyrics command', () => {
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
     expect(collectCustomIds(edit.components)).toEqual([
-      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus$`)),
-      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus$`)),
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-one$`)),
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-half$`)),
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-half$`)),
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-one$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:[a-f0-9]{16}$`))
     ])
     expect(rendered).toContain('"label":"-1s"')
+    expect(rendered).toContain('"label":"-0.5s"')
+    expect(rendered).toContain('"label":"+0.5s"')
     expect(rendered).toContain('"label":"+1s"')
   })
 
@@ -195,7 +206,8 @@ describe('lyrics command', () => {
     const startCalls = await startCommand()
     const edit = getEdit(startCalls) as { components: unknown[] }
     const plusId = collectCustomIds(edit.components).find(
-      (customId) => customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`) && customId.endsWith(':plus')
+      (customId) =>
+        customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`) && customId.endsWith(':plus-one')
     )!
     const offsetCalls = await dispatch(
       buttonJSON(edit.components, plusId, {}, MessageFlags.IsComponentsV2),
@@ -207,6 +219,59 @@ describe('lyrics command', () => {
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
     expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
     expect(JSON.stringify(updated)).toContain('## After one')
+  })
+
+  it('supports positive and negative half-second lyric adjustments', async () => {
+    const positiveCalls = await startCommand()
+    const positiveEdit = getEdit(positiveCalls) as { components: unknown[] }
+    const plusHalfId = collectCustomIds(positiveEdit.components).find((customId) =>
+      customId.endsWith(':plus-half')
+    )!
+    await dispatch(
+      buttonJSON(positiveEdit.components, plusHalfId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+    const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
+
+    expect(JSON.stringify(positive)).toContain('lyrics offset: +0.5s')
+    expect(JSON.stringify(positive)).toContain('## After one')
+
+    await clearLyricsSessions()
+    deleteStoredValue(LYRICS_OFFSETS_KEY)
+    vi.restoreAllMocks()
+    const negativeCalls = await startCommand()
+    const negativeEdit = getEdit(negativeCalls) as { components: unknown[] }
+    const minusHalfId = collectCustomIds(negativeEdit.components).find((customId) =>
+      customId.endsWith(':minus-half')
+    )!
+    await dispatch(
+      buttonJSON(negativeEdit.components, minusHalfId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+    const negative = negativeCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
+
+    expect(JSON.stringify(negative)).toContain('lyrics offset: -0.5s')
+    expect(JSON.stringify(negative)).toContain('## Current line')
+  })
+
+  it('restores a song timing adjustment in a later live session', async () => {
+    const firstCalls = await startCommand()
+    const firstEdit = getEdit(firstCalls) as { components: unknown[] }
+    const plusHalfId = collectCustomIds(firstEdit.components).find((customId) =>
+      customId.endsWith(':plus-half')
+    )!
+    await dispatch(
+      buttonJSON(firstEdit.components, plusHalfId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+
+    await clearLyricsSessions()
+    vi.restoreAllMocks()
+    const laterCalls = await startCommand()
+    const later = JSON.stringify(getEdit(laterCalls))
+
+    expect(later).toContain('lyrics offset: +0.5s')
+    expect(later).toContain('## After one')
   })
 
   it('stops the session when its owner presses Stop', async () => {

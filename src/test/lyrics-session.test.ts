@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   LiveLyricsSession,
+  LYRICS_OFFSETS_KEY,
   MAX_LYRICS_OFFSET_MS,
   MIN_LYRICS_EDIT_INTERVAL_MS,
   SPOTIFY_RESYNC_INTERVAL_MS,
@@ -8,8 +9,10 @@ import {
   currentSyncedLineIndex,
   getLyricsSession,
   liveLyricsView,
+  loadLyricsOffset,
   parseSyncedLyrics,
   registerLyricsSession,
+  saveLyricsOffset,
   syncedLyricsWindow,
   unregisterLyricsSession,
   type LiveLyricsState,
@@ -20,6 +23,7 @@ import {
   type CurrentTrackLyrics,
   type SpotifyCurrentTrack
 } from '../commands/_lyrics.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
 function track(id = 'one', progressSeconds = 0): SpotifyCurrentTrack {
   return {
@@ -76,10 +80,12 @@ function initialView(state: LiveLyricsState): LiveLyricsView {
 beforeEach(() => {
   vi.useFakeTimers()
   vi.setSystemTime(0)
+  deleteStoredValue(LYRICS_OFFSETS_KEY)
 })
 
 afterEach(async () => {
   await clearLyricsSessions()
+  deleteStoredValue(LYRICS_OFFSETS_KEY)
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
@@ -116,6 +122,45 @@ describe('synchronized lyrics parsing', () => {
 })
 
 describe('live lyrics scheduling', () => {
+  it('stores bounded offsets by Spotify track and removes zero offsets', () => {
+    saveLyricsOffset('one', 750)
+    saveLyricsOffset('two', -100_000)
+
+    expect(loadLyricsOffset('one')).toBe(1_000)
+    expect(loadLyricsOffset('two')).toBe(-MAX_LYRICS_OFFSET_MS)
+    expect(getStoredValue(LYRICS_OFFSETS_KEY)).toContain('"one"')
+
+    saveLyricsOffset('one', 0)
+    expect(loadLyricsOffset('one')).toBe(0)
+  })
+
+  it('ignores malformed persisted offset data', () => {
+    setStoredValue(LYRICS_OFFSETS_KEY, '{bad json')
+    expect(loadLyricsOffset('one')).toBe(0)
+  })
+
+  it('restores the saved offset when a later session starts on the same song', async () => {
+    saveLyricsOffset('one', 500)
+    const currentTrack = track('one')
+    const state = stateFor(currentTrack)
+    const session = new LiveLyricsSession({
+      token: '0000000000000013',
+      ownerId: 'owner',
+      isPublic: true,
+      initialState: state,
+      renderedView: liveLyricsView(state, Date.now(), false, 500),
+      render: async () => undefined,
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+
+    expect(session.view().offsetMs).toBe(500)
+    await session.stop('test complete', false)
+  })
+
   it('replaces the existing global session instead of duplicating Spotify polling', async () => {
     const currentTrack = track()
     const state = stateFor(currentTrack)
@@ -144,7 +189,7 @@ describe('live lyrics scheduling', () => {
     expect(getLyricsSession(second.token)).toBe(second)
   })
 
-  it('adjusts lyric time in one-second steps and clamps extreme offsets', async () => {
+  it('adjusts lyric time in half-second steps and clamps extreme offsets', async () => {
     const currentTrack = track()
     const state = stateFor(currentTrack)
     const render = vi.fn(async (_view: LiveLyricsView) => undefined)
@@ -162,7 +207,15 @@ describe('live lyrics scheduling', () => {
       }
     })
 
-    const advanced = await session.adjustOffset(1_000)
+    const halfStep = await session.adjustOffset(500)
+    expect(halfStep).toMatchObject({
+      offsetMs: 500,
+      spotifyProgressMs: 0,
+      progressMs: 500,
+      currentIndex: 0
+    })
+
+    const advanced = await session.adjustOffset(500)
     expect(advanced).toMatchObject({
       offsetMs: 1_000,
       spotifyProgressMs: 0,
@@ -170,12 +223,12 @@ describe('live lyrics scheduling', () => {
       currentIndex: 1
     })
 
-    const delayed = await session.adjustOffset(-2_000)
-    expect(delayed).toMatchObject({ offsetMs: -1_000, progressMs: 0, currentIndex: 0 })
+    const delayed = await session.adjustOffset(-1_500)
+    expect(delayed).toMatchObject({ offsetMs: -500, progressMs: 0, currentIndex: 0 })
 
     const clamped = await session.adjustOffset(100_000)
     expect(clamped.offsetMs).toBe(MAX_LYRICS_OFFSET_MS)
-    expect(render).toHaveBeenCalledTimes(3)
+    expect(render).toHaveBeenCalledTimes(4)
     await session.stop('test complete', false)
   })
 
@@ -246,14 +299,18 @@ describe('live lyrics scheduling', () => {
     await session.stop('test complete', false)
   })
 
-  it('loads synchronized lyrics when Spotify advances to the next song', async () => {
+  it('restores each song offset when Spotify advances between tracks', async () => {
     const firstTrack = track('one', 0)
     const secondTrack = track('two', 2)
     const firstState = stateFor(firstTrack)
-    const getCurrentTrack = vi.fn(async () => secondTrack)
-    const getLyricsForTrack = vi.fn(async () =>
+    saveLyricsOffset('two', -500)
+    const getCurrentTrack = vi
+      .fn<() => Promise<SpotifyCurrentTrack>>()
+      .mockResolvedValueOnce(secondTrack)
+      .mockResolvedValueOnce(firstTrack)
+    const getLyricsForTrack = vi.fn(async (selectedTrack: SpotifyCurrentTrack) =>
       lyricsFor(
-        secondTrack,
+        selectedTrack,
         '[00:00.00] New zero\n[00:01.00] New one\n[00:02.00] New two\n[00:03.00] New three'
       )
     )
@@ -277,9 +334,15 @@ describe('live lyrics scheduling', () => {
     expect(getLyricsForTrack).toHaveBeenCalledWith(secondTrack)
     expect(render.mock.calls.at(-1)![0]).toMatchObject({
       mode: 'lyrics',
-      currentIndex: 3,
-      offsetMs: 1_000,
+      currentIndex: 2,
+      offsetMs: -500,
       track: { uri: 'spotify:track:two' }
+    })
+
+    await vi.advanceTimersByTimeAsync(SPOTIFY_RESYNC_INTERVAL_MS)
+    expect(render.mock.calls.at(-1)![0]).toMatchObject({
+      offsetMs: 1_000,
+      track: { uri: 'spotify:track:one' }
     })
     await session.stop('test complete', false)
   })

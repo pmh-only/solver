@@ -24,6 +24,7 @@ const INTERNAL_KEY_PREFIXES = [
   'gpt-sessions:',
   'gpt-web-sessions:',
   'global-system-prompt',
+  'lyrics-offsets',
   'message-input:',
   'message-render-',
   'message-store-',

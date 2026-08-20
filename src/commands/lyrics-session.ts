@@ -4,16 +4,20 @@ import {
   type CurrentTrackLyrics,
   type SpotifyCurrentTrack
 } from './_lyrics.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 
 export const SPOTIFY_RESYNC_INTERVAL_MS = 5_000
 export const MIN_LYRICS_EDIT_INTERVAL_MS = 1_250
 export const EPHEMERAL_LYRICS_SESSION_MS = 14 * 60 * 1_000
 export const PUBLIC_LYRICS_SESSION_MS = 6 * 60 * 60 * 1_000
 export const MAX_LYRICS_OFFSET_MS = 30_000
+export const LYRICS_OFFSETS_KEY = 'lyrics-offsets'
 
 const LYRICS_RETRY_INTERVAL_MS = 30_000
 const TIMER_FLOOR_MS = 50
 const SPOTIFY_PROGRESS_MIDPOINT_MS = 500
+const MAX_STORED_LYRICS_OFFSETS = 500
+const MAX_OFFSET_STORE_BYTES = 256 * 1_024
 
 export interface SyncedLyricLine {
   timeMs: number
@@ -45,6 +49,8 @@ export interface LyricsSessionDependencies {
   getLyricsForTrack: (track: SpotifyCurrentTrack) => Promise<CurrentTrackLyrics>
   setTimer: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>
   clearTimer: (timer: ReturnType<typeof setTimeout>) => void
+  loadOffset: (trackId: string) => number
+  saveOffset: (trackId: string, offsetMs: number) => void
 }
 
 export interface LiveLyricsSessionOptions {
@@ -53,9 +59,76 @@ export interface LiveLyricsSessionOptions {
   isPublic: boolean
   initialState: LiveLyricsState
   renderedView: LiveLyricsView
+  initialOffsetMs?: number
   render: (view: LiveLyricsView) => Promise<void>
   onClose: () => void
   dependencies?: Partial<LyricsSessionDependencies>
+}
+
+interface StoredLyricsOffset {
+  offsetMs: number
+  updatedAt: number
+}
+
+function normalizedOffset(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  const stepped = Math.round(value / 500) * 500
+  return Math.max(-MAX_LYRICS_OFFSET_MS, Math.min(MAX_LYRICS_OFFSET_MS, stepped))
+}
+
+function readStoredLyricsOffsets(): Map<string, StoredLyricsOffset> {
+  try {
+    const raw = getStoredValue(LYRICS_OFFSETS_KEY)
+    if (!raw || raw.length > MAX_OFFSET_STORE_BYTES) return new Map()
+    const parsed = JSON.parse(raw) as { version?: unknown; tracks?: unknown }
+    if (parsed.version !== 1 || !parsed.tracks || typeof parsed.tracks !== 'object') {
+      return new Map()
+    }
+
+    const offsets = new Map<string, StoredLyricsOffset>()
+    for (const [trackId, value] of Object.entries(parsed.tracks)) {
+      if (!/^[A-Za-z0-9]+$/.test(trackId) || !value || typeof value !== 'object') continue
+      const entry = value as { offsetMs?: unknown; updatedAt?: unknown }
+      if (
+        typeof entry.offsetMs !== 'number' ||
+        !Number.isFinite(entry.offsetMs) ||
+        typeof entry.updatedAt !== 'number' ||
+        !Number.isFinite(entry.updatedAt)
+      ) {
+        continue
+      }
+      const offsetMs = normalizedOffset(entry.offsetMs)
+      if (offsetMs !== 0) offsets.set(trackId, { offsetMs, updatedAt: entry.updatedAt })
+    }
+    return offsets
+  } catch {
+    return new Map()
+  }
+}
+
+export function loadLyricsOffset(trackId: string): number {
+  if (!/^[A-Za-z0-9]+$/.test(trackId)) return 0
+  return readStoredLyricsOffsets().get(trackId)?.offsetMs ?? 0
+}
+
+export function saveLyricsOffset(trackId: string, value: number): void {
+  if (!/^[A-Za-z0-9]+$/.test(trackId)) return
+  try {
+    const offsets = readStoredLyricsOffsets()
+    const offsetMs = normalizedOffset(value)
+    if (offsetMs === 0) offsets.delete(trackId)
+    else offsets.set(trackId, { offsetMs, updatedAt: Date.now() })
+
+    const tracks = Object.fromEntries(
+      [...offsets]
+        .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
+        .slice(0, MAX_STORED_LYRICS_OFFSETS)
+    )
+    if (Object.keys(tracks).length === 0) deleteStoredValue(LYRICS_OFFSETS_KEY)
+    else setStoredValue(LYRICS_OFFSETS_KEY, JSON.stringify({ version: 1, tracks }))
+  } catch {
+    // Keep the live session usable if persistent storage is temporarily unavailable.
+  }
 }
 
 const defaultDependencies: LyricsSessionDependencies = {
@@ -63,7 +136,9 @@ const defaultDependencies: LyricsSessionDependencies = {
   getCurrentTrack: () => lyricsClient.getCurrentTrack(),
   getLyricsForTrack: (track) => lyricsClient.getLyricsForTrack(track),
   setTimer: (callback, delay) => setTimeout(callback, delay),
-  clearTimer: (timer) => clearTimeout(timer)
+  clearTimer: (timer) => clearTimeout(timer),
+  loadOffset: loadLyricsOffset,
+  saveOffset: saveLyricsOffset
 }
 
 function fractionMilliseconds(value: string | undefined): number {
@@ -258,6 +333,12 @@ export class LiveLyricsSession {
     this.renderView = options.render
     this.onClose = options.onClose
     this.dependencies = { ...defaultDependencies, ...options.dependencies }
+    this.offsetMs = normalizedOffset(
+      options.initialOffsetMs ??
+        (options.initialState.track
+          ? this.dependencies.loadOffset(options.initialState.track.id)
+          : 0)
+    )
     this.startedAt = this.dependencies.now()
     this.nextSyncAt = this.startedAt + SPOTIFY_RESYNC_INTERVAL_MS
     this.lastEditAt = this.startedAt
@@ -310,6 +391,7 @@ export class LiveLyricsSession {
     if (nextOffset === this.offsetMs) return this.view()
 
     this.offsetMs = nextOffset
+    if (this.state.track) this.dependencies.saveOffset(this.state.track.id, nextOffset)
     if (this.timer) {
       this.dependencies.clearTimer(this.timer)
       this.timer = null
@@ -355,6 +437,7 @@ export class LiveLyricsSession {
       track = await this.dependencies.getCurrentTrack()
     } catch (error) {
       if (error instanceof NoSpotifyPlaybackError) {
+        this.offsetMs = 0
         this.state = {
           mode: 'idle',
           track: null,
@@ -379,6 +462,7 @@ export class LiveLyricsSession {
     if (!this.active) return
     const sampledAt = this.dependencies.now()
     const changedTrack = this.state.track?.uri !== track.uri
+    if (changedTrack) this.offsetMs = normalizedOffset(this.dependencies.loadOffset(track.id))
     this.setTrackAnchor(track, sampledAt)
 
     const shouldRetryLyrics =
