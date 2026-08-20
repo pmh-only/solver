@@ -5,6 +5,7 @@ import {
   type SpotifyCurrentTrack
 } from './_lyrics.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { addKoreanPronunciations } from './lyrics-pronunciation.js'
 
 export const SPOTIFY_RESYNC_INTERVAL_MS = 5_000
 export const MIN_LYRICS_EDIT_INTERVAL_MS = 1_250
@@ -23,6 +24,7 @@ const MAX_OFFSET_STORE_BYTES = 256 * 1_024
 export interface SyncedLyricLine {
   timeMs: number
   text: string
+  pronunciation?: string
 }
 
 export type LiveLyricsMode = 'lyrics' | 'idle' | 'unavailable' | 'error' | 'stopped'
@@ -199,6 +201,9 @@ export function groupRapidSyncedLyrics(
     const current = grouped.at(-1)
     if (current && line.timeMs - current.timeMs < minimumSpacingMs) {
       current.text = `${current.text}\n${line.text}`
+      if (current.pronunciation || line.pronunciation) {
+        current.pronunciation = `${current.pronunciation ?? ''}\n${line.pronunciation ?? ''}`
+      }
     } else {
       grouped.push({ ...line })
     }
@@ -243,7 +248,7 @@ function progressAnchor(track: SpotifyCurrentTrack): number {
   return Math.min(midpoint, track.durationSeconds * 1_000)
 }
 
-function stateFromLyrics(result: CurrentTrackLyrics, now: number): LiveLyricsState {
+async function stateFromLyrics(result: CurrentTrackLyrics, now: number): Promise<LiveLyricsState> {
   const base = {
     track: result.track,
     anchorProgressMs: progressAnchor(result.track),
@@ -253,7 +258,9 @@ function stateFromLyrics(result: CurrentTrackLyrics, now: number): LiveLyricsSta
     return { ...base, mode: 'unavailable', lines: [], detail: 'Instrumental track' }
   }
 
-  const lines = groupRapidSyncedLyrics(parseSyncedLyrics(result.match?.syncedLyrics))
+  const lines = groupRapidSyncedLyrics(
+    await addKoreanPronunciations(parseSyncedLyrics(result.match?.syncedLyrics))
+  )
   if (lines.length === 0) {
     return {
       ...base,
@@ -291,7 +298,7 @@ export async function loadInitialLiveLyricsState(
   const sampledAt = requestMidpoint(requestStartedAt, dependencies.now())
 
   try {
-    return stateFromLyrics(await dependencies.getLyricsForTrack(track), sampledAt)
+    return await stateFromLyrics(await dependencies.getLyricsForTrack(track), sampledAt)
   } catch {
     return {
       mode: 'error',
@@ -517,7 +524,10 @@ export class LiveLyricsSession {
     if (!changedTrack && !shouldRetryLyrics) return
 
     try {
-      this.state = stateFromLyrics(await this.dependencies.getLyricsForTrack(track), sampledAt)
+      this.state = await stateFromLyrics(
+        await this.dependencies.getLyricsForTrack(track),
+        sampledAt
+      )
       this.nextLyricsRetryAt = 0
     } catch {
       this.state = {

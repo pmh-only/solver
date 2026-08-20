@@ -35,6 +35,7 @@
     "discord.js": "^14.26.2",
     "dotenv": "^17.4.1",
     "imapflow": "^1.2.18",
+    "kuroshiro-analyzer-kuromoji": "1.1.0",
     "mailparser": "^3.9.6",
     "openai": "^6.49.0",
     "openid-client": "6.8.4",

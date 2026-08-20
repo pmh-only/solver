@@ -134,6 +134,19 @@ describe('synchronized lyrics parsing', () => {
     ])
   })
 
+  it('keeps Korean pronunciation aligned when rapid lines are grouped', () => {
+    expect(
+      groupRapidSyncedLyrics([
+        { timeMs: 0, text: '君', pronunciation: '키미' },
+        { timeMs: 200, text: 'の名', pronunciation: '노나' },
+        { timeMs: 2_000, text: 'English' }
+      ])
+    ).toEqual([
+      { timeMs: 0, text: '君\nの名', pronunciation: '키미\n노나' },
+      { timeMs: 2_000, text: 'English' }
+    ])
+  })
+
   it('uses grouped blocks when loading live synchronized lyrics', async () => {
     const currentTrack = track()
     const state = await loadInitialLiveLyricsState({

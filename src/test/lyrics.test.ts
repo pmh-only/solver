@@ -408,6 +408,29 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('After two')
   })
+
+  it('renders Korean pronunciation below Japanese lyrics', () => {
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines: [{ timeMs: 0, text: '君の名は', pronunciation: '키미노나와' }],
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: 0,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      offsetMs: 0,
+      stopped: false
+    }
+    const rendered = JSON.stringify(
+      formatLiveLyrics(view).map((component) =>
+        typeof component === 'string' ? component : component.toJSON()
+      )
+    )
+
+    expect(rendered).toContain('## 君の名は\\n-# 키미노나와')
+  })
 })
 
 describe('lyrics API runtime', () => {
