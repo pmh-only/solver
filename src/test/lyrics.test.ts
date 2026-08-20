@@ -26,7 +26,9 @@ import {
   dispatch,
   getCallback,
   getEdit,
-  makeSubcommands
+  makeSubcommands,
+  type DispatchOptions,
+  type RestCall
 } from './e2e.js'
 
 const subs = makeSubcommands(lyrics)
@@ -98,10 +100,22 @@ function collectCustomIds(value: unknown, ids: string[] = []): string[] {
   return ids
 }
 
-async function startCommand(input = 'lyrics') {
+function publicMessageBody(calls: RestCall[]): { components: unknown[] } {
+  return calls.find(
+    ({ method, route }) => method === 'POST' && route === '/channels/777777777777777777/messages'
+  )?.body as { components: unknown[] }
+}
+
+async function startCommand(input = 'lyrics', options: DispatchOptions = {}) {
   vi.spyOn(lyricsClient, 'getCurrentTrack').mockResolvedValue(spotifyTrack())
   vi.spyOn(lyricsClient, 'getLyricsForTrack').mockResolvedValue(currentLyrics())
-  return dispatch(commandJSON(input, { channel: { id: '777777777777777777', type: 1 } }), subs)
+  return dispatch(commandJSON(input, { channel: { id: '777777777777777777', type: 1 } }), subs, {
+    postResult: (route) =>
+      route === '/channels/777777777777777777/messages'
+        ? { id: 'public-message-0', channel_id: '777777777777777777' }
+        : {},
+    ...options
+  })
 }
 
 afterEach(async () => {
@@ -138,9 +152,14 @@ describe('lyrics command', () => {
   it('supports a public live session through --pub', async () => {
     const calls = await startCommand('lyrics --pub')
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
+    const published = publicMessageBody(calls)
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+    expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
+    expect(
+      calls.some(({ method, route }) => method === 'DELETE' && route.includes('/webhooks/'))
+    ).toBe(true)
   })
 
   it('uses bot-authenticated message edits for public sessions after the initial reply', async () => {
@@ -151,9 +170,25 @@ describe('lyrics command', () => {
     await vi.advanceTimersByTimeAsync(2_000)
 
     const patches = calls.filter(({ method }) => method === 'PATCH')
+    expect(patches).toHaveLength(1)
+    expect(patches[0]!.route).toBe('/channels/777777777777777777/messages/public-message-0')
+  })
+
+  it('falls back to the interaction webhook when a normal public message cannot be created', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const calls = await startCommand('lyrics --pub', {
+      postError: (route) =>
+        route === '/channels/777777777777777777/messages'
+          ? new Error('Missing Send Messages')
+          : undefined
+    })
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    const patches = calls.filter(({ method }) => method === 'PATCH')
     expect(patches).toHaveLength(2)
-    expect(patches[0]!.route).toContain('/webhooks/')
-    expect(patches[1]!.route).toContain('/channels/777777777777777777/messages/0')
+    expect(patches.every(({ route }) => route.includes('/webhooks/'))).toBe(true)
   })
 
   it('advances synchronized lyrics by one second when the owner presses +1s', async () => {
@@ -191,7 +226,7 @@ describe('lyrics command', () => {
 
   it('does not let another user stop a public session', async () => {
     const startCalls = await startCommand('lyrics --pub')
-    const edit = getEdit(startCalls) as { components: unknown[] }
+    const edit = publicMessageBody(startCalls)
     const stopCalls = await dispatch(
       buttonJSON(edit.components, LYRICS_STOP_BUTTON_ID, {
         user: {

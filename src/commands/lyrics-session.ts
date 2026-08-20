@@ -435,7 +435,7 @@ export class LiveLyricsSession {
       await this.finishWithRender(
         this.isPublic
           ? 'Session reached the six-hour safety limit'
-          : 'Ephemeral session expired; use `lyrics --pub` for a longer session'
+          : 'Interaction session expired; use `lyrics --pub` in a bot-accessible channel for a longer session'
       )
       return
     }

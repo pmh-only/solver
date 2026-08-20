@@ -43,7 +43,9 @@ export interface RestCall {
 /** Raw Discord API interaction object (partial — only fields the handler uses) */
 export type RawInteraction = Record<string, unknown>
 
-interface DispatchOptions {
+export interface DispatchOptions {
+  postError?: (route: string, body: unknown, calls: RestCall[]) => Error | undefined
+  postResult?: (route: string, body: unknown, calls: RestCall[]) => unknown
   patchError?: (body: unknown, calls: RestCall[]) => Error | undefined
 }
 
@@ -55,15 +57,19 @@ function makeClient(options: DispatchOptions = {}): { client: Client; calls: Res
 
   ;(client.rest as unknown as Record<string, unknown>).post = async (
     route: unknown,
-    options: { body?: unknown; files?: unknown[] }
+    request: { body?: unknown; files?: unknown[] }
   ) => {
+    const routeString = String(route)
+    const body = request?.body ?? null
     calls.push({
       method: 'POST',
-      route: String(route),
-      body: options?.body ?? null,
-      files: options?.files ?? []
+      route: routeString,
+      body,
+      files: request?.files ?? []
     })
-    return {}
+    const error = options.postError?.(routeString, body, calls)
+    if (error) throw error
+    return options.postResult?.(routeString, body, calls) ?? {}
   }
   ;(client.rest as unknown as Record<string, unknown>).patch = async (
     route: unknown,

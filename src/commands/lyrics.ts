@@ -222,19 +222,46 @@ export const subcommand: Subcommand = {
     await stopActiveLyricsSessions()
     const initialState = await loadInitialLiveLyricsState()
     const token = randomUUID().replaceAll('-', '').slice(0, 16)
-    const isPublic = flags.has('pub')
+    const requestedPublic = flags.has('pub')
 
     let session: LiveLyricsSession
     const initialView = liveLyricsView(initialState)
 
     const initialReply = liveLyricsReply(initialView, token, args, flags)
-    const message = await interaction.editReply({
-      components: initialReply.components,
-      files: initialReply.files,
-      attachments: [],
-      flags: MessageFlags.IsComponentsV2
-    })
-    const publicChannelId = interaction.channelId ?? message.channelId
+    const publicChannelId = interaction.channelId
+    let messageId = ''
+    let durablePublic = false
+
+    if (requestedPublic && publicChannelId) {
+      try {
+        const created = (await interaction.client.rest.post(
+          Routes.channelMessages(publicChannelId),
+          {
+            body: {
+              components: initialReply.components.map((component) => component.toJSON()),
+              flags: MessageFlags.IsComponentsV2,
+              allowed_mentions: { parse: [] }
+            }
+          }
+        )) as { id?: unknown }
+        if (typeof created.id !== 'string') throw new Error('Discord did not return a message ID')
+        messageId = created.id
+        durablePublic = true
+        await interaction.deleteReply().catch(() => {})
+      } catch {
+        durablePublic = false
+      }
+    }
+
+    if (!durablePublic) {
+      const message = await interaction.editReply({
+        components: initialReply.components,
+        files: initialReply.files,
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2
+      })
+      messageId = message.id
+    }
 
     const render = async (view: LiveLyricsView) => {
       const reply = liveLyricsReply(view, token, args, flags)
@@ -244,8 +271,8 @@ export const subcommand: Subcommand = {
         attachments: [],
         flags: MessageFlags.IsComponentsV2 as const
       }
-      if (isPublic && publicChannelId) {
-        await interaction.client.rest.patch(Routes.channelMessage(publicChannelId, message.id), {
+      if (durablePublic && publicChannelId) {
+        await interaction.client.rest.patch(Routes.channelMessage(publicChannelId, messageId), {
           body: {
             components: reply.components.map((component) => component.toJSON()),
             attachments: [],
@@ -261,7 +288,7 @@ export const subcommand: Subcommand = {
     session = new LiveLyricsSession({
       token,
       ownerId: interaction.user.id,
-      isPublic,
+      isPublic: durablePublic,
       initialState,
       renderedView: initialView,
       render,
