@@ -35,7 +35,7 @@ import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
 import { subcommand as gohome } from './commands/gohome.js'
-import { subcommand as lyrics } from './commands/lyrics.js'
+import { restoreLyricsSession, subcommand as lyrics } from './commands/lyrics.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
@@ -111,8 +111,13 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 })
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   console.log(`ready: ${c.user.tag}`)
+  try {
+    if (await restoreLyricsSession(c)) console.log('restored live lyrics session')
+  } catch (error) {
+    console.error('failed to restore live lyrics session', error)
+  }
 })
 
 client.on(Events.InteractionCreate, createHandler(subcommands))

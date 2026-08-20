@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { InteractionResponseType, MessageFlags } from 'discord.js'
+import { Client, InteractionResponseType, MessageFlags } from 'discord.js'
 import * as mcpRuntime from '../agent/mcp-runtime.js'
 import {
   lyricsClient,
@@ -9,8 +9,10 @@ import {
 } from '../commands/_lyrics.js'
 import {
   LYRICS_OFFSET_BUTTON_ID,
+  LYRICS_SESSION_KEY,
   LYRICS_STOP_BUTTON_ID,
   formatLiveLyrics,
+  restoreLyricsSession,
   subcommand as lyrics
 } from '../commands/lyrics.js'
 import {
@@ -20,7 +22,7 @@ import {
   parseSyncedLyrics,
   type LiveLyricsView
 } from '../commands/lyrics-session.js'
-import { deleteStoredValue } from '../helpers/kv-store.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import {
   autocompleteJSON,
   buttonJSON,
@@ -122,11 +124,13 @@ async function startCommand(input = 'lyrics', options: DispatchOptions = {}) {
 
 beforeEach(() => {
   deleteStoredValue(LYRICS_OFFSETS_KEY)
+  deleteStoredValue(LYRICS_SESSION_KEY)
 })
 
 afterEach(async () => {
   await clearLyricsSessions()
   deleteStoredValue(LYRICS_OFFSETS_KEY)
+  deleteStoredValue(LYRICS_SESSION_KEY)
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -171,6 +175,43 @@ describe('lyrics command', () => {
     expect(
       calls.some(({ method, route }) => method === 'DELETE' && route.includes('/webhooks/'))
     ).toBe(true)
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
+      version: 1,
+      channelId: '777777777777777777',
+      messageId: 'public-message-0'
+    })
+  })
+
+  it('restores a persisted public session and resumes bot-authenticated edits', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    vi.spyOn(lyricsClient, 'getCurrentTrack').mockResolvedValue(spotifyTrack())
+    vi.spyOn(lyricsClient, 'getLyricsForTrack').mockResolvedValue(currentLyrics())
+    setStoredValue(
+      LYRICS_SESSION_KEY,
+      JSON.stringify({
+        version: 1,
+        token: '0123456789abcdef',
+        ownerId: '111111111111111111',
+        channelId: '777777777777777777',
+        messageId: '888888888888888888',
+        startedAt: 1_000
+      })
+    )
+    const client = new Client({ intents: [] })
+    const patch = vi.fn<(_route: string, _request: unknown) => Promise<object>>(async () => ({}))
+    ;(client.rest as unknown as { patch: typeof patch }).patch = patch
+
+    await expect(restoreLyricsSession(client)).resolves.toBe(true)
+
+    expect(patch).toHaveBeenCalledWith(
+      '/channels/777777777777777777/messages/888888888888888888',
+      expect.objectContaining({
+        body: expect.objectContaining({ flags: MessageFlags.IsComponentsV2 })
+      })
+    )
+    expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('Live lyrics: Test Song')
+    client.destroy()
   })
 
   it('uses bot-authenticated message edits for public sessions after the initial reply', async () => {

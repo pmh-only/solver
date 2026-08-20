@@ -4,10 +4,12 @@ import {
   ButtonStyle,
   MessageFlags,
   Routes,
-  type ButtonInteraction
+  type ButtonInteraction,
+  type Client
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
 import type { Flags } from '../flags.js'
+import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import type { Subcommand } from '../types.js'
 import {
   commandContainer,
@@ -23,6 +25,7 @@ import {
 import {
   LiveLyricsSession,
   MAX_LYRICS_OFFSET_MS,
+  PUBLIC_LYRICS_SESSION_MS,
   getLyricsSession,
   liveLyricsView,
   loadLyricsOffset,
@@ -36,6 +39,58 @@ import {
 
 export const LYRICS_STOP_BUTTON_ID = 'lyrics-stop'
 export const LYRICS_OFFSET_BUTTON_ID = 'lyrics-offset'
+export const LYRICS_SESSION_KEY = 'lyrics-session'
+
+interface StoredLyricsSession {
+  version: 1
+  token: string
+  ownerId: string
+  channelId: string
+  messageId: string
+  startedAt: number
+}
+
+function readStoredLyricsSession(): StoredLyricsSession | null {
+  try {
+    const raw = getStoredValue(LYRICS_SESSION_KEY)
+    if (!raw || raw.length > 2_048) return null
+    const value = JSON.parse(raw) as Partial<StoredLyricsSession>
+    const safeId = (id: unknown) =>
+      typeof id === 'string' && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id)
+    if (
+      value.version !== 1 ||
+      typeof value.token !== 'string' ||
+      !/^[a-f0-9]{16}$/.test(value.token) ||
+      !safeId(value.ownerId) ||
+      !safeId(value.channelId) ||
+      !safeId(value.messageId) ||
+      typeof value.startedAt !== 'number' ||
+      !Number.isFinite(value.startedAt)
+    ) {
+      return null
+    }
+    return value as StoredLyricsSession
+  } catch {
+    return null
+  }
+}
+
+function saveStoredLyricsSession(session: StoredLyricsSession): void {
+  try {
+    setStoredValue(LYRICS_SESSION_KEY, JSON.stringify(session))
+  } catch {
+    // The live message can continue until restart if storage is temporarily unavailable.
+  }
+}
+
+function deleteStoredLyricsSession(token?: string): void {
+  try {
+    if (token && readStoredLyricsSession()?.token !== token) return
+    deleteStoredValue(LYRICS_SESSION_KEY)
+  } catch {
+    // Session cleanup must not make button handling fail.
+  }
+}
 
 function inlineText(value: string): string {
   return value
@@ -154,6 +209,59 @@ function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flag
     files: base.files,
     flags: base.flags
   }
+}
+
+export async function restoreLyricsSession(client: Client): Promise<boolean> {
+  const stored = readStoredLyricsSession()
+  if (!stored) {
+    deleteStoredLyricsSession()
+    return false
+  }
+  if (stored.startedAt > Date.now() || Date.now() - stored.startedAt >= PUBLIC_LYRICS_SESSION_MS) {
+    deleteStoredLyricsSession(stored.token)
+    return false
+  }
+
+  const initialState = await loadInitialLiveLyricsState()
+  const initialOffsetMs = initialState.track ? loadLyricsOffset(initialState.track.id) : 0
+  const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
+  const flags: Flags = new Map([['pub', true]])
+  const render = async (view: LiveLyricsView) => {
+    const reply = liveLyricsReply(view, stored.token, 'lyrics --pub', flags)
+    await client.rest.patch(Routes.channelMessage(stored.channelId, stored.messageId), {
+      body: {
+        components: reply.components.map((component) => component.toJSON()),
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2,
+        allowed_mentions: { parse: [] }
+      }
+    })
+  }
+
+  try {
+    await render(initialView)
+  } catch {
+    deleteStoredLyricsSession(stored.token)
+    return false
+  }
+
+  const session = new LiveLyricsSession({
+    token: stored.token,
+    ownerId: stored.ownerId,
+    isPublic: true,
+    initialState,
+    renderedView: initialView,
+    initialOffsetMs,
+    startedAt: stored.startedAt,
+    render,
+    onClose: () => {
+      unregisterLyricsSession(stored.token)
+      deleteStoredLyricsSession(stored.token)
+    }
+  })
+  await registerLyricsSession(session)
+  session.start()
+  return true
 }
 
 type LyricsControl =
@@ -314,9 +422,22 @@ export const subcommand: Subcommand = {
       renderedView: initialView,
       initialOffsetMs,
       render,
-      onClose: () => unregisterLyricsSession(token)
+      onClose: () => {
+        unregisterLyricsSession(token)
+        if (durablePublic) deleteStoredLyricsSession(token)
+      }
     })
     await registerLyricsSession(session)
+    if (durablePublic && publicChannelId) {
+      saveStoredLyricsSession({
+        version: 1,
+        token,
+        ownerId: interaction.user.id,
+        channelId: publicChannelId,
+        messageId,
+        startedAt: session.startedAt
+      })
+    }
     session.start()
   }
 }

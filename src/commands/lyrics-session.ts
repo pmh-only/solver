@@ -60,6 +60,7 @@ export interface LiveLyricsSessionOptions {
   initialState: LiveLyricsState
   renderedView: LiveLyricsView
   initialOffsetMs?: number
+  startedAt?: number
   render: (view: LiveLyricsView) => Promise<void>
   onClose: () => void
   dependencies?: Partial<LyricsSessionDependencies>
@@ -339,7 +340,7 @@ export class LiveLyricsSession {
           ? this.dependencies.loadOffset(options.initialState.track.id)
           : 0)
     )
-    this.startedAt = this.dependencies.now()
+    this.startedAt = options.startedAt ?? this.dependencies.now()
     this.nextSyncAt = this.startedAt + SPOTIFY_RESYNC_INTERVAL_MS
     this.lastEditAt = this.startedAt
     this.lastRenderedKey = viewKey(options.renderedView)
