@@ -396,8 +396,13 @@ export function romajiToHiragana(value: string): string {
   return result
 }
 
-function romajiToKorean(value: string): string {
-  return hiraganaToKorean(romajiToHiragana(value))
+async function japaneseToHiragana(value: string): Promise<string> {
+  if (!value) return ''
+  const analyzer = await getAnalyzer()
+  const tokens = await analyzer.parse(value)
+  return katakanaToHiragana(
+    tokens.map((token) => token.pronunciation ?? token.reading ?? token.surface_form).join('')
+  )
 }
 
 export async function addKoreanPronunciations(
@@ -410,7 +415,12 @@ export async function addKoreanPronunciations(
   let wikiMatch = null
   if (track) {
     try {
-      wikiMatch = await findVocaloidLyricsPronunciations(track, lines, romajiToKorean, fetcher)
+      wikiMatch = await findVocaloidLyricsPronunciations(
+        track,
+        lines,
+        { romajiToHiragana, hiraganaToKorean, japaneseToHiragana },
+        fetcher
+      )
     } catch {
       // Network and wiki format failures fall back to local analysis.
     }
@@ -427,15 +437,11 @@ export async function addKoreanPronunciations(
   }
 
   try {
-    const analyzer = await getAnalyzer()
     return await Promise.all(
       sourcedLines.map(async (line) => {
         if (line.pronunciation) return line
         if (!/[\u3040-\u30ff\u3400-\u9fff]/.test(line.text)) return line
-        const tokens = await analyzer.parse(line.text)
-        const hiragana = katakanaToHiragana(
-          tokens.map((token) => token.pronunciation ?? token.reading ?? token.surface_form).join('')
-        )
+        const hiragana = await japaneseToHiragana(line.text)
         const pronunciation = hiraganaToKorean(hiragana)
         return pronunciation ? { ...line, pronunciation } : line
       })

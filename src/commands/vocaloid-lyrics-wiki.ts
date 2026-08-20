@@ -22,6 +22,12 @@ export interface VocaloidLyricsMatch {
   sourceUrl: string
 }
 
+interface PronunciationConverters {
+  romajiToHiragana: (value: string) => string
+  hiraganaToKorean: (value: string) => string
+  japaneseToHiragana: (value: string) => Promise<string>
+}
+
 function plainText(value: string): string {
   return value
     .replace(/<br\s*\/?>/gi, ' ')
@@ -172,10 +178,50 @@ function parsePageWikitext(value: unknown): string | null {
   return typeof wikitext === 'string' ? wikitext : null
 }
 
+async function partialRowPronunciation(
+  rows: LyricsRow[],
+  line: string,
+  converters: PronunciationConverters
+): Promise<string | null> {
+  const target = normalizedLyrics(line)
+  if (!target) return null
+
+  const matches = new Set<string>()
+  for (const row of rows) {
+    const japanese = normalizedLyrics(row.japanese)
+    const start = japanese.indexOf(target)
+    if (start < 0 || japanese === target) continue
+
+    const before = japanese.slice(0, start)
+    const after = japanese.slice(start + target.length)
+    if (!before && !after) continue
+
+    const wikiReading = normalizedLyrics(converters.romajiToHiragana(row.romaji))
+    const beforeReading = before
+      ? normalizedLyrics(await converters.japaneseToHiragana(before))
+      : ''
+    const afterReading = after ? normalizedLyrics(await converters.japaneseToHiragana(after)) : ''
+    if (
+      (beforeReading && !wikiReading.startsWith(beforeReading)) ||
+      (afterReading && !wikiReading.endsWith(afterReading))
+    ) {
+      continue
+    }
+
+    const readingEnd = wikiReading.length - afterReading.length
+    if (beforeReading.length >= readingEnd) continue
+    const pronunciation = converters.hiraganaToKorean(
+      wikiReading.slice(beforeReading.length, readingEnd)
+    )
+    if (pronunciation) matches.add(pronunciation)
+  }
+  return matches.size === 1 ? [...matches][0]! : null
+}
+
 export async function findVocaloidLyricsPronunciations(
   track: SpotifyCurrentTrack,
   lines: SyncedLyricLine[],
-  toKorean: (romaji: string) => string,
+  converters: PronunciationConverters,
   fetcher: typeof fetch = fetch
 ): Promise<VocaloidLyricsMatch | null> {
   const searchResults = parseSearchResults(
@@ -198,19 +244,16 @@ export async function findVocaloidLyricsPronunciations(
   )
   if (!wikitext) return null
 
-  const readings = new Map(
-    parseVocaloidLyricsRows(wikitext).map(({ japanese, romaji }) => [
-      normalizedLyrics(japanese),
-      romaji
-    ])
-  )
+  const rows = parseVocaloidLyricsRows(wikitext)
+  const readings = new Map(rows.map(({ japanese, romaji }) => [normalizedLyrics(japanese), romaji]))
   const pronunciations = new Map<number, string>()
-  lines.forEach((line, index) => {
+  for (const [index, line] of lines.entries()) {
     const romaji = readings.get(normalizedLyrics(line.text))
-    if (!romaji) return
-    const pronunciation = toKorean(romaji)
+    const pronunciation = romaji
+      ? converters.hiraganaToKorean(converters.romajiToHiragana(romaji))
+      : await partialRowPronunciation(rows, line.text, converters)
     if (pronunciation) pronunciations.set(index, pronunciation)
-  })
+  }
   if (pronunciations.size === 0) return null
 
   return {

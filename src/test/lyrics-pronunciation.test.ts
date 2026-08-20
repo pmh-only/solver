@@ -18,14 +18,14 @@ const track = {
   isPlaying: true
 }
 
-function wikiFetcher(wikitext: string): typeof fetch {
+function wikiFetcher(wikitext: string, title = '知らないジュース (Shiranai Juice)'): typeof fetch {
   return vi.fn(async (input: string | URL | Request) => {
     const url = new URL(input instanceof Request ? input.url : input)
     if (url.searchParams.get('action') === 'query') {
       return new Response(
         JSON.stringify({
           query: {
-            search: [{ pageid: 42, title: '知らないジュース (Shiranai Juice)' }]
+            search: [{ pageid: 42, title }]
           }
         })
       )
@@ -107,6 +107,35 @@ describe('Japanese lyrics pronunciation', () => {
           'https://vocaloidlyrics.miraheze.org/wiki/%E7%9F%A5%E3%82%89%E3%81%AA%E3%81%84%E3%82%B8%E3%83%A5%E3%83%BC%E3%82%B9_(Shiranai_Juice)'
       },
       { timeMs: 2_000, text: '君の名は希望', pronunciation: '키미노나와키보오' }
+    ])
+  })
+
+  it('extracts a reviewed reading when LRCLIB splits part of a larger wiki row', async () => {
+    const source = `
+==Lyrics==
+{{lyrics toggle|jp:Japanese|rom:Romaji}}
+{| {{lyrics table class}}
+|-
+|一人きり　路地裏は決して急がないで
+|hitorikiri rojiura wa kesshite isoganaide
+|}
+==External Links==`
+    const lagtrain = { ...track, name: 'ラグトレイン', artists: 'inabakumori' }
+
+    await expect(
+      addKoreanPronunciations(
+        [{ timeMs: 0, text: '一人きり' }],
+        lagtrain,
+        wikiFetcher(source, 'ラグトレイン (Lagtrain)')
+      )
+    ).resolves.toEqual([
+      {
+        timeMs: 0,
+        text: '一人きり',
+        pronunciation: '히토리키리',
+        pronunciationSource:
+          'https://vocaloidlyrics.miraheze.org/wiki/%E3%83%A9%E3%82%B0%E3%83%88%E3%83%AC%E3%82%A4%E3%83%B3_(Lagtrain)'
+      }
     ])
   })
 
