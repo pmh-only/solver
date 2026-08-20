@@ -9,6 +9,7 @@ export const SPOTIFY_RESYNC_INTERVAL_MS = 5_000
 export const MIN_LYRICS_EDIT_INTERVAL_MS = 1_250
 export const EPHEMERAL_LYRICS_SESSION_MS = 14 * 60 * 1_000
 export const PUBLIC_LYRICS_SESSION_MS = 6 * 60 * 60 * 1_000
+export const MAX_LYRICS_OFFSET_MS = 30_000
 
 const LYRICS_RETRY_INTERVAL_MS = 30_000
 const TIMER_FLOOR_MS = 50
@@ -33,6 +34,8 @@ export interface LiveLyricsState {
 export interface LiveLyricsView extends LiveLyricsState {
   currentIndex: number
   progressMs: number
+  spotifyProgressMs: number
+  offsetMs: number
   stopped: boolean
 }
 
@@ -202,6 +205,7 @@ function viewKey(view: LiveLyricsView): string {
     view.track?.uri ?? '',
     view.track?.isPlaying ? 'playing' : 'paused',
     view.currentIndex,
+    view.offsetMs,
     view.detail
   ].join('|')
 }
@@ -209,15 +213,19 @@ function viewKey(view: LiveLyricsView): string {
 export function liveLyricsView(
   state: LiveLyricsState,
   now = Date.now(),
-  stopped = false
+  stopped = false,
+  offsetMs = 0
 ): LiveLyricsView {
   const durationMs = (state.track?.durationSeconds ?? 0) * 1_000
-  const elapsed = state.track?.isPlaying ? Math.max(0, now - state.anchorTimeMs) : 0
-  const progressMs = Math.min(Math.max(0, state.anchorProgressMs + elapsed), durationMs)
+  const elapsed = state.track?.isPlaying && !stopped ? Math.max(0, now - state.anchorTimeMs) : 0
+  const spotifyProgressMs = Math.min(Math.max(0, state.anchorProgressMs + elapsed), durationMs)
+  const progressMs = Math.min(Math.max(0, spotifyProgressMs + offsetMs), durationMs)
   return {
     ...state,
     currentIndex: state.mode === 'lyrics' ? currentSyncedLineIndex(state.lines, progressMs) : -1,
     progressMs,
+    spotifyProgressMs,
+    offsetMs,
     stopped
   }
 }
@@ -240,6 +248,7 @@ export class LiveLyricsSession {
   private lastEditAt: number
   private lastRenderedKey: string
   private renderPending = false
+  private offsetMs = 0
 
   constructor(options: LiveLyricsSessionOptions) {
     this.token = options.token
@@ -260,7 +269,7 @@ export class LiveLyricsSession {
   }
 
   view(now = this.dependencies.now()): LiveLyricsView {
-    return liveLyricsView(this.state, now, !this.active)
+    return liveLyricsView(this.state, now, !this.active, this.offsetMs)
   }
 
   start(): void {
@@ -283,7 +292,7 @@ export class LiveLyricsSession {
       ...this.state,
       mode: 'stopped',
       detail: reason,
-      anchorProgressMs: this.estimatedProgress(this.dependencies.now()),
+      anchorProgressMs: this.estimatedSpotifyProgress(this.dependencies.now()),
       anchorTimeMs: this.dependencies.now()
     }
     const finalView = this.view()
@@ -292,7 +301,43 @@ export class LiveLyricsSession {
     return finalView
   }
 
-  private estimatedProgress(now: number): number {
+  async adjustOffset(deltaMs: number): Promise<LiveLyricsView> {
+    if (!this.active || !Number.isFinite(deltaMs)) return this.view()
+    const nextOffset = Math.max(
+      -MAX_LYRICS_OFFSET_MS,
+      Math.min(MAX_LYRICS_OFFSET_MS, this.offsetMs + Math.trunc(deltaMs))
+    )
+    if (nextOffset === this.offsetMs) return this.view()
+
+    this.offsetMs = nextOffset
+    if (this.timer) {
+      this.dependencies.clearTimer(this.timer)
+      this.timer = null
+    }
+    const running = this.inFlight
+    if (running) await running.catch(() => {})
+    if (!this.active) return this.view()
+    if (this.timer) {
+      this.dependencies.clearTimer(this.timer)
+      this.timer = null
+    }
+
+    const view = this.view()
+    try {
+      await this.renderView(view)
+    } catch {
+      this.finishWithoutRender()
+      return this.view()
+    }
+    if (!this.active) return this.view()
+    this.lastRenderedKey = viewKey(view)
+    this.lastEditAt = this.dependencies.now()
+    this.renderPending = false
+    this.schedule()
+    return view
+  }
+
+  private estimatedSpotifyProgress(now: number): number {
     const durationMs = (this.state.track?.durationSeconds ?? 0) * 1_000
     const elapsed = this.state.track?.isPlaying ? Math.max(0, now - this.state.anchorTimeMs) : 0
     return Math.min(Math.max(0, this.state.anchorProgressMs + elapsed), durationMs)
@@ -417,7 +462,7 @@ export class LiveLyricsSession {
     }
 
     if (this.state.mode === 'lyrics' && this.state.track?.isPlaying) {
-      const progressMs = this.estimatedProgress(now)
+      const progressMs = this.view(now).progressMs
       const currentIndex = currentSyncedLineIndex(this.state.lines, progressMs)
       const nextLine = this.state.lines[currentIndex + 1]
       if (nextLine) {
@@ -460,7 +505,7 @@ export class LiveLyricsSession {
       ...this.state,
       mode: 'stopped',
       detail: reason,
-      anchorProgressMs: this.estimatedProgress(this.dependencies.now()),
+      anchorProgressMs: this.estimatedSpotifyProgress(this.dependencies.now()),
       anchorTimeMs: this.dependencies.now()
     }
     await this.renderView(this.view()).catch(() => {})

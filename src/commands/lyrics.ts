@@ -22,6 +22,7 @@ import {
 } from '../components.js'
 import {
   LiveLyricsSession,
+  MAX_LYRICS_OFFSET_MS,
   getLyricsSession,
   liveLyricsView,
   loadInitialLiveLyricsState,
@@ -33,6 +34,7 @@ import {
 } from './lyrics-session.js'
 
 export const LYRICS_STOP_BUTTON_ID = 'lyrics-stop'
+export const LYRICS_OFFSET_BUTTON_ID = 'lyrics-offset'
 
 function inlineText(value: string): string {
   return value
@@ -49,10 +51,16 @@ function formatClock(milliseconds: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+function formatOffset(milliseconds: number): string {
+  const seconds = Math.trunc(milliseconds / 1_000)
+  return `${seconds > 0 ? '+' : ''}${seconds}s`
+}
+
 function trackHeader(view: LiveLyricsView): TopLevelComponent {
   if (!view.track) {
     return summarySection('Live lyrics', [
       '-# Spotify playback: inactive',
+      `-# lyrics offset: ${formatOffset(view.offsetMs)}`,
       '-# timing: checked every 5 seconds',
       '-# source: LRCLIB'
     ])
@@ -63,7 +71,8 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
     [
       `-# artist: ${inlineText(view.track.artists)}`,
       `-# album: ${inlineText(view.track.album)}`,
-      `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.progressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`,
+      `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.spotifyProgressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`,
+      `-# lyrics offset: ${formatOffset(view.offsetMs)}`,
       '-# timing: local transitions; Spotify correction every 5 seconds',
       '-# source: LRCLIB'
     ],
@@ -106,38 +115,65 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
   ]
 }
 
-function stopButton(token: string, disabled: boolean) {
+function controlButtons(view: LiveLyricsView, token: string) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:minus`)
+      .setLabel('-1s')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(view.stopped || view.offsetMs <= -MAX_LYRICS_OFFSET_MS),
+    new ButtonBuilder()
+      .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:plus`)
+      .setLabel('+1s')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(view.stopped || view.offsetMs >= MAX_LYRICS_OFFSET_MS),
+    new ButtonBuilder()
       .setCustomId(`${LYRICS_STOP_BUTTON_ID}:${token}`)
-      .setLabel(disabled ? 'Stopped' : 'Stop')
+      .setLabel(view.stopped ? 'Stopped' : 'Stop')
       .setStyle(ButtonStyle.Danger)
-      .setDisabled(disabled)
+      .setDisabled(view.stopped)
   )
 }
 
 function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flags: Flags) {
   const base = commandContainer(subcommand, args, flags, ...formatLiveLyrics(view))
   return {
-    components: [base.components[0]!, stopButton(token, view.stopped)],
+    components: [base.components[0]!, controlButtons(view, token)],
     files: base.files,
     flags: base.flags
   }
 }
 
-function parseStopToken(customId: string): string | null {
-  const match = customId.match(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:([a-f0-9]{16})$`))
-  return match?.[1] ?? null
+type LyricsControl =
+  | { token: string; action: 'stop' }
+  | { token: string; action: 'offset'; deltaMs: number }
+
+function parseLyricsControl(customId: string): LyricsControl | null {
+  const stop = customId.match(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:([a-f0-9]{16})$`))
+  if (stop?.[1]) return { token: stop[1], action: 'stop' }
+
+  const offset = customId.match(
+    new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:([a-f0-9]{16}):(minus|plus)$`)
+  )
+  if (!offset?.[1] || !offset[2]) return null
+  return {
+    token: offset[1],
+    action: 'offset',
+    deltaMs: offset[2] === 'plus' ? 1_000 : -1_000
+  }
 }
 
-export function isLyricsStopButtonId(customId: string): boolean {
-  return customId.startsWith(`${LYRICS_STOP_BUTTON_ID}:`)
+export function isLyricsControlButtonId(customId: string): boolean {
+  return (
+    customId.startsWith(`${LYRICS_STOP_BUTTON_ID}:`) ||
+    customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`)
+  )
 }
 
-export async function handleLyricsStopButton(interaction: ButtonInteraction): Promise<void> {
-  const token = parseStopToken(interaction.customId)
-  const session = token ? getLyricsSession(token) : undefined
-  if (!session) {
+export async function handleLyricsControlButton(interaction: ButtonInteraction): Promise<void> {
+  const control = parseLyricsControl(interaction.customId)
+  const session = control ? getLyricsSession(control.token) : undefined
+  if (!control || !session) {
     await interaction.reply(
       errorContainer('lyrics', new Map(), 'This live lyrics session has expired.')
     )
@@ -145,12 +181,17 @@ export async function handleLyricsStopButton(interaction: ButtonInteraction): Pr
   }
   if (interaction.user.id !== session.ownerId) {
     await interaction.reply(
-      errorContainer('lyrics', new Map(), 'Only the user who started this session can stop it.')
+      errorContainer('lyrics', new Map(), 'Only the user who started this session can control it.')
     )
     return
   }
 
   await interaction.deferUpdate()
+  if (control.action === 'offset') {
+    await session.adjustOffset(control.deltaMs)
+    return
+  }
+
   const view = await session.stop('Stopped by requester', false)
   const reply = liveLyricsReply(view, session.token, 'lyrics', new Map())
   await interaction.editReply({

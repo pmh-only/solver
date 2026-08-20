@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   LiveLyricsSession,
+  MAX_LYRICS_OFFSET_MS,
   MIN_LYRICS_EDIT_INTERVAL_MS,
   SPOTIFY_RESYNC_INTERVAL_MS,
   clearLyricsSessions,
   currentSyncedLineIndex,
   getLyricsSession,
+  liveLyricsView,
   parseSyncedLyrics,
   registerLyricsSession,
   syncedLyricsWindow,
@@ -68,12 +70,7 @@ function stateFor(
 }
 
 function initialView(state: LiveLyricsState): LiveLyricsView {
-  return {
-    ...state,
-    currentIndex: currentSyncedLineIndex(state.lines, state.anchorProgressMs),
-    progressMs: state.anchorProgressMs,
-    stopped: false
-  }
+  return liveLyricsView(state, Date.now())
 }
 
 beforeEach(() => {
@@ -145,6 +142,41 @@ describe('live lyrics scheduling', () => {
     expect(first.isActive).toBe(false)
     expect(getLyricsSession(first.token)).toBeUndefined()
     expect(getLyricsSession(second.token)).toBe(second)
+  })
+
+  it('adjusts lyric time in one-second steps and clamps extreme offsets', async () => {
+    const currentTrack = track()
+    const state = stateFor(currentTrack)
+    const render = vi.fn(async (_view: LiveLyricsView) => undefined)
+    const session = new LiveLyricsSession({
+      token: '0000000000000012',
+      ownerId: 'owner',
+      isPublic: true,
+      initialState: state,
+      renderedView: initialView(state),
+      render,
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+
+    const advanced = await session.adjustOffset(1_000)
+    expect(advanced).toMatchObject({
+      offsetMs: 1_000,
+      spotifyProgressMs: 0,
+      progressMs: 1_000,
+      currentIndex: 1
+    })
+
+    const delayed = await session.adjustOffset(-2_000)
+    expect(delayed).toMatchObject({ offsetMs: -1_000, progressMs: 0, currentIndex: 0 })
+
+    const clamped = await session.adjustOffset(100_000)
+    expect(clamped.offsetMs).toBe(MAX_LYRICS_OFFSET_MS)
+    expect(render).toHaveBeenCalledTimes(3)
+    await session.stop('test complete', false)
   })
 
   it('coalesces rapid line transitions to avoid Discord edit bursts', async () => {
@@ -220,7 +252,10 @@ describe('live lyrics scheduling', () => {
     const firstState = stateFor(firstTrack)
     const getCurrentTrack = vi.fn(async () => secondTrack)
     const getLyricsForTrack = vi.fn(async () =>
-      lyricsFor(secondTrack, '[00:00.00] New zero\n[00:01.00] New one\n[00:02.00] New two')
+      lyricsFor(
+        secondTrack,
+        '[00:00.00] New zero\n[00:01.00] New one\n[00:02.00] New two\n[00:03.00] New three'
+      )
     )
     const render = vi.fn(async (_view: LiveLyricsView) => undefined)
     const session = new LiveLyricsSession({
@@ -233,6 +268,8 @@ describe('live lyrics scheduling', () => {
       onClose: () => undefined,
       dependencies: { getCurrentTrack, getLyricsForTrack }
     })
+    await session.adjustOffset(1_000)
+    render.mockClear()
     session.start()
 
     await vi.advanceTimersByTimeAsync(SPOTIFY_RESYNC_INTERVAL_MS)
@@ -240,7 +277,8 @@ describe('live lyrics scheduling', () => {
     expect(getLyricsForTrack).toHaveBeenCalledWith(secondTrack)
     expect(render.mock.calls.at(-1)![0]).toMatchObject({
       mode: 'lyrics',
-      currentIndex: 2,
+      currentIndex: 3,
+      offsetMs: 1_000,
       track: { uri: 'spotify:track:two' }
     })
     await session.stop('test complete', false)

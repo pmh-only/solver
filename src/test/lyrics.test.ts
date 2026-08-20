@@ -8,6 +8,7 @@ import {
   type SpotifyCurrentTrack
 } from '../commands/_lyrics.js'
 import {
+  LYRICS_OFFSET_BUTTON_ID,
   LYRICS_STOP_BUTTON_ID,
   formatLiveLyrics,
   subcommand as lyrics
@@ -76,8 +77,8 @@ function currentLyrics(track = spotifyTrack()): CurrentTrackLyrics {
         '[00:58.00] Before two',
         '[01:00.00] Before one',
         '[01:02.00] Current line',
-        '[01:04.00] After one',
-        '[01:06.00] After two'
+        '[01:03.00] After one',
+        '[01:04.00] After two'
       ].join('\n')
     },
     lyrics: 'Before two\nBefore one\nCurrent line\nAfter one\nAfter two',
@@ -126,8 +127,12 @@ describe('lyrics command', () => {
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
     expect(collectCustomIds(edit.components)).toEqual([
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus$`)),
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:[a-f0-9]{16}$`))
     ])
+    expect(rendered).toContain('"label":"-1s"')
+    expect(rendered).toContain('"label":"+1s"')
   })
 
   it('supports a public live session through --pub', async () => {
@@ -149,6 +154,24 @@ describe('lyrics command', () => {
     expect(patches).toHaveLength(2)
     expect(patches[0]!.route).toContain('/webhooks/')
     expect(patches[1]!.route).toContain('/channels/777777777777777777/messages/0')
+  })
+
+  it('advances synchronized lyrics by one second when the owner presses +1s', async () => {
+    const startCalls = await startCommand()
+    const edit = getEdit(startCalls) as { components: unknown[] }
+    const plusId = collectCustomIds(edit.components).find(
+      (customId) => customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`) && customId.endsWith(':plus')
+    )!
+    const offsetCalls = await dispatch(
+      buttonJSON(edit.components, plusId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+    const callback = getCallback(offsetCalls) as { type: number }
+    const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
+
+    expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
+    expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
+    expect(JSON.stringify(updated)).toContain('## After one')
   })
 
   it('stops the session when its owner presses Stop', async () => {
@@ -184,7 +207,9 @@ describe('lyrics command', () => {
     const callback = getCallback(stopCalls) as { data: { flags: number } }
 
     expect(callback.data.flags & MessageFlags.Ephemeral).toBeTruthy()
-    expect(JSON.stringify(callback)).toContain('Only the user who started this session can stop it')
+    expect(JSON.stringify(callback)).toContain(
+      'Only the user who started this session can control it'
+    )
   })
 
   it('reports an expired Stop button without throwing', async () => {
@@ -223,6 +248,8 @@ describe('lyrics presentation', () => {
       anchorTimeMs: 0,
       currentIndex: currentSyncedLineIndex(lines, 62_500),
       progressMs: 62_500,
+      spotifyProgressMs: 62_500,
+      offsetMs: 0,
       stopped: false
     }
     const rendered = JSON.stringify(

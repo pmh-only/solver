@@ -101,7 +101,7 @@ import {
   isChessButtonId,
   isChessSelectId
 } from './commands/chess.js'
-import { handleLyricsStopButton, isLyricsStopButtonId } from './commands/lyrics.js'
+import { handleLyricsControlButton, isLyricsControlButtonId } from './commands/lyrics.js'
 import { isAdminUser } from './authorization.js'
 
 function looksLikeMath(input: string): boolean {
@@ -291,8 +291,8 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
 
       if (interaction.isButton()) {
-        if (isLyricsStopButtonId(interaction.customId)) {
-          await handleLyricsStopButton(interaction)
+        if (isLyricsControlButtonId(interaction.customId)) {
+          await handleLyricsControlButton(interaction)
           return
         }
 
