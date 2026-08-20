@@ -2074,7 +2074,8 @@ describe('/a', () => {
     expect(JSON.stringify(rewritten)).not.toContain(GPT_ACTION_COMPONENT_ID)
   })
 
-  it('restricts sender-only components while leaving the parameter out of Discord JSON', async () => {
+  it('restricts sender-only components while allowing administrators', async () => {
+    process.env.ADMIN_USER_IDS = '666666666666666666,777777777777777777'
     responsePayloads.push({
       components: [
         { type: 10, content: 'Choose an action' },
@@ -2125,8 +2126,19 @@ describe('/a', () => {
     )
     expect(streamMock).toHaveBeenCalledTimes(1)
 
-    const ownerCalls = await dispatch(buttonJSON(initialEdit.components, actionId!), subs)
-    expect(getCallback(ownerCalls)).toMatchObject({
+    const adminCalls = await dispatch(
+      buttonJSON(initialEdit.components, actionId!, {
+        user: {
+          id: '777777777777777777',
+          username: 'adminuser',
+          discriminator: '0',
+          avatar: null,
+          global_name: 'Admin User'
+        }
+      }),
+      subs
+    )
+    expect(getCallback(adminCalls)).toMatchObject({
       type: InteractionResponseType.DeferredMessageUpdate
     })
     expect(streamMock).toHaveBeenCalledTimes(2)

@@ -362,6 +362,37 @@ describe('lyrics command', () => {
     expect(JSON.stringify(negative)).toContain('## Current line')
   })
 
+  it("allows an administrator to adjust another user's lyric timing", async () => {
+    process.env.ADMIN_USER_IDS = '666666666666666666,777777777777777777'
+    const startCalls = await startCommand()
+    const edit = getEdit(startCalls) as { components: unknown[] }
+    const plusHalfId = collectCustomIds(edit.components).find((customId) =>
+      customId.endsWith(':plus-half')
+    )!
+    const offsetCalls = await dispatch(
+      buttonJSON(
+        edit.components,
+        plusHalfId,
+        {
+          user: {
+            id: '777777777777777777',
+            username: 'adminuser',
+            discriminator: '0',
+            avatar: null,
+            global_name: 'Admin User'
+          }
+        },
+        MessageFlags.IsComponentsV2
+      ),
+      subs
+    )
+    const callback = getCallback(offsetCalls) as { type: number }
+    const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
+
+    expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
+    expect(JSON.stringify(updated)).toContain('lyrics offset: +0.5s')
+  })
+
   it('restores a song timing adjustment in a later live session', async () => {
     const firstCalls = await startCommand()
     const firstEdit = getEdit(firstCalls) as { components: unknown[] }

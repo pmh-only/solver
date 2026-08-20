@@ -8,6 +8,7 @@ import {
   type Client
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
+import { isAdminUser } from '../authorization.js'
 import type { Flags } from '../flags.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import type { Subcommand } from '../types.js'
@@ -362,7 +363,7 @@ export async function handleLyricsControlButton(interaction: ButtonInteraction):
     )
     return
   }
-  if (interaction.user.id !== session.ownerId) {
+  if (interaction.user.id !== session.ownerId && !isAdminUser(interaction.user.id)) {
     await interaction.reply(
       errorContainer('lyrics', new Map(), 'Only the user who started this session can control it.')
     )

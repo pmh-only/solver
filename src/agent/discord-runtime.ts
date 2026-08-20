@@ -11,6 +11,7 @@ import {
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
+import { isAdminUser } from '../authorization.js'
 import { errorContainer, matchesInteractiveId } from '../components.js'
 import { resetOpenAIEndpoint, updateOpenAIEndpoint } from '../openai-config.js'
 import { formatTimingReport, RequestTiming } from '../request-timing.js'
@@ -186,7 +187,11 @@ async function rejectUnauthorizedGptInteraction(
   ctx: GptContext,
   componentId: string
 ): Promise<boolean> {
-  if (!ctx.senderOnlyComponentIds.includes(componentId) || interaction.user.id === ctx.userId) {
+  if (
+    !ctx.senderOnlyComponentIds.includes(componentId) ||
+    interaction.user.id === ctx.userId ||
+    isAdminUser(interaction.user.id)
+  ) {
     return false
   }
 
