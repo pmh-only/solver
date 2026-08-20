@@ -1,4 +1,11 @@
-import { Agent, McpClient, tool, type Tool, type ToolContext } from '@strands-agents/sdk'
+import {
+  Agent,
+  McpClient,
+  tool,
+  type JSONValue,
+  type Tool,
+  type ToolContext
+} from '@strands-agents/sdk'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { join } from 'node:path'
@@ -404,6 +411,31 @@ async function bootAgentMcpRuntime(): Promise<void> {
 export async function initializeAgentMcpRuntime(): Promise<void> {
   agentMcpBoot ??= bootAgentMcpRuntime()
   await agentMcpBoot
+}
+
+export async function callAgentMcpTool(
+  serverName: string,
+  toolName: string,
+  args: JSONValue = {},
+  signal?: AbortSignal
+): Promise<JSONValue> {
+  await initializeAgentMcpRuntime()
+
+  const connection = agentMcpConnections.get(serverName)
+  if (!connection) {
+    const failure = agentMcpFailures.get(serverName)
+    throw new Error(
+      failure
+        ? `${serverName} MCP is unavailable: ${failure}`
+        : `${serverName} MCP is not configured`
+    )
+  }
+
+  const tools = await connection.client.listTools()
+  const selected = tools.find(({ name }) => name === toolName)
+  if (!selected) throw new Error(`${serverName} MCP does not provide ${toolName}`)
+
+  return connection.client.callTool(selected, args, signal ? { signal } : undefined)
 }
 
 export async function closeAgentMcpRuntime(): Promise<void> {

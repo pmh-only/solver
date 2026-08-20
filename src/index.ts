@@ -35,6 +35,7 @@ import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
 import { subcommand as gohome } from './commands/gohome.js'
+import { subcommand as lyrics } from './commands/lyrics.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
@@ -68,6 +69,7 @@ const commands = [
   usage,
   chess,
   gohome,
+  lyrics,
   coin,
   dice,
   rps,
