@@ -8,10 +8,10 @@ import {
 } from '@strands-agents/sdk'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { getAgentMemoryPath } from '../helpers/agent-memory-path.js'
 import { executeAgentShell, formatAgentShellResult } from '../helpers/agent-shell.js'
 import {
   loadStoredMcpServers,
@@ -59,9 +59,7 @@ const SEQUENTIAL_THINKING_MCP_PATH = fileURLToPath(
 const PLAYWRIGHT_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/@playwright/mcp/cli.js', import.meta.url)
 )
-const MCP_DATA_DIRECTORY = join(process.cwd(), 'data')
 const MCP_FILESYSTEM_ROOT = '/'
-const MCP_MEMORY_PATH = join(MCP_DATA_DIRECTORY, '.agent-memory.jsonl')
 const MAIL_MCP_URL = 'https://mail.pmh.codes/api/external/v1/mcp'
 const MCP_TOOL_NAME_MAX_LENGTH = 64
 
@@ -276,7 +274,7 @@ function builtInMcpCandidates(): AgentMcpCandidate[] {
         transport: new StdioClientTransport({
           command: process.execPath,
           args: [MEMORY_MCP_PATH],
-          env: { MEMORY_FILE_PATH: MCP_MEMORY_PATH }
+          env: { MEMORY_FILE_PATH: getAgentMemoryPath() }
         })
       })
     },

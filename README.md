@@ -157,7 +157,8 @@ The `/a` agent can search the internet through OpenAI's Responses API and includ
 - Browser automation through headless Chromium and Playwright
 - Fetching and converting web pages to Markdown
 - Reading and writing any filesystem path accessible to the `agent` user
-- Persistent knowledge-graph memory stored at `data/.agent-memory.jsonl`
+- Persistent knowledge-graph memory stored beside `KV_STORE_PATH` (`data/.agent-memory.jsonl` by
+  default)
 - Structured sequential reasoning
 - Current-time lookup and time-zone conversion
 - Cancellable waits from 0.1 seconds through 10 minutes for external operations to make progress
@@ -178,6 +179,11 @@ same path. The runtime image includes the Docker CLI, `kubectl`, Chromium, `uvx`
 Node.js MCP servers. `kubectl` is pinned at image build time and can be overridden with the
 `KUBECTL_VERSION` build argument when cluster compatibility requires another release. No extra MCP
 installation is required after deployment.
+
+The memory graph is stored beside `KV_STORE_PATH`, using `.agent-memory.jsonl` in the same directory.
+With the default Docker configuration this is `/app/data/.agent-memory.jsonl`. Mount `/app/data` as a
+durable volume so the graph, SQLite state, integration credentials, and shared pages survive container
+replacement. If `KV_STORE_PATH` points to another persistent directory, mount that directory instead.
 
 ### OpenAI Endpoint
 

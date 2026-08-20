@@ -21,6 +21,7 @@ import {
   resetStoredValueConnection,
   setStoredValue
 } from '../helpers/kv-store.js'
+import { getAgentMemoryPath } from '../helpers/agent-memory-path.js'
 import { clearModelCache } from '../model-catalog.js'
 import { updateOpenAIToken } from '../openai-config.js'
 import { updateSystemPrompt } from '../system-prompt.js'
@@ -741,7 +742,7 @@ describe('/a', () => {
     expect(transportMock).toHaveBeenCalledWith({
       command: process.execPath,
       args: [expect.stringMatching(/server-memory\/dist\/index\.js$/)],
-      env: { MEMORY_FILE_PATH: expect.stringMatching(/data\/\.agent-memory\.jsonl$/) }
+      env: { MEMORY_FILE_PATH: getAgentMemoryPath() }
     })
     expect(transportMock).toHaveBeenCalledWith({
       command: process.execPath,
