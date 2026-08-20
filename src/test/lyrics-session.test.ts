@@ -8,7 +8,9 @@ import {
   clearLyricsSessions,
   currentSyncedLineIndex,
   getLyricsSession,
+  groupRapidSyncedLyrics,
   liveLyricsView,
+  loadInitialLiveLyricsState,
   loadLyricsOffset,
   parseSyncedLyrics,
   registerLyricsSession,
@@ -117,6 +119,33 @@ describe('synchronized lyrics parsing', () => {
       'C',
       'D',
       'E'
+    ])
+  })
+
+  it('groups rapid lines into blocks spaced far enough apart for message edits', () => {
+    const lines = parseSyncedLyrics(
+      '[00:00.00] A\n[00:00.20] B\n[00:00.80] C\n[00:01.25] D\n[00:01.90] E\n[00:02.50] F'
+    )
+
+    expect(groupRapidSyncedLyrics(lines)).toEqual([
+      { timeMs: 0, text: 'A\nB\nC' },
+      { timeMs: 1_250, text: 'D\nE' },
+      { timeMs: 2_500, text: 'F' }
+    ])
+  })
+
+  it('uses grouped blocks when loading live synchronized lyrics', async () => {
+    const currentTrack = track()
+    const state = await loadInitialLiveLyricsState({
+      now: () => 0,
+      getCurrentTrack: async () => currentTrack,
+      getLyricsForTrack: async () =>
+        lyricsFor(currentTrack, '[00:00.00] A\n[00:00.20] B\n[00:00.40] C\n[00:02.00] D')
+    })
+
+    expect(state.lines).toEqual([
+      { timeMs: 0, text: 'A\nB\nC' },
+      { timeMs: 2_000, text: 'D' }
     ])
   })
 })
@@ -334,7 +363,7 @@ describe('live lyrics scheduling', () => {
     expect(getLyricsForTrack).toHaveBeenCalledWith(secondTrack)
     expect(render.mock.calls.at(-1)![0]).toMatchObject({
       mode: 'lyrics',
-      currentIndex: 2,
+      currentIndex: 1,
       offsetMs: -500,
       track: { uri: 'spotify:track:two' }
     })

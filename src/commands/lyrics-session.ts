@@ -177,6 +177,24 @@ export function parseSyncedLyrics(value: string | null | undefined): SyncedLyric
   return [...byTimestamp.values()].sort((left, right) => left.timeMs - right.timeMs)
 }
 
+export function groupRapidSyncedLyrics(
+  lines: SyncedLyricLine[],
+  minimumSpacingMs = MIN_LYRICS_EDIT_INTERVAL_MS
+): SyncedLyricLine[] {
+  if (lines.length < 2 || minimumSpacingMs <= 0) return lines
+
+  const grouped: SyncedLyricLine[] = []
+  for (const line of lines) {
+    const current = grouped.at(-1)
+    if (current && line.timeMs - current.timeMs < minimumSpacingMs) {
+      current.text = `${current.text}\n${line.text}`
+    } else {
+      grouped.push({ ...line })
+    }
+  }
+  return grouped
+}
+
 export function currentSyncedLineIndex(lines: SyncedLyricLine[], progressMs: number): number {
   let low = 0
   let high = lines.length - 1
@@ -224,7 +242,7 @@ function stateFromLyrics(result: CurrentTrackLyrics, now: number): LiveLyricsSta
     return { ...base, mode: 'unavailable', lines: [], detail: 'Instrumental track' }
   }
 
-  const lines = parseSyncedLyrics(result.match?.syncedLyrics)
+  const lines = groupRapidSyncedLyrics(parseSyncedLyrics(result.match?.syncedLyrics))
   if (lines.length === 0) {
     return {
       ...base,
