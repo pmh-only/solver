@@ -954,15 +954,18 @@ describe('/a', () => {
     expect(progressEdits.every((edit) => !edit.includes('secret'))).toBe(true)
   })
 
-  it('does not populate content while streaming a Components V2 response', async () => {
+  it('streams Components V2 text without populating message content', async () => {
     const calls = await dispatch(agentCommandJSON('answer now'), subs)
     const progressEdits = calls
       .filter((call) => call.method === 'PATCH')
       .slice(0, -1)
-      .map((call) => call.body as { content?: unknown; flags?: number })
+      .map((call) => call.body as { content?: unknown; flags?: number; components?: unknown[] })
 
     expect(progressEdits.every((edit) => edit.content === null || edit.content === '')).toBe(true)
     expect(progressEdits.every((edit) => edit.flags === MessageFlags.IsComponentsV2)).toBe(true)
+    expect(
+      progressEdits.some((edit) => JSON.stringify(edit.components).includes('hello world'))
+    ).toBe(true)
   })
 
   it('aggregates repeated tool uses without exposing reasoning or statuses', async () => {
@@ -1257,7 +1260,14 @@ describe('/a', () => {
 
     const calls = await dispatch(agentCommandJSON('show deployment'), subs, {
       patchError: (body) => {
-        if (rejected || !JSON.stringify(body).includes('First response')) return undefined
+        const serialized = JSON.stringify(body)
+        if (
+          rejected ||
+          serialized.includes('generating...') ||
+          !serialized.includes('First response')
+        ) {
+          return undefined
+        }
         rejected = true
         return Object.assign(new Error('Invalid Form Body'), {
           code: 50035,
@@ -1657,6 +1667,24 @@ describe('/a', () => {
       }
     })
     expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
+  })
+
+  it('streams Components V2 text through web updates before the final payload', async () => {
+    responsePayloads.push({
+      components: [{ type: 10, content: 'streaming through the web UI' }],
+      flags: MessageFlags.IsComponentsV2
+    })
+    const updates: unknown[] = []
+
+    await runWebAgent({ userId: 'web-user', prompt: 'stream this' }, async (payload) => {
+      updates.push(payload)
+    })
+
+    expect(
+      updates
+        .slice(0, -1)
+        .some((payload) => JSON.stringify(payload).includes('streaming through the web UI'))
+    ).toBe(true)
   })
 
   it('restores a running web request and preserves its progress when cancelled', async () => {
