@@ -8,6 +8,7 @@ import {
   type SpotifyCurrentTrack
 } from '../commands/_lyrics.js'
 import {
+  LYRICS_DISPLAY_BUTTON_ID,
   LYRICS_OFFSET_BUTTON_ID,
   LYRICS_SESSION_KEY,
   LYRICS_STOP_BUTTON_ID,
@@ -152,6 +153,10 @@ describe('lyrics command', () => {
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
     expect(collectCustomIds(edit.components)).toEqual([
+      expect.stringMatching(new RegExp(`^${LYRICS_DISPLAY_BUTTON_ID}:[a-f0-9]{16}:japanese$`)),
+      expect.stringMatching(
+        new RegExp(`^${LYRICS_DISPLAY_BUTTON_ID}:[a-f0-9]{16}:korean-pronunciation$`)
+      ),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-one$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-half$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-half$`)),
@@ -162,6 +167,63 @@ describe('lyrics command', () => {
     expect(rendered).toContain('"label":"-0.5s"')
     expect(rendered).toContain('"label":"+0.5s"')
     expect(rendered).toContain('"label":"+1s"')
+    expect(rendered).toContain('"label":"Japanese"')
+    expect(rendered).toContain('"label":"Korean pronunciation"')
+  })
+
+  it('switches between Japanese and Korean pronunciation display modes', async () => {
+    const track = spotifyTrack()
+    vi.spyOn(lyricsClient, 'getCurrentTrack').mockResolvedValue(track)
+    vi.spyOn(lyricsClient, 'getLyricsForTrack').mockResolvedValue({
+      ...currentLyrics(track),
+      match: {
+        ...currentLyrics(track).match!,
+        plainLyrics: '君の名は',
+        syncedLyrics: '[01:02.00] 君の名は'
+      },
+      lyrics: '君の名は'
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 503 }))
+    )
+    const calls = await dispatch(
+      commandJSON('lyrics', { channel: { id: '777777777777777777', type: 1 } }),
+      subs
+    )
+    const initial = getEdit(calls) as { components: unknown[] }
+    const koreanModeId = collectCustomIds(initial.components).find((customId) =>
+      customId.endsWith(':korean-pronunciation')
+    )!
+
+    expect(JSON.stringify(initial)).toContain('## 君の名は')
+    expect(JSON.stringify(initial)).not.toContain('키미노나와')
+
+    const modeCalls = await dispatch(
+      buttonJSON(initial.components, koreanModeId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+    const callback = getCallback(modeCalls) as { type: number }
+    const korean = JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)
+
+    expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
+    expect(korean).toContain('## 키미노나와')
+    expect(korean).not.toContain('## 君の名は')
+
+    const koreanEdit = calls.filter(({ method }) => method === 'PATCH').at(-1)?.body as {
+      components: unknown[]
+    }
+    const japaneseModeId = collectCustomIds(koreanEdit.components).find((customId) =>
+      customId.endsWith(':japanese')
+    )!
+    await dispatch(
+      buttonJSON(koreanEdit.components, japaneseModeId, {}, MessageFlags.IsComponentsV2),
+      subs
+    )
+    const japanese = JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)
+
+    expect(japanese).toContain('## 君の名は')
+    expect(japanese).not.toContain('## 키미노나와')
   })
 
   it('supports a public live session through --pub', async () => {
@@ -396,7 +458,8 @@ describe('lyrics presentation', () => {
       progressMs: 62_500,
       spotifyProgressMs: 62_500,
       offsetMs: 0,
-      stopped: false
+      stopped: false,
+      displayMode: 'japanese'
     }
     const rendered = JSON.stringify(
       formatLiveLyrics(view).map((component) =>
@@ -409,7 +472,7 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('After two')
   })
 
-  it('renders Korean pronunciation below Japanese lyrics', () => {
+  it('renders only Japanese lyrics in Japanese display mode', () => {
     const view: LiveLyricsView = {
       mode: 'lyrics',
       track: spotifyTrack(),
@@ -421,7 +484,8 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       offsetMs: 0,
-      stopped: false
+      stopped: false,
+      displayMode: 'japanese'
     }
     const rendered = JSON.stringify(
       formatLiveLyrics(view).map((component) =>
@@ -429,7 +493,8 @@ describe('lyrics presentation', () => {
       )
     )
 
-    expect(rendered).toContain('## 君の名は\\n-# 키미노나와')
+    expect(rendered).toContain('## 君の名は')
+    expect(rendered).not.toContain('키미노나와')
   })
 
   it('attributes pronunciation sourced from Vocaloid Lyrics Wiki', () => {
@@ -447,7 +512,8 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       offsetMs: 0,
-      stopped: false
+      stopped: false,
+      displayMode: 'korean-pronunciation'
     }
     const rendered = JSON.stringify(
       formatLiveLyrics(view).map((component) =>
@@ -457,6 +523,32 @@ describe('lyrics presentation', () => {
 
     expect(rendered).toContain(`[Vocaloid Lyrics Wiki](${sourceUrl})`)
     expect(rendered).toContain('CC BY-SA 4.0')
+    expect(rendered).toContain('## 키미노나와')
+    expect(rendered).not.toContain('## 君の名は')
+  })
+
+  it('keeps untranslated parts of a merged line in Korean pronunciation mode', () => {
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines: [{ timeMs: 0, text: '君の名は\nNever mind', pronunciation: '키미노나와\n' }],
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: 0,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      offsetMs: 0,
+      stopped: false,
+      displayMode: 'korean-pronunciation'
+    }
+    const rendered = JSON.stringify(
+      formatLiveLyrics(view).map((component) =>
+        typeof component === 'string' ? component : component.toJSON()
+      )
+    )
+
+    expect(rendered).toContain('## 키미노나와 / Never mind')
   })
 
   it('separates lines merged into a synchronized block with slashes', () => {
@@ -471,7 +563,8 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       offsetMs: 0,
-      stopped: false
+      stopped: false,
+      displayMode: 'japanese'
     }
     const rendered = JSON.stringify(
       formatLiveLyrics(view).map((component) =>

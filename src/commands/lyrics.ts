@@ -34,11 +34,13 @@ import {
   stopActiveLyricsSessions,
   syncedLyricsWindow,
   unregisterLyricsSession,
+  type LyricsDisplayMode,
   type LiveLyricsView
 } from './lyrics-session.js'
 
 export const LYRICS_STOP_BUTTON_ID = 'lyrics-stop'
 export const LYRICS_OFFSET_BUTTON_ID = 'lyrics-offset'
+export const LYRICS_DISPLAY_BUTTON_ID = 'lyrics-display'
 export const LYRICS_SESSION_KEY = 'lyrics-session'
 
 interface StoredLyricsSession {
@@ -123,9 +125,10 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
     ])
   }
 
-  const pronunciationSource = view.lines.find(
-    (line) => line.pronunciationSource
-  )?.pronunciationSource
+  const pronunciationSource =
+    view.displayMode === 'korean-pronunciation'
+      ? view.lines.find((line) => line.pronunciationSource)?.pronunciationSource
+      : undefined
 
   return summarySection(
     `Live lyrics: ${inlineText(view.track.name)}`,
@@ -162,19 +165,18 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
 
   const window = syncedLyricsWindow(view.lines, view.currentIndex)
   const renderedLines = window.map(({ line, current }) => {
-    const content = line.text
+    const displayedText =
+      view.displayMode === 'korean-pronunciation'
+        ? line.text
+            .split('\n')
+            .map((text, index) => line.pronunciation?.split('\n')[index] || text)
+            .join('\n')
+        : line.text
+    const content = displayedText
       .split('\n')
       .map((value) => inlineText(value || '[instrumental]'))
       .join(' / ')
-    const pronunciation = line.pronunciation
-      ?.split('\n')
-      .filter(Boolean)
-      .map(inlineText)
-      .join(' / ')
-    return [
-      `${current ? '##' : '-#'} ${content}`,
-      ...(pronunciation ? [`-# ${pronunciation}`] : [])
-    ].join('\n')
+    return `${current ? '##' : '-#'} ${content}`
   })
   if (view.currentIndex < 0) {
     renderedLines.unshift('**Waiting for the first synchronized line**')
@@ -222,10 +224,28 @@ function controlButtons(view: LiveLyricsView, token: string) {
   )
 }
 
+function displayModeButtons(view: LiveLyricsView, token: string) {
+  const hasPronunciation = view.lines.some((line) => line.pronunciation)
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${LYRICS_DISPLAY_BUTTON_ID}:${token}:japanese`)
+      .setLabel('Japanese')
+      .setStyle(view.displayMode === 'japanese' ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(view.stopped),
+    new ButtonBuilder()
+      .setCustomId(`${LYRICS_DISPLAY_BUTTON_ID}:${token}:korean-pronunciation`)
+      .setLabel('Korean pronunciation')
+      .setStyle(
+        view.displayMode === 'korean-pronunciation' ? ButtonStyle.Primary : ButtonStyle.Secondary
+      )
+      .setDisabled(view.stopped || !hasPronunciation)
+  )
+}
+
 function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flags: Flags) {
   const base = commandContainer(subcommand, args, flags, ...formatLiveLyrics(view))
   return {
-    components: [base.components[0]!, controlButtons(view, token)],
+    components: [base.components[0]!, displayModeButtons(view, token), controlButtons(view, token)],
     files: base.files,
     flags: base.flags
   }
@@ -289,10 +309,22 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
 type LyricsControl =
   | { token: string; action: 'stop' }
   | { token: string; action: 'offset'; deltaMs: number }
+  | { token: string; action: 'display'; displayMode: LyricsDisplayMode }
 
 function parseLyricsControl(customId: string): LyricsControl | null {
   const stop = customId.match(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:([a-f0-9]{16})$`))
   if (stop?.[1]) return { token: stop[1], action: 'stop' }
+
+  const display = customId.match(
+    new RegExp(`^${LYRICS_DISPLAY_BUTTON_ID}:([a-f0-9]{16}):(japanese|korean-pronunciation)$`)
+  )
+  if (display?.[1] && display[2]) {
+    return {
+      token: display[1],
+      action: 'display',
+      displayMode: display[2] as LyricsDisplayMode
+    }
+  }
 
   const offset = customId.match(
     new RegExp(
@@ -316,7 +348,8 @@ function parseLyricsControl(customId: string): LyricsControl | null {
 export function isLyricsControlButtonId(customId: string): boolean {
   return (
     customId.startsWith(`${LYRICS_STOP_BUTTON_ID}:`) ||
-    customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`)
+    customId.startsWith(`${LYRICS_OFFSET_BUTTON_ID}:`) ||
+    customId.startsWith(`${LYRICS_DISPLAY_BUTTON_ID}:`)
   )
 }
 
@@ -339,6 +372,10 @@ export async function handleLyricsControlButton(interaction: ButtonInteraction):
   await interaction.deferUpdate()
   if (control.action === 'offset') {
     await session.adjustOffset(control.deltaMs)
+    return
+  }
+  if (control.action === 'display') {
+    await session.setDisplayMode(control.displayMode)
     return
   }
 

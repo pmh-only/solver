@@ -29,6 +29,7 @@ export interface SyncedLyricLine {
 }
 
 export type LiveLyricsMode = 'lyrics' | 'idle' | 'unavailable' | 'error' | 'stopped'
+export type LyricsDisplayMode = 'japanese' | 'korean-pronunciation'
 
 export interface LiveLyricsState {
   mode: LiveLyricsMode
@@ -45,6 +46,7 @@ export interface LiveLyricsView extends LiveLyricsState {
   spotifyProgressMs: number
   offsetMs: number
   stopped: boolean
+  displayMode: LyricsDisplayMode
 }
 
 export interface LyricsSessionDependencies {
@@ -320,6 +322,7 @@ function viewKey(view: LiveLyricsView): string {
     view.track?.isPlaying ? 'playing' : 'paused',
     view.currentIndex,
     view.offsetMs,
+    view.displayMode,
     view.detail
   ].join('|')
 }
@@ -328,7 +331,8 @@ export function liveLyricsView(
   state: LiveLyricsState,
   now = Date.now(),
   stopped = false,
-  offsetMs = 0
+  offsetMs = 0,
+  displayMode: LyricsDisplayMode = 'japanese'
 ): LiveLyricsView {
   const durationMs = (state.track?.durationSeconds ?? 0) * 1_000
   const elapsed = state.track?.isPlaying && !stopped ? Math.max(0, now - state.anchorTimeMs) : 0
@@ -340,7 +344,8 @@ export function liveLyricsView(
     progressMs,
     spotifyProgressMs,
     offsetMs,
-    stopped
+    stopped,
+    displayMode
   }
 }
 
@@ -363,6 +368,7 @@ export class LiveLyricsSession {
   private lastRenderedKey: string
   private renderPending = false
   private offsetMs = 0
+  private displayMode: LyricsDisplayMode = 'japanese'
   private renderLatencyMs: number
 
   constructor(options: LiveLyricsSessionOptions) {
@@ -373,6 +379,7 @@ export class LiveLyricsSession {
     this.renderView = options.render
     this.onClose = options.onClose
     this.dependencies = { ...defaultDependencies, ...options.dependencies }
+    this.displayMode = options.renderedView.displayMode
     this.renderLatencyMs = normalizedRenderLatency(options.initialRenderLatencyMs ?? 0)
     this.offsetMs = normalizedOffset(
       options.initialOffsetMs ??
@@ -391,7 +398,7 @@ export class LiveLyricsSession {
   }
 
   view(now = this.dependencies.now()): LiveLyricsView {
-    return liveLyricsView(this.state, now, !this.active, this.offsetMs)
+    return liveLyricsView(this.state, now, !this.active, this.offsetMs, this.displayMode)
   }
 
   private viewForRender(now = this.dependencies.now()): LiveLyricsView {
@@ -447,6 +454,22 @@ export class LiveLyricsSession {
 
     this.offsetMs = nextOffset
     if (this.state.track) this.dependencies.saveOffset(this.state.track.id, nextOffset)
+    return this.renderControlUpdate()
+  }
+
+  async setDisplayMode(displayMode: LyricsDisplayMode): Promise<LiveLyricsView> {
+    if (!this.active || displayMode === this.displayMode) return this.view()
+    if (
+      displayMode === 'korean-pronunciation' &&
+      !this.state.lines.some((line) => line.pronunciation)
+    ) {
+      return this.view()
+    }
+    this.displayMode = displayMode
+    return this.renderControlUpdate()
+  }
+
+  private async renderControlUpdate(): Promise<LiveLyricsView> {
     if (this.timer) {
       this.dependencies.clearTimer(this.timer)
       this.timer = null
@@ -494,6 +517,7 @@ export class LiveLyricsSession {
     } catch (error) {
       if (error instanceof NoSpotifyPlaybackError) {
         this.offsetMs = 0
+        this.displayMode = 'japanese'
         this.state = {
           mode: 'idle',
           track: null,
@@ -530,6 +554,7 @@ export class LiveLyricsSession {
         await this.dependencies.getLyricsForTrack(track),
         sampledAt
       )
+      if (!this.state.lines.some((line) => line.pronunciation)) this.displayMode = 'japanese'
       this.nextLyricsRetryAt = 0
     } catch {
       this.state = {
