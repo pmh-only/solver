@@ -264,7 +264,7 @@ describe('lyrics command', () => {
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
     expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
-    expect(JSON.stringify(updated)).toContain('## After one')
+    expect(JSON.stringify(updated)).toContain('## Current line / After one')
   })
 
   it('supports positive and negative half-second lyric adjustments', async () => {
@@ -280,7 +280,7 @@ describe('lyrics command', () => {
     const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(JSON.stringify(positive)).toContain('lyrics offset: +0.5s')
-    expect(JSON.stringify(positive)).toContain('## After one')
+    expect(JSON.stringify(positive)).toContain('## Current line / After one')
 
     await clearLyricsSessions()
     deleteStoredValue(LYRICS_OFFSETS_KEY)
@@ -317,7 +317,7 @@ describe('lyrics command', () => {
     const later = JSON.stringify(getEdit(laterCalls))
 
     expect(later).toContain('lyrics offset: +0.5s')
-    expect(later).toContain('## After one')
+    expect(later).toContain('## Current line / After one')
   })
 
   it('stops the session when its owner presses Stop', async () => {
@@ -430,6 +430,30 @@ describe('lyrics presentation', () => {
     )
 
     expect(rendered).toContain('## 君の名は\\n-# 키미노나와')
+  })
+
+  it('separates lines merged into a synchronized block with slashes', () => {
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines: [{ timeMs: 0, text: 'First\nSecond' }],
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: 0,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      offsetMs: 0,
+      stopped: false
+    }
+    const rendered = JSON.stringify(
+      formatLiveLyrics(view).map((component) =>
+        typeof component === 'string' ? component : component.toJSON()
+      )
+    )
+
+    expect(rendered).toContain('## First / Second')
+    expect(rendered).not.toContain('## First\\n## Second')
   })
 })
 

@@ -153,17 +153,19 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
 
   const window = syncedLyricsWindow(view.lines, view.currentIndex)
   const renderedLines = window.map(({ line, current }) => {
-    const content = line.text.split('\n').map((value) => inlineText(value || '[instrumental]'))
-    const pronunciations = line.pronunciation?.split('\n') ?? []
-    return content
-      .flatMap((value, index) => {
-        const pronunciation = pronunciations[index]
-        return [
-          `${current ? '##' : '-#'} ${value}`,
-          ...(pronunciation ? [`-# ${inlineText(pronunciation)}`] : [])
-        ]
-      })
-      .join('\n')
+    const content = line.text
+      .split('\n')
+      .map((value) => inlineText(value || '[instrumental]'))
+      .join(' / ')
+    const pronunciation = line.pronunciation
+      ?.split('\n')
+      .filter(Boolean)
+      .map(inlineText)
+      .join(' / ')
+    return [
+      `${current ? '##' : '-#'} ${content}`,
+      ...(pronunciation ? [`-# ${pronunciation}`] : [])
+    ].join('\n')
   })
   if (view.currentIndex < 0) {
     renderedLines.unshift('**Waiting for the first synchronized line**')
