@@ -17,7 +17,8 @@ export const storedDiscordFeatureSchema = z
     kind: z.enum(['command', 'user', 'message']),
     name: z.string().trim().min(1).max(32),
     description: z.string().trim().min(1).max(100),
-    instructions: z.string().trim().min(1).max(16_000)
+    instructions: z.string().trim().min(1).max(16_000).optional(),
+    code: z.string().trim().min(1).max(12_000).optional()
   })
   .superRefine((feature, context) => {
     if (feature.kind === 'command' && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(feature.name)) {
@@ -33,6 +34,27 @@ export const storedDiscordFeatureSchema = z
         code: 'custom',
         path: ['name'],
         message: 'Context command names must be a single line'
+      })
+    }
+    if (feature.kind === 'command' && !feature.code && !feature.instructions) {
+      context.addIssue({
+        code: 'custom',
+        path: ['code'],
+        message: 'Command features require JavaScript code or agent instructions'
+      })
+    }
+    if (feature.kind !== 'command' && !feature.instructions) {
+      context.addIssue({
+        code: 'custom',
+        path: ['instructions'],
+        message: 'Context-menu features require agent instructions'
+      })
+    }
+    if (feature.kind !== 'command' && feature.code) {
+      context.addIssue({
+        code: 'custom',
+        path: ['code'],
+        message: 'JavaScript code is supported only for /c command features'
       })
     }
   })

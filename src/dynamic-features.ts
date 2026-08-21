@@ -9,7 +9,13 @@ import {
 } from 'discord.js'
 import { z } from 'zod'
 import { isAdminUser } from './authorization.js'
-import { errorContainer } from './components.js'
+import {
+  commandContainer,
+  deferCommandResponse,
+  errorContainer,
+  sendCommandReply,
+  text
+} from './components.js'
 import type { DiscordFeatureRegistry } from './feature-registry.js'
 import type { Flags } from './flags.js'
 import { safeErrorMessage } from './safe-error.js'
@@ -22,6 +28,10 @@ import {
   type StoredDiscordFeature
 } from './helpers/discord-feature-store.js'
 import type { CommandInteraction, Subcommand } from './types.js'
+import {
+  executeDynamicJavascript,
+  formatDynamicJavascriptResult
+} from './helpers/dynamic-javascript.js'
 
 const DYNAMIC_FEATURE_REGISTRY_ID = 'dynamic-discord-features'
 const DYNAMIC_FEATURE_PRIORITY = 0
@@ -52,7 +62,8 @@ export type DynamicFeatureManagementInput =
       kind: 'command' | 'user' | 'message'
       name: string
       description: string
-      instructions: string
+      instructions?: string
+      code?: string
     }
 
 function boundedJson(value: unknown): string {
@@ -96,10 +107,22 @@ function publicFeature(feature: StoredDiscordFeature): Record<string, string> {
     kind: feature.kind,
     name: feature.name,
     description: feature.description,
-    instructions:
-      feature.instructions.length <= 1_000
-        ? feature.instructions
-        : `${feature.instructions.slice(0, 1_000)}...[truncated]`
+    ...(feature.instructions
+      ? {
+          instructions:
+            feature.instructions.length <= 1_000
+              ? feature.instructions
+              : `${feature.instructions.slice(0, 1_000)}...[truncated]`
+        }
+      : {}),
+    ...(feature.code
+      ? {
+          code:
+            feature.code.length <= 4_000
+              ? feature.code
+              : `${feature.code.slice(0, 4_000)}...[truncated]`
+        }
+      : {})
   }
 }
 
@@ -250,6 +273,24 @@ export class DynamicDiscordFeatureManager {
         examples: [feature.name],
         execute: async (interaction: CommandInteraction, args: string, flags: Flags) => {
           try {
+            if (feature.code) {
+              await deferCommandResponse(interaction, flags)
+              const result = await executeDynamicJavascript(
+                feature.code,
+                args.replace(/^\S+\s*/, '').trim(),
+                Object.fromEntries(flags)
+              )
+              await sendCommandReply(
+                interaction,
+                commandContainer(
+                  subcommand,
+                  args,
+                  flags,
+                  text(formatDynamicJavascriptResult(result))
+                )
+              )
+              return
+            }
             await this.#runtime.run({
               feature,
               interaction,

@@ -1,4 +1,4 @@
-import { ApplicationCommandType, Collection, type Interaction } from 'discord.js'
+import { ApplicationCommandType, Collection, MessageFlags, type Interaction } from 'discord.js'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DynamicDiscordFeatureManager, type DynamicFeatureInvocation } from '../dynamic-features.js'
@@ -104,6 +104,41 @@ describe('dynamic Discord features', () => {
       expect.objectContaining({ id: 'summarize', kind: 'command' })
     ])
     expect(isInternalStoredKey(DISCORD_FEATURES_KEY)).toBe(true)
+  })
+
+  it('creates a JavaScript /c feature and executes it without the agent', async () => {
+    const { manager, subcommands, run } = runtime()
+    await manager.manage({
+      action: 'upsert',
+      id: 'hello',
+      kind: 'command',
+      name: 'hello',
+      description: 'say hello',
+      code: 'return args ? `안녕 ${args}` : "안녕"'
+    })
+    const editReply = vi.fn(async () => ({ id: 'dynamic-code-response' }))
+    const commandInteraction = {
+      user: { id: '666666666666666666' },
+      deferred: false,
+      replied: false,
+      isButton: () => false,
+      isStringSelectMenu: () => false,
+      isModalSubmit: () => false,
+      deferReply: vi.fn(async () => {
+        commandInteraction.deferred = true
+      }),
+      editReply,
+      deleteReply: vi.fn(async () => {})
+    } as unknown as CommandInteraction
+
+    await subcommands.get('hello')!.execute(commandInteraction, 'hello 민수', new Map())
+
+    expect(run).not.toHaveBeenCalled()
+    expect(commandInteraction.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral })
+    expect(JSON.stringify(editReply.mock.calls)).toContain('안녕 민수')
+    expect(loadStoredDiscordFeatures()).toEqual([
+      expect.objectContaining({ id: 'hello', code: expect.stringContaining('return args') })
+    ])
   })
 
   it('registers, routes, persists, and removes a user context feature', async () => {

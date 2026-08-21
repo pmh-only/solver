@@ -599,6 +599,25 @@ describe('/a', () => {
       expect.objectContaining({ action: 'upsert', id: 'summarize', kind: 'command' })
     )
 
+    await expect(
+      managementTool.callback({
+        action: 'upsert',
+        id: 'hello',
+        kind: 'command',
+        name: 'hello',
+        description: 'say hello',
+        code: 'return "안녕"'
+      })
+    ).resolves.toContain('Created command Discord feature')
+    expect(manage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        action: 'upsert',
+        id: 'hello',
+        code: 'return "안녕"',
+        instructions: undefined
+      })
+    )
+
     manage.mockRejectedValueOnce(
       new Error('deploy https://discord.example/webhooks/123/secret-token?key=secret failed')
     )

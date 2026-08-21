@@ -183,7 +183,7 @@ const googleCalendarAuthenticationTool = tool({
 const discordFeatureManagementTool = tool({
   name: 'manage_discord_features',
   description:
-    'List, create, update, or remove persistent Discord features. A command feature becomes /c <name>. User and message features become context-menu commands and trigger immediate Discord command redeployment. Features execute the agent with their configured instructions and the invocation payload. Use a stable lowercase id; upsert replaces the feature with that id.',
+    'List, create, update, or remove persistent Discord features. A command feature becomes /c <name> and should normally contain JavaScript code that executes directly without another model call. JavaScript is a function body: read the string args and flags object, then return the user-visible value. For example, return "안녕". User and message features use agent instructions. Use a stable lowercase id; upsert replaces the feature with that id.',
   inputSchema: z.object({
     action: z.enum(['list', 'upsert', 'remove']),
     id: mcpServerNameSchema.optional().describe('Stable lowercase feature id'),
@@ -193,15 +193,25 @@ const discordFeatureManagementTool = tool({
     instructions: z
       .string()
       .optional()
-      .describe('Complete persistent instructions governing feature behavior')
+      .describe('Persistent agent instructions, required for user and message features'),
+    code: z
+      .string()
+      .optional()
+      .describe('JavaScript function body for a command; use args and flags and return a value')
   }),
-  callback: async ({ action, id, kind, name, description, instructions }) => {
+  callback: async ({ action, id, kind, name, description, instructions, code }) => {
     try {
       if (action === 'list') return await manageDynamicDiscordFeatures({ action })
       if (!id) return 'id is required.'
       if (action === 'remove') return await manageDynamicDiscordFeatures({ action, id })
-      if (!kind || !name || !description || !instructions) {
-        return 'kind, name, description, and instructions are required when upserting a feature.'
+      if (!kind || !name || !description) {
+        return 'kind, name, and description are required when upserting a feature.'
+      }
+      if (kind === 'command' && !code && !instructions) {
+        return 'A command feature requires JavaScript code (preferred) or agent instructions.'
+      }
+      if (kind !== 'command' && !instructions) {
+        return 'A user or message feature requires agent instructions.'
       }
       return await manageDynamicDiscordFeatures({
         action,
@@ -209,7 +219,8 @@ const discordFeatureManagementTool = tool({
         kind,
         name,
         description,
-        instructions
+        instructions,
+        code
       })
     } catch (error) {
       return `Discord feature operation failed safely and was rolled back: ${safeErrorMessage(error)}. Diagnose the cause, correct the feature definition or deployment problem, and retry with manage_discord_features.`
