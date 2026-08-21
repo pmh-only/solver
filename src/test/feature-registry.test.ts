@@ -38,6 +38,25 @@ describe('Discord feature registry', () => {
     expect(additional.handle).not.toHaveBeenCalled()
   })
 
+  it('contains feature failures and invokes recovery once', async () => {
+    const registry = new DiscordFeatureRegistry()
+    const failure = new Error('feature failed')
+    registry.register({
+      ...feature('broken', 0, true),
+      handle: vi.fn(async () => {
+        throw failure
+      })
+    })
+    const recover = vi.fn(async () => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const currentInteraction = interaction()
+
+    await expect(registry.createHandler(recover)(currentInteraction)).resolves.toBeUndefined()
+
+    expect(recover).toHaveBeenCalledOnce()
+    expect(recover).toHaveBeenCalledWith(currentInteraction, failure, 'broken')
+  })
+
   it('releases commands and routes when a feature is unregistered', async () => {
     const registry = new DiscordFeatureRegistry()
     const fallback = feature('fallback', -100, true)

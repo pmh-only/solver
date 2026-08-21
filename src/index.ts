@@ -44,12 +44,15 @@ import {
   closeAgentMcpRuntime,
   deleteDynamicAgentFeatureSessions,
   initializeAgentMcpRuntime,
+  recoverInteractionWithAgent,
   runDynamicAgentFeature
 } from './agent/index.js'
 import {
   DynamicDiscordFeatureManager,
   setDynamicDiscordFeatureManager
 } from './dynamic-features.js'
+import { safeErrorMessage } from './safe-error.js'
+import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 
 restoreStoredEnvironment()
 
@@ -91,7 +94,7 @@ for (const sub of [...commands, createPubtabSubcommand(commands)]) {
   subcommands.set(sub.name, sub)
 }
 
-const featureRegistry = createFeatureRegistry(subcommands)
+const featureRegistry = createFeatureRegistry(subcommands, recoverInteractionWithAgent)
 
 async function loadRegisteredCommands(rest: REST, clientId: string) {
   return (await rest.get(Routes.applicationCommands(clientId))) as RegisteredApplicationCommand[]
@@ -101,12 +104,14 @@ async function ensureDeployed(rest: REST, clientId: string) {
   const existing = await loadRegisteredCommands(rest, clientId)
 
   if (areApplicationCommandsCurrent(existing, featureRegistry.commands)) {
+    clearRuntimeIssue('application_command_deployment')
     console.log('skip')
     return
   }
 
   console.log('deploying...')
   await replaceApplicationCommands(rest, clientId, existing, featureRegistry.commands)
+  clearRuntimeIssue('application_command_deployment')
   console.log('done')
 }
 
@@ -124,19 +129,36 @@ const dynamicFeatureManager = new DynamicDiscordFeatureManager({
   run: ({ interaction, feature, input, pub }) =>
     runDynamicAgentFeature(interaction, feature, input, pub),
   cleanup: (feature) => deleteDynamicAgentFeatureSessions(feature.id, configuredAdminUserIds),
+  recover: recoverInteractionWithAgent,
   syncCommands: async (registry) => {
-    await replaceApplicationCommands(
-      rest,
-      clientId,
-      await loadRegisteredCommands(rest, clientId),
-      registry.commands
-    )
+    try {
+      await replaceApplicationCommands(
+        rest,
+        clientId,
+        await loadRegisteredCommands(rest, clientId),
+        registry.commands
+      )
+      clearRuntimeIssue('application_command_deployment')
+    } catch (error) {
+      reportRuntimeIssue('application_command_deployment', error)
+      throw error
+    }
   }
 })
 dynamicFeatureManager.initialize()
 setDynamicDiscordFeatureManager(dynamicFeatureManager)
 
-await Promise.all([ensureDeployed(rest, clientId), initializeAgentMcpRuntime()])
+await Promise.all([
+  ensureDeployed(rest, clientId).catch((error) => {
+    reportRuntimeIssue('application_command_deployment', error)
+    console.error(`application command deployment failed safely: ${safeErrorMessage(error)}`)
+  }),
+  initializeAgentMcpRuntime().catch(async (error) => {
+    reportRuntimeIssue('agent_mcp_startup', error)
+    console.error(`agent MCP startup failed safely: ${safeErrorMessage(error)}`)
+    await closeAgentMcpRuntime()
+  })
+])
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -151,7 +173,12 @@ client.once(Events.ClientReady, async (c) => {
   }
 })
 
-client.on(Events.InteractionCreate, featureRegistry.createHandler())
+client.on(Events.Error, (error) => {
+  reportRuntimeIssue('discord_client', error)
+  console.error(`Discord client error: ${safeErrorMessage(error)}`)
+})
+
+client.on(Events.InteractionCreate, featureRegistry.createHandler(recoverInteractionWithAgent))
 
 const webServer = await startWebServer()
 const address = webServer.address()

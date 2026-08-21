@@ -35,6 +35,7 @@ import {
 } from '../spotify-auth.js'
 import type { EffortLevel } from './config.js'
 import { manageDynamicDiscordFeatures } from '../dynamic-features.js'
+import { safeErrorMessage } from '../safe-error.js'
 
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
@@ -195,20 +196,24 @@ const discordFeatureManagementTool = tool({
       .describe('Complete persistent instructions governing feature behavior')
   }),
   callback: async ({ action, id, kind, name, description, instructions }) => {
-    if (action === 'list') return manageDynamicDiscordFeatures({ action })
-    if (!id) return 'id is required.'
-    if (action === 'remove') return manageDynamicDiscordFeatures({ action, id })
-    if (!kind || !name || !description || !instructions) {
-      return 'kind, name, description, and instructions are required when upserting a feature.'
+    try {
+      if (action === 'list') return await manageDynamicDiscordFeatures({ action })
+      if (!id) return 'id is required.'
+      if (action === 'remove') return await manageDynamicDiscordFeatures({ action, id })
+      if (!kind || !name || !description || !instructions) {
+        return 'kind, name, description, and instructions are required when upserting a feature.'
+      }
+      return await manageDynamicDiscordFeatures({
+        action,
+        id,
+        kind,
+        name,
+        description,
+        instructions
+      })
+    } catch (error) {
+      return `Discord feature operation failed safely and was rolled back: ${safeErrorMessage(error)}. Diagnose the cause, correct the feature definition or deployment problem, and retry with manage_discord_features.`
     }
-    return manageDynamicDiscordFeatures({
-      action,
-      id,
-      kind,
-      name,
-      description,
-      instructions
-    })
   }
 })
 

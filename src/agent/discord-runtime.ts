@@ -5,6 +5,7 @@ import {
   ModalBuilder,
   SeparatorSpacingSize,
   type ChatInputCommandInteraction,
+  type Interaction,
   type MessageComponentInteraction,
   type ModalSubmitInteraction,
   type RepliableInteraction,
@@ -63,6 +64,7 @@ import {
 } from './session-store.js'
 import { runGptStream } from './stream-runner.js'
 import type { StoredDiscordFeature } from '../helpers/discord-feature-store.js'
+import { safeErrorMessage } from '../safe-error.js'
 
 type SelectKey = 'model' | 'effort' | 'verbosity'
 
@@ -437,6 +439,81 @@ export async function runDynamicAgentFeature(
   await runDiscordAgentContext(interaction, ctx, token, Date.now(), undefined, true)
 }
 
+export async function recoverInteractionWithAgent(
+  interaction: Interaction,
+  error: unknown,
+  source = 'interaction'
+): Promise<void> {
+  if (interaction.isAutocomplete()) {
+    if (!interaction.responded) await interaction.respond([]).catch(() => {})
+    return
+  }
+  if (!interaction.isRepliable()) return
+
+  const detail = safeErrorMessage(error)
+  try {
+    await runDynamicAgentFeature(
+      interaction,
+      {
+        id: 'automatic-recovery',
+        kind: 'command',
+        name: 'recovery',
+        description: 'recover a failed Discord interaction',
+        instructions:
+          'Recover the failed Discord interaction. Diagnose the supplied error, use available tools to repair configuration or choose a safe alternative, and complete the likely user intent. Never expose credentials or interaction tokens. Do not create another recovery feature. If the underlying service remains unavailable, explain the failure and provide one concrete next action.'
+      },
+      JSON.stringify({
+        type: 'automatic_recovery',
+        source: source.slice(0, 100),
+        interaction_type: interaction.type,
+        command_name: 'commandName' in interaction ? interaction.commandName : undefined,
+        custom_id: 'customId' in interaction ? interaction.customId : undefined,
+        error: detail
+      }),
+      false
+    )
+  } catch (recoveryError) {
+    console.error('Automatic agent recovery failed', recoveryError)
+    await deliverRecoveryFallback(interaction, detail)
+  }
+}
+
+async function deliverRecoveryFallback(
+  interaction: RepliableInteraction,
+  detail: string
+): Promise<void> {
+  const components = [
+    {
+      type: ComponentType.TextDisplay,
+      content: `The request failed and automatic recovery was unavailable. ${detail}`.slice(
+        0,
+        4_000
+      )
+    }
+  ] as never
+  if (interaction.deferred) {
+    await interaction
+      .editReply({ components, flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } })
+      .catch(() => {})
+  } else if (interaction.replied) {
+    await interaction
+      .followUp({
+        components,
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] }
+      })
+      .catch(() => {})
+  } else {
+    await interaction
+      .reply({
+        components,
+        flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] }
+      })
+      .catch(() => {})
+  }
+}
+
 export function deleteDynamicAgentFeatureSessions(
   featureId: string,
   userIds: Iterable<string>
@@ -455,8 +532,10 @@ async function runDiscordAgentContext(
   resetConversation = false
 ): Promise<boolean> {
   let phaseStarted = performance.now()
-  if (ctx.pub) await interaction.deferReply()
-  else await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  if (!interaction.deferred && !interaction.replied) {
+    if (ctx.pub) await interaction.deferReply()
+    else await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  }
   timing?.span('Discord acknowledgement', phaseStarted)
   phaseStarted = performance.now()
   await interaction.editReply(buildAgentProgressPayload(ctx))

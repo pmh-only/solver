@@ -1,6 +1,7 @@
 import type {
   ButtonInteraction,
   ChatInputCommandInteraction,
+  Interaction,
   ModalSubmitInteraction,
   StringSelectMenuInteraction
 } from 'discord.js'
@@ -20,6 +21,12 @@ export type CommandInteraction =
   | ModalSubmitInteraction
 
 export type CommandRunResult = TopLevelComponent | TopLevelComponent[]
+
+export type InteractionRecovery = (
+  interaction: Interaction,
+  error: unknown,
+  source: string
+) => Promise<void>
 
 export interface Subcommand {
   name: string

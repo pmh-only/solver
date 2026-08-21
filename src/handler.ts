@@ -6,7 +6,7 @@ import {
   type ButtonInteraction,
   type Interaction
 } from 'discord.js'
-import type { CommandInteraction, Subcommand } from './types.js'
+import type { CommandInteraction, InteractionRecovery, Subcommand } from './types.js'
 import {
   buildEditParametersModal,
   buildConstrainedCommandInput,
@@ -205,7 +205,8 @@ async function runCommandInput(
   interaction: CommandInteraction,
   subcommands: Collection<string, Subcommand>,
   rawInput: string,
-  fromPubtab = false
+  fromPubtab = false,
+  recover?: InteractionRecovery
 ) {
   const { bare, flags, sub } = resolveCommandInput(rawInput, subcommands)
   if (fromPubtab) markPubtabContext(flags)
@@ -249,6 +250,14 @@ async function runCommandInput(
     await sub.execute(interaction, bare, flags)
   } catch (error) {
     console.error(error)
+    if (recover) {
+      try {
+        await recover(interaction, error, `command ${bare.slice(0, 500) || 'unknown'}`)
+        return
+      } catch (recoveryError) {
+        console.error('command recovery failed', recoveryError)
+      }
+    }
     const message = error instanceof Error ? error.message : String(error)
     const reply = errorContainer(bare, flags, message)
     if (interaction.deferred) {
@@ -272,7 +281,10 @@ async function runCommandInput(
   }
 }
 
-export function createHandler(subcommands: Collection<string, Subcommand>) {
+export function createHandler(
+  subcommands: Collection<string, Subcommand>,
+  recover?: InteractionRecovery
+) {
   return async (interaction: Interaction): Promise<void> => {
     try {
       if (!isInteractionAllowed(interaction, subcommands)) {
@@ -412,7 +424,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
             return
           }
 
-          await runCommandInput(interaction, subcommands, commandInput)
+          await runCommandInput(interaction, subcommands, commandInput, false, recover)
           return
         }
 
@@ -504,7 +516,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
 
       if (interaction.isModalSubmit() && interaction.customId === EDIT_PARAMETERS_MODAL_ID) {
         const commandInput = interaction.fields.getTextInputValue(EDIT_PARAMETERS_INPUT_ID)
-        await runCommandInput(interaction, subcommands, commandInput)
+        await runCommandInput(interaction, subcommands, commandInput, false, recover)
         return
       }
 
@@ -524,7 +536,7 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
         )
 
         await interaction.deferReply()
-        await runCommandInput(interaction, subcommands, commandInput, true)
+        await runCommandInput(interaction, subcommands, commandInput, true, recover)
         return
       }
 
@@ -698,7 +710,13 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
       }
       if (interaction.commandName !== 'c') return
 
-      await runCommandInput(interaction, subcommands, interaction.options.getString('_', true))
+      await runCommandInput(
+        interaction,
+        subcommands,
+        interaction.options.getString('_', true),
+        false,
+        recover
+      )
     } catch (error) {
       console.error(error)
 
@@ -707,6 +725,15 @@ export function createHandler(subcommands: Collection<string, Subcommand>) {
           await interaction.respond([])
         }
         return
+      }
+
+      if (recover) {
+        try {
+          await recover(interaction, error, 'interaction router')
+          return
+        } catch (recoveryError) {
+          console.error('interaction recovery failed', recoveryError)
+        }
       }
 
       if (interaction.isChatInputCommand() && interaction.commandName === AGENT_COMMAND_NAME) {

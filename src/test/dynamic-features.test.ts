@@ -47,15 +47,17 @@ function runtime() {
   const run = vi.fn(async (_invocation: DynamicFeatureInvocation) => {})
   const syncCommands = vi.fn(async () => {})
   const cleanup = vi.fn()
+  const recover = vi.fn(async () => {})
   const manager = new DynamicDiscordFeatureManager({
     registry,
     subcommands,
     run,
     syncCommands,
-    cleanup
+    cleanup,
+    recover
   })
   manager.initialize()
-  return { registry, subcommands, fallback, run, syncCommands, cleanup, manager }
+  return { registry, subcommands, fallback, run, syncCommands, cleanup, recover, manager }
 }
 
 beforeEach(() => {
@@ -203,6 +205,27 @@ describe('dynamic Discord features', () => {
     )
   })
 
+  it('contains a dynamic /c runtime failure and delegates one recovery attempt', async () => {
+    const { manager, subcommands, run, recover } = runtime()
+    await manager.manage({
+      action: 'upsert',
+      id: 'fragile',
+      kind: 'command',
+      name: 'fragile',
+      description: 'a fragile command',
+      instructions: 'Complete the request safely.'
+    })
+    const failure = new Error('runtime failed')
+    run.mockRejectedValueOnce(failure)
+    const commandInteraction = { user: { id: '666666666666666666' } } as CommandInteraction
+
+    await expect(
+      subcommands.get('fragile')!.execute(commandInteraction, 'fragile input', new Map())
+    ).resolves.toBeUndefined()
+
+    expect(recover).toHaveBeenCalledWith(commandInteraction, failure, 'dynamic /c fragile input')
+  })
+
   it('rejects static command collisions and rolls back failed deployment', async () => {
     const { manager, subcommands, syncCommands } = runtime()
     await expect(
@@ -240,5 +263,25 @@ describe('dynamic Discord features', () => {
     const { manager } = runtime()
     expect(manager.list()).toEqual([])
     expect(getStoredValue(DISCORD_FEATURES_KEY)).toBe('{broken')
+  })
+
+  it('keeps removal successful while reporting cleanup work to the agent', async () => {
+    const { manager, cleanup } = runtime()
+    await manager.manage({
+      action: 'upsert',
+      id: 'cleanup-test',
+      kind: 'command',
+      name: 'cleanup-test',
+      description: 'test cleanup failures',
+      instructions: 'Return a test response.'
+    })
+    cleanup.mockImplementationOnce(() => {
+      throw new Error('session cleanup failed')
+    })
+
+    await expect(manager.manage({ action: 'remove', id: 'cleanup-test' })).resolves.toContain(
+      'Cleanup needs repair: cleanup-test: session cleanup failed'
+    )
+    expect(manager.list()).toEqual([])
   })
 })

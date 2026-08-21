@@ -12,6 +12,7 @@ import { isAdminUser } from './authorization.js'
 import { errorContainer } from './components.js'
 import type { DiscordFeatureRegistry } from './feature-registry.js'
 import type { Flags } from './flags.js'
+import { safeErrorMessage } from './safe-error.js'
 import {
   loadStoredDiscordFeatures,
   MAX_STORED_DISCORD_FEATURES,
@@ -39,6 +40,7 @@ interface DynamicDiscordFeatureRuntime {
   run: (invocation: DynamicFeatureInvocation) => Promise<void>
   syncCommands: (registry: DiscordFeatureRegistry) => Promise<void>
   cleanup?: (feature: StoredDiscordFeature) => void
+  recover?: (interaction: Interaction, error: unknown, source: string) => Promise<void>
 }
 
 export type DynamicFeatureManagementInput =
@@ -115,7 +117,11 @@ export class DynamicDiscordFeatureManager {
       this.#apply(loadStoredDiscordFeatures())
     } catch (error) {
       console.error('could not load dynamic Discord features', error)
-      this.#apply([])
+      try {
+        this.#apply([])
+      } catch (fallbackError) {
+        console.error('could not initialize empty dynamic Discord feature registry', fallbackError)
+      }
     }
   }
 
@@ -167,22 +173,45 @@ export class DynamicDiscordFeatureManager {
       deploymentAttempted = true
       await this.#runtime.syncCommands(this.#runtime.registry)
     } catch (error) {
-      this.#apply(previous)
-      storeDiscordFeatures(previous)
-      if (deploymentAttempted) {
-        await this.#runtime.syncCommands(this.#runtime.registry).catch(() => {})
+      const rollbackFailures: string[] = []
+      try {
+        this.#apply(previous)
+      } catch (rollbackError) {
+        rollbackFailures.push(`runtime rollback: ${safeErrorMessage(rollbackError)}`)
       }
-      throw error
+      try {
+        storeDiscordFeatures(previous)
+      } catch (rollbackError) {
+        rollbackFailures.push(`storage rollback: ${safeErrorMessage(rollbackError)}`)
+      }
+      if (deploymentAttempted) {
+        await this.#runtime.syncCommands(this.#runtime.registry).catch((rollbackError) => {
+          rollbackFailures.push(`Discord rollback: ${safeErrorMessage(rollbackError)}`)
+        })
+      }
+      throw new Error(
+        `${safeErrorMessage(error)}${rollbackFailures.length > 0 ? `; ${rollbackFailures.join('; ')}` : ''}`,
+        { cause: error }
+      )
     }
 
     const remainingIds = new Set(next.map(({ id }) => id))
+    const cleanupFailures: string[] = []
     for (const removed of previous.filter(({ id }) => !remainingIds.has(id))) {
-      this.#runtime.cleanup?.(removed)
+      try {
+        this.#runtime.cleanup?.(removed)
+      } catch (error) {
+        cleanupFailures.push(`${removed.id}: ${safeErrorMessage(error)}`)
+      }
     }
 
-    return input.action === 'remove'
-      ? `Removed Discord feature ${input.id}.`
-      : `${previous.some(({ id }) => id === input.id) ? 'Updated' : 'Created'} ${input.kind} Discord feature ${input.id} as ${input.kind === 'command' ? `/c ${input.name}` : input.name}.`
+    const result =
+      input.action === 'remove'
+        ? `Removed Discord feature ${input.id}.`
+        : `${previous.some(({ id }) => id === input.id) ? 'Updated' : 'Created'} ${input.kind} Discord feature ${input.id} as ${input.kind === 'command' ? `/c ${input.name}` : input.name}.`
+    return cleanupFailures.length > 0
+      ? `${result} Cleanup needs repair: ${cleanupFailures.join('; ')}.`
+      : result
   }
 
   #apply(features: StoredDiscordFeature[]): void {
@@ -220,12 +249,21 @@ export class DynamicDiscordFeatureManager {
         usage: `${feature.name} [arguments] [--pub]`,
         examples: [feature.name],
         execute: async (interaction: CommandInteraction, args: string, flags: Flags) => {
-          await this.#runtime.run({
-            feature,
-            interaction,
-            input: commandInvocation(args, flags),
-            pub: flags.has('pub')
-          })
+          try {
+            await this.#runtime.run({
+              feature,
+              interaction,
+              input: commandInvocation(args, flags),
+              pub: flags.has('pub')
+            })
+          } catch (error) {
+            if (!this.#runtime.recover) throw error
+            await this.#runtime.recover(
+              interaction,
+              error,
+              `dynamic /c ${args.slice(0, 500) || feature.name}`
+            )
+          }
         }
       }
       this.#runtime.subcommands.set(feature.name, subcommand)
@@ -260,6 +298,18 @@ export class DynamicDiscordFeatureManager {
           })
         } catch (error) {
           console.error(`dynamic Discord feature ${feature.id} failed`, error)
+          if (this.#runtime.recover) {
+            try {
+              await this.#runtime.recover(
+                repliable,
+                error,
+                `dynamic ${feature.kind} feature ${feature.name}`
+              )
+              return
+            } catch (recoveryError) {
+              console.error(`dynamic Discord feature ${feature.id} recovery failed`, recoveryError)
+            }
+          }
           const message = error instanceof Error ? error.message : String(error)
           const reply = errorContainer(feature.name, new Map(), message)
           if (repliable.deferred) {

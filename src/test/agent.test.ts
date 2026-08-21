@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { InteractionResponseType, MessageFlags, type RepliableInteraction } from 'discord.js'
+import {
+  InteractionResponseType,
+  MessageFlags,
+  type Interaction,
+  type RepliableInteraction
+} from 'discord.js'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
@@ -11,6 +16,7 @@ import {
   createWebSession,
   loadWebConversation,
   loadWebSessionState,
+  recoverInteractionWithAgent,
   runWebAgent,
   runDynamicAgentFeature,
   runWebComponentInteraction,
@@ -30,6 +36,7 @@ import {
   type DynamicDiscordFeatureManager,
   setDynamicDiscordFeatureManager
 } from '../dynamic-features.js'
+import { clearRuntimeIssuesForTests, reportRuntimeIssue } from '../runtime-health.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
@@ -469,11 +476,13 @@ beforeEach(() => {
   mcpToolNumber.value = 0
   modelMiddlewareHandlers.length = 0
   clearModelCache()
+  clearRuntimeIssuesForTests()
   clearStoredValues()
 })
 
 afterEach(async () => {
   setDynamicDiscordFeatureManager(undefined)
+  clearRuntimeIssuesForTests()
   await closeAgentMcpRuntime()
   delete process.env.OPENAI_API_KEY
   delete process.env.MAIL_API_KEY
@@ -588,6 +597,59 @@ describe('/a', () => {
     ).resolves.toContain('Created command Discord feature')
     expect(manage).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'upsert', id: 'summarize', kind: 'command' })
+    )
+
+    manage.mockRejectedValueOnce(
+      new Error('deploy https://discord.example/webhooks/123/secret-token?key=secret failed')
+    )
+    const failed = await managementTool.callback({ action: 'remove', id: 'summarize' })
+    expect(failed).toContain('failed safely and was rolled back')
+    expect(failed).toContain('Diagnose the cause')
+    expect(failed).not.toContain('secret-token')
+  })
+
+  it('tells the next agent run to repair safely redacted runtime failures', async () => {
+    reportRuntimeIssue(
+      'application_command_deployment',
+      new Error('failed https://discord.example/webhooks/123/secret-token?key=secret')
+    )
+
+    await dispatch(agentCommandJSON('check runtime health'), subs)
+
+    const systemPrompt = String(agentMock.mock.calls[0]?.[0].systemPrompt)
+    expect(systemPrompt).toContain('Runtime failures awaiting repair')
+    expect(systemPrompt).toContain('untrusted diagnostic data')
+    expect(systemPrompt).toContain('application_command_deployment')
+    expect(systemPrompt).not.toContain('secret-token')
+  })
+
+  it('contains failed automatic recovery and delivers a non-recursive fallback', async () => {
+    const editReply = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('recovery progress failed'))
+      .mockResolvedValueOnce({ id: 'fallback' })
+    const interaction = {
+      type: 2,
+      user: { id: '666666666666666666' },
+      commandName: 'broken',
+      deferred: true,
+      replied: false,
+      isAutocomplete: () => false,
+      isRepliable: () => true,
+      deferReply: vi.fn(),
+      editReply,
+      followUp: vi.fn(),
+      reply: vi.fn()
+    } as unknown as Interaction
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(
+      recoverInteractionWithAgent(interaction, new Error('original failure'), 'test handler')
+    ).resolves.toBeUndefined()
+
+    expect(editReply).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(editReply.mock.calls[1]?.[0])).toContain(
+      'automatic recovery was unavailable'
     )
   })
 
@@ -1072,36 +1134,53 @@ describe('/a', () => {
     expect(getStoredValue('gpt-session:default')).toContain('(no response)')
   })
 
-  it('does not retry malformed tool input JSON', async () => {
+  it('asks the agent to repair malformed tool input once', async () => {
     streamMock.mockReturnValueOnce(new Error('unable to parse tool input JSON'))
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(calls)).toContain('error: unable to parse tool input JSON')
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(streamMock.mock.calls[1]?.[0]).toContain('Make one bounded recovery attempt')
+    expect(streamMock.mock.calls[1]?.[0]).toContain('unable to parse tool input JSON')
+    expect(JSON.stringify(calls)).toContain('hello world')
   })
 
-  it('does not retry a general tool-use error', async () => {
+  it('asks the agent to repair a general tool-use error once', async () => {
     streamMock.mockReturnValueOnce(new Error('tool execution failed'))
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(calls)).toContain('error: tool execution failed')
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(streamMock.mock.calls[1]?.[0]).toContain('tool execution failed')
+    expect(JSON.stringify(calls)).toContain('hello world')
   })
 
-  it('does not retry an incomplete upstream stream after tool activity', async () => {
+  it('stops after one failed recovery attempt and renders a safe fallback', async () => {
+    streamMock
+      .mockReturnValueOnce(new Error('tool execution failed'))
+      .mockReturnValueOnce(new Error('repair also failed'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
+
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(calls)).toContain('error: repair also failed')
+  })
+
+  it('uses bounded recovery for an incomplete stream after tool activity', async () => {
     streamMock.mockReturnValueOnce('streamIncompleteAfterActivity')
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
-    expect(streamMock).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(calls)).toContain(
-      'error: 502 Upstream websocket closed before response.completed'
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(streamMock.mock.calls[1]?.[0]).toContain(
+      '502 Upstream websocket closed before response.completed'
     )
+    expect(JSON.stringify(calls)).toContain('hello world')
   })
 
   it('retries malformed response JSON with the original request, previous output, and error', async () => {
@@ -1134,7 +1213,7 @@ describe('/a', () => {
     expect(errorLog).toHaveBeenCalledWith('Agent response failed', expect.any(Error))
   })
 
-  it('retains compact tool counts if malformed tool input persists', async () => {
+  it('retains compact tool counts while recovering from tool input failure', async () => {
     streamMock.mockReturnValueOnce('throwAfterActivity')
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
@@ -1142,9 +1221,9 @@ describe('/a', () => {
     const rendered = JSON.stringify(finalEdit)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(rendered).toContain('error: unable to parse tool input JSON')
+    expect(rendered).toContain('hello world')
     expect(rendered).not.toContain('I should look this up.')
-    expect(rendered).toContain('(docker_listx1, web_searchx1)')
+    expect(rendered).toContain('(docker_listx2, web_searchx1)')
     expect(rendered).not.toContain(': error')
     expect(rendered).not.toContain('secret')
   })
@@ -1585,14 +1664,15 @@ describe('/a', () => {
     expect(tools).toHaveLength(16)
   })
 
-  it('does not retry a closed MCP connection', async () => {
+  it('asks the agent to recover a closed MCP connection once', async () => {
     streamMock.mockReturnValueOnce(new Error('MCP error -32000: Connection closed'))
 
     const calls = await dispatch(agentCommandJSON('list my containers'), subs)
 
     expect(agentMock).toHaveBeenCalledTimes(1)
-    expect(streamMock).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(calls)).toContain('error: MCP error -32000: Connection closed')
+    expect(streamMock).toHaveBeenCalledTimes(2)
+    expect(streamMock.mock.calls[1]?.[0]).toContain('MCP error -32000: Connection closed')
+    expect(JSON.stringify(calls)).toContain('hello world')
     expect(disconnectMock).not.toHaveBeenCalled()
   })
 

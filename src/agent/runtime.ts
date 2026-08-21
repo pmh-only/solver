@@ -19,6 +19,7 @@ export {
   isGptActionComponentId,
   isGptModalId,
   isGptSelectId,
+  recoverInteractionWithAgent,
   runDynamicAgentFeature
 } from './discord-runtime.js'
 export {

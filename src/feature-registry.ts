@@ -1,4 +1,5 @@
 import { ApplicationCommandType, type Interaction } from 'discord.js'
+import type { InteractionRecovery } from './types.js'
 
 export interface ApplicationCommandDefinition {
   name: string
@@ -49,10 +50,22 @@ export class DiscordFeatureRegistry {
     return this.#orderedFeatures().flatMap((feature) => [...feature.commands])
   }
 
-  createHandler(): (interaction: Interaction) => Promise<void> {
+  createHandler(recover?: InteractionRecovery): (interaction: Interaction) => Promise<void> {
     return async (interaction) => {
-      const feature = this.#orderedFeatures().find((candidate) => candidate.matches(interaction))
-      if (feature) await feature.handle(interaction)
+      let feature: DiscordFeature | undefined
+      try {
+        feature = this.#orderedFeatures().find((candidate) => candidate.matches(interaction))
+        if (feature) await feature.handle(interaction)
+      } catch (error) {
+        console.error(`Discord feature ${feature?.id ?? 'matcher'} failed`, error)
+        if (recover) {
+          await recover(interaction, error, feature?.id ?? 'feature matcher').catch(
+            (recoveryError) => {
+              console.error('Discord feature recovery failed', recoveryError)
+            }
+          )
+        }
+      }
     }
   }
 
