@@ -1,5 +1,8 @@
 import { ApplicationCommandType, SlashCommandBuilder } from 'discord.js'
-import type { ApplicationCommandDefinition } from './feature-registry.js'
+import {
+  restrictApplicationCommands,
+  type ApplicationCommandDefinition
+} from './feature-registry.js'
 import { USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
   MESSAGE_INTERACTION_JSON_COMMAND_NAME,
@@ -80,22 +83,26 @@ export const additionalApplicationCommands = [
   }
 ]
 
-export const applicationCommands = [...agentApplicationCommands, ...additionalApplicationCommands]
+export const applicationCommands = restrictApplicationCommands([
+  ...agentApplicationCommands,
+  ...additionalApplicationCommands
+])
 
 export function areApplicationCommandsCurrent(
-  existing: Array<{
+  existing: readonly {
     name: string
     type: number
     description?: string
-    options?: Array<{
+    default_member_permissions?: string | null
+    options?: readonly {
       name: string
       type: number
       description: string
       required?: boolean
       autocomplete?: boolean
       max_length?: number
-    }>
-  }>,
+    }[]
+  }[],
   desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
 ): boolean {
   if (existing.length !== desiredCommands.length) return false
@@ -108,6 +115,7 @@ export function areApplicationCommandsCurrent(
     if (!registered) return false
 
     const desired = command as typeof registered
+    if (registered.default_member_permissions !== desired.default_member_permissions) return false
     if (desired.description === undefined && desired.options === undefined) return true
 
     const registeredOptions = registered.options ?? []

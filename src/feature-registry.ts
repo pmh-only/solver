@@ -24,6 +24,12 @@ export interface DiscordFeature {
   handle: (interaction: Interaction) => Promise<void>
 }
 
+export function restrictApplicationCommands(
+  commands: readonly ApplicationCommandDefinition[]
+): ApplicationCommandDefinition[] {
+  return commands.map((command) => ({ ...command, default_member_permissions: '0' }))
+}
+
 export class DiscordFeatureRegistry {
   readonly #features = new Map<string, DiscordFeature>()
 
@@ -47,7 +53,9 @@ export class DiscordFeatureRegistry {
   }
 
   get commands(): ApplicationCommandDefinition[] {
-    return this.#orderedFeatures().flatMap((feature) => [...feature.commands])
+    return restrictApplicationCommands(
+      this.#orderedFeatures().flatMap((feature) => [...feature.commands])
+    )
   }
 
   createHandler(recover?: InteractionRecovery): (interaction: Interaction) => Promise<void> {

@@ -9,6 +9,7 @@ export interface RegisteredApplicationCommand {
   name: string
   type: number
   description?: string
+  default_member_permissions?: string | null
   options?: Array<{
     name: string
     type: number

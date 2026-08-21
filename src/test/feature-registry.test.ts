@@ -66,6 +66,7 @@ describe('Discord feature registry', () => {
 
     expect(registry.unregister('dynamic')).toBe(true)
     expect(registry.commands.map(({ name }) => name)).toEqual(['fallback'])
+    expect(registry.commands[0]?.default_member_permissions).toBe('0')
     await registry.createHandler()(interaction())
     expect(fallback.handle).toHaveBeenCalledOnce()
   })

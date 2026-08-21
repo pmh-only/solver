@@ -30,6 +30,10 @@ describe('interaction json commands', () => {
           command.type === ApplicationCommandType.Message
       )
     ).toBe(true)
+
+    expect(applicationCommands.every((command) => command.default_member_permissions === '0')).toBe(
+      true
+    )
   })
 
   it('redeploys when stale application commands need to be removed', () => {
@@ -63,6 +67,18 @@ describe('interaction json commands', () => {
 
     expect(areApplicationCommandsCurrent(legacyAgent)).toBe(false)
     expect(areApplicationCommandsCurrent(legacySolver)).toBe(false)
+  })
+
+  it('redeploys commands that are visible to ordinary guild members', () => {
+    const current = applicationCommands.map((command) => ({
+      ...command,
+      type: command.type ?? ApplicationCommandType.ChatInput
+    }))
+    const visible = current.map((command, index) =>
+      index === 0 ? { ...command, default_member_permissions: null } : command
+    )
+
+    expect(areApplicationCommandsCurrent(visible)).toBe(false)
   })
 
   it('renders full user interaction json', async () => {
