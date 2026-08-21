@@ -69,6 +69,8 @@ const {
   responsePayloads,
   streamRelease,
   responseIds,
+  subagentCancelMock,
+  subagentInvokeMock,
   streamMock,
   toolMock,
   toolRegistryAddMock,
@@ -92,6 +94,11 @@ const {
     modalActions: [] as Record<string, unknown>[],
     responsePayloads: [] as unknown[],
     responseIds: [] as string[],
+    subagentCancelMock: vi.fn(),
+    subagentInvokeMock: vi.fn(async (prompt: string, _options?: unknown) => ({
+      stopReason: 'endTurn',
+      toString: () => `finding: ${prompt}`
+    })),
     streamRelease: { resolve: undefined as (() => void) | undefined },
     streamMock: vi.fn(),
     toolMock: vi.fn((options) => options),
@@ -169,6 +176,7 @@ vi.mock('@strands-agents/sdk', () => ({
     addMiddleware = vi.fn((_stage: unknown, handler: (context: never) => Promise<unknown>) => {
       modelMiddlewareHandlers.push(handler)
     })
+    cancel = subagentCancelMock
 
     constructor(options: unknown) {
       agentMock(options)
@@ -197,6 +205,10 @@ vi.mock('@strands-agents/sdk', () => ({
 
     get tools() {
       return [...registeredAgentTools.values()]
+    }
+
+    invoke(prompt: string, options: unknown) {
+      return subagentInvokeMock(prompt, options)
     }
 
     private message(data: { role: 'user' | 'assistant'; content: Record<string, unknown>[] }) {
@@ -922,6 +934,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'manage_discord_features' }),
           expect.objectContaining({ name: 'manage_mcp_servers' }),
           expect.objectContaining({ name: 'load_mcp_tools' }),
+          expect.objectContaining({ name: 'delegate_tasks' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
           ...Array(7).fill(expect.anything())
         ]
@@ -968,6 +981,7 @@ describe('/a', () => {
             expect.objectContaining({ name: 'manage_discord_features' }),
             expect.objectContaining({ name: 'manage_mcp_servers' }),
             expect.objectContaining({ name: 'load_mcp_tools' }),
+            expect.objectContaining({ name: 'delegate_tasks' }),
             expect.objectContaining({ name: 'manage_response_modals' })
           ]
         })
@@ -988,6 +1002,46 @@ describe('/a', () => {
         false
       )
     }
+  })
+
+  it('delegates bounded independent tasks to fresh agent copies in parallel', async () => {
+    await dispatch(agentCommandJSON('handle a complex request'), subs)
+    const delegate = registeredAgentTools.get('delegate_tasks') as {
+      callback: (input: { tasks: Array<{ task: string }> }) => Promise<string>
+    }
+
+    const result = JSON.parse(
+      await delegate.callback({ tasks: [{ task: 'inspect API' }, { task: 'inspect tests' }] })
+    ) as Array<{ status: string; result: string }>
+
+    expect(subagentInvokeMock).toHaveBeenCalledTimes(2)
+    expect(subagentInvokeMock).toHaveBeenCalledWith(
+      'inspect API',
+      expect.objectContaining({
+        cancelSignal: expect.any(AbortSignal),
+        limits: { turns: 8, totalTokens: 4096 }
+      })
+    )
+    expect(subagentInvokeMock).toHaveBeenCalledWith('inspect tests', expect.anything())
+    expect(result).toEqual([
+      { task: 1, status: 'success', result: 'finding: inspect API' },
+      { task: 2, status: 'success', result: 'finding: inspect tests' }
+    ])
+
+    const childOptions = agentMock.mock.calls.slice(-2).map(([options]) => options)
+    expect(childOptions).toEqual(
+      Array(2).fill(
+        expect.objectContaining({
+          systemPrompt: expect.stringContaining('delegated copy of the primary agent'),
+          tools: expect.not.arrayContaining([expect.objectContaining({ name: 'delegate_tasks' })]),
+          toolExecutor: 'concurrent'
+        })
+      )
+    )
+    expect(String(childOptions[0].systemPrompt)).toContain('return concise plain-text findings')
+    expect(String(childOptions[0].systemPrompt)).not.toContain(
+      'Return the complete user-visible Discord message'
+    )
   })
 
   it('lets the agent discover and load selected MCP tools on demand', async () => {
@@ -1492,7 +1546,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(17).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1512,7 +1566,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(17).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1526,7 +1580,7 @@ describe('/a', () => {
 
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
       })
     )
     expect(JSON.stringify(calls)).toContain('hello world')
@@ -1680,7 +1734,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'docker_get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'docker_get-current-time' }))
-    expect(tools).toHaveLength(16)
+    expect(tools).toHaveLength(17)
   })
 
   it('asks the agent to recover a closed MCP connection once', async () => {
