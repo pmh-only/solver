@@ -6,7 +6,7 @@ import {
   replaceApplicationCommands,
   type RegisteredApplicationCommand
 } from './application-command-deployment.js'
-import { createHandler } from './handler.js'
+import { createFeatureRegistry } from './features.js'
 import { subcommand as ping } from './commands/ping.js'
 import { subcommand as whois } from './commands/whois.js'
 import { subcommand as dig } from './commands/dig.js'
@@ -82,19 +82,21 @@ for (const sub of [...commands, createPubtabSubcommand(commands)]) {
   subcommands.set(sub.name, sub)
 }
 
+const featureRegistry = createFeatureRegistry(subcommands)
+
 async function ensureDeployed(clientId: string, token: string) {
   const rest = new REST().setToken(token)
   const existing = (await rest.get(
     Routes.applicationCommands(clientId)
   )) as RegisteredApplicationCommand[]
 
-  if (areApplicationCommandsCurrent(existing)) {
+  if (areApplicationCommandsCurrent(existing, featureRegistry.commands)) {
     console.log('skip')
     return
   }
 
   console.log('deploying...')
-  await replaceApplicationCommands(rest, clientId, existing)
+  await replaceApplicationCommands(rest, clientId, existing, featureRegistry.commands)
   console.log('done')
 }
 
@@ -120,7 +122,7 @@ client.once(Events.ClientReady, async (c) => {
   }
 })
 
-client.on(Events.InteractionCreate, createHandler(subcommands))
+client.on(Events.InteractionCreate, featureRegistry.createHandler())
 
 const webServer = await startWebServer()
 const address = webServer.address()

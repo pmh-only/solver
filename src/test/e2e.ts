@@ -30,7 +30,7 @@ import {
   EDIT_PARAMETERS_MODAL_ID,
   RETRY_BUTTON_ID
 } from '../components.js'
-import { createHandler } from '../handler.js'
+import { createFeatureRegistry } from '../features.js'
 import type { Subcommand } from '../types.js'
 
 export interface RestCall {
@@ -655,7 +655,7 @@ export async function dispatch(
   options: DispatchOptions = {}
 ): Promise<RestCall[]> {
   const { client, calls } = makeClient(options)
-  const handler = createHandler(subcommands)
+  const handler = createFeatureRegistry(subcommands).createHandler()
   const interaction = buildInteraction(client, raw)
   await handler(interaction)
   return calls

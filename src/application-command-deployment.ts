@@ -1,5 +1,6 @@
 import { REST, Routes } from 'discord.js'
 import { applicationCommands } from './application-commands.js'
+import type { ApplicationCommandDefinition } from './feature-registry.js'
 
 const PRIMARY_ENTRY_POINT_COMMAND_TYPE = 4
 
@@ -19,10 +20,11 @@ export interface RegisteredApplicationCommand {
 }
 
 export function staleEntryPointCommands(
-  existing: RegisteredApplicationCommand[]
+  existing: RegisteredApplicationCommand[],
+  desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
 ): RegisteredApplicationCommand[] {
   const desired = new Set(
-    applicationCommands.map((command) => `${command.type ?? 1}:${command.name}`)
+    desiredCommands.map((command) => `${command.type ?? 1}:${command.name}`)
   )
   return existing.filter(
     (command) =>
@@ -34,13 +36,14 @@ export function staleEntryPointCommands(
 export async function replaceApplicationCommands(
   rest: Pick<REST, 'delete' | 'put'>,
   clientId: string,
-  existing: RegisteredApplicationCommand[]
+  existing: RegisteredApplicationCommand[],
+  desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
 ): Promise<unknown> {
-  for (const command of staleEntryPointCommands(existing)) {
+  for (const command of staleEntryPointCommands(existing, desiredCommands)) {
     await rest.delete(Routes.applicationCommand(clientId, command.id))
   }
 
   return rest.put(Routes.applicationCommands(clientId), {
-    body: applicationCommands
+    body: desiredCommands
   })
 }

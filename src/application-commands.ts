@@ -1,4 +1,5 @@
 import { ApplicationCommandType, SlashCommandBuilder } from 'discord.js'
+import type { ApplicationCommandDefinition } from './feature-registry.js'
 import { USER_IMAGES_COMMAND_NAME } from './commands/user-images.js'
 import {
   MESSAGE_INTERACTION_JSON_COMMAND_NAME,
@@ -21,14 +22,17 @@ export const solverCommand = new SlashCommandBuilder()
     option.setName('_').setDescription('sub').setRequired(true).setAutocomplete(true)
   )
 
-export const applicationCommands = [
-  {
-    ...solverCommand.toJSON(),
-    integration_types: [0, 1],
-    contexts: [0, 1, 2]
-  },
+export const agentApplicationCommands = [
   {
     ...agentCommand.toJSON(),
+    integration_types: [0, 1],
+    contexts: [0, 1, 2]
+  }
+]
+
+export const additionalApplicationCommands = [
+  {
+    ...solverCommand.toJSON(),
     integration_types: [0, 1],
     contexts: [0, 1, 2]
   },
@@ -76,6 +80,11 @@ export const applicationCommands = [
   }
 ]
 
+export const applicationCommands = [
+  ...agentApplicationCommands,
+  ...additionalApplicationCommands
+]
+
 export function areApplicationCommandsCurrent(
   existing: Array<{
     name: string
@@ -89,20 +98,21 @@ export function areApplicationCommandsCurrent(
       autocomplete?: boolean
       max_length?: number
     }>
-  }>
+  }>,
+  desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
 ): boolean {
-  if (existing.length !== applicationCommands.length) return false
+  if (existing.length !== desiredCommands.length) return false
 
-  return applicationCommands.every((command) => {
+  return desiredCommands.every((command) => {
     const type = command.type ?? ApplicationCommandType.ChatInput
     const registered = existing.find(
       (candidate) => candidate.name === command.name && candidate.type === type
     )
     if (!registered) return false
 
-    if (command.name !== 'a' && command.name !== 'c') return true
-
     const desired = command as typeof registered
+    if (desired.description === undefined && desired.options === undefined) return true
+
     const registeredOptions = registered.options ?? []
     const desiredOptions = desired.options ?? []
     return (
