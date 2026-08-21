@@ -9,6 +9,7 @@ export {
 export { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './mcp-runtime.js'
 export { loadAgentSessionNames } from './session-store.js'
 export {
+  deleteDynamicAgentFeatureSessions,
   handleAgentCommand,
   handleGptActionComponent,
   handleGptEffortSelect,
@@ -17,7 +18,8 @@ export {
   handleGptVerbositySelect,
   isGptActionComponentId,
   isGptModalId,
-  isGptSelectId
+  isGptSelectId,
+  runDynamicAgentFeature
 } from './discord-runtime.js'
 export {
   cancelWebAgent,

@@ -23,9 +23,7 @@ export function staleEntryPointCommands(
   existing: RegisteredApplicationCommand[],
   desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
 ): RegisteredApplicationCommand[] {
-  const desired = new Set(
-    desiredCommands.map((command) => `${command.type ?? 1}:${command.name}`)
-  )
+  const desired = new Set(desiredCommands.map((command) => `${command.type ?? 1}:${command.name}`))
   return existing.filter(
     (command) =>
       command.type === PRIMARY_ENTRY_POINT_COMMAND_TYPE &&

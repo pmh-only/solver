@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { InteractionResponseType, MessageFlags } from 'discord.js'
+import { InteractionResponseType, MessageFlags, type RepliableInteraction } from 'discord.js'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { agentCommand } from '../application-commands.js'
@@ -12,6 +12,7 @@ import {
   loadWebConversation,
   loadWebSessionState,
   runWebAgent,
+  runDynamicAgentFeature,
   runWebComponentInteraction,
   runWebInteraction
 } from '../agent/index.js'
@@ -25,6 +26,10 @@ import { getAgentMemoryPath } from '../helpers/agent-memory-path.js'
 import { clearModelCache } from '../model-catalog.js'
 import { updateOpenAIToken } from '../openai-config.js'
 import { updateSystemPrompt } from '../system-prompt.js'
+import {
+  type DynamicDiscordFeatureManager,
+  setDynamicDiscordFeatureManager
+} from '../dynamic-features.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
@@ -468,6 +473,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  setDynamicDiscordFeatureManager(undefined)
   await closeAgentMcpRuntime()
   delete process.env.OPENAI_API_KEY
   delete process.env.MAIL_API_KEY
@@ -525,6 +531,64 @@ describe('/a', () => {
       max_value: 16384
     })
     expect(command.options?.[6]).toMatchObject({ name: 'tools', required: false })
+  })
+
+  it('runs dynamic feature instructions as ephemeral agent requests', async () => {
+    const deferReply = vi.fn(async () => {})
+    const editReply = vi.fn(async () => ({ id: 'dynamic-response' }))
+    const followUp = vi.fn(async () => ({}))
+    const interaction = {
+      user: { id: '666666666666666666' },
+      deferReply,
+      editReply,
+      followUp
+    } as unknown as RepliableInteraction
+
+    await runDynamicAgentFeature(
+      interaction,
+      {
+        id: 'summarize',
+        kind: 'command',
+        name: 'summarize',
+        description: 'summarize text',
+        instructions: 'Return exactly three concise bullets.'
+      },
+      '{"type":"command","arguments":"report"}',
+      false
+    )
+
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral })
+    expect(streamMock).toHaveBeenCalledWith(
+      '{"type":"command","arguments":"report"}',
+      expect.objectContaining({ cancelSignal: expect.any(AbortSignal) })
+    )
+    expect(agentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('Return exactly three concise bullets.'),
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: 'manage_discord_features' })
+        ])
+      })
+    )
+
+    const manage = vi.fn(async () => 'Created command Discord feature summarize as /c summarize.')
+    setDynamicDiscordFeatureManager({ manage } as unknown as DynamicDiscordFeatureManager)
+    const managementTool = registeredAgentTools.get('manage_discord_features') as {
+      callback: (input: Record<string, unknown>) => Promise<string>
+    }
+    await expect(
+      managementTool.callback({
+        action: 'upsert',
+        id: 'summarize',
+        kind: 'command',
+        name: 'summarize',
+        description: 'summarize text',
+        instructions: 'Return exactly three concise bullets.'
+      })
+    ).resolves.toContain('Created command Discord feature')
+    expect(manage).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'upsert', id: 'summarize', kind: 'command' })
+    )
   })
 
   it('downloads a safely named photo and passes its bytes to the agent', async () => {
@@ -774,6 +838,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'publish_html' }),
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
+          expect.objectContaining({ name: 'manage_discord_features' }),
           expect.objectContaining({ name: 'manage_mcp_servers' }),
           expect.objectContaining({ name: 'load_mcp_tools' }),
           expect.objectContaining({ name: 'manage_response_modals' }),
@@ -819,6 +884,7 @@ describe('/a', () => {
             expect.objectContaining({ name: 'publish_html' }),
             expect.objectContaining({ name: 'spotify_authenticate' }),
             expect.objectContaining({ name: 'google_calendar_authenticate' }),
+            expect.objectContaining({ name: 'manage_discord_features' }),
             expect.objectContaining({ name: 'manage_mcp_servers' }),
             expect.objectContaining({ name: 'load_mcp_tools' }),
             expect.objectContaining({ name: 'manage_response_modals' })
@@ -1328,7 +1394,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1348,7 +1414,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1362,7 +1428,7 @@ describe('/a', () => {
 
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(14).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(15).fill(expect.anything())]
       })
     )
     expect(JSON.stringify(calls)).toContain('hello world')
@@ -1516,7 +1582,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'docker_get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'docker_get-current-time' }))
-    expect(tools).toHaveLength(15)
+    expect(tools).toHaveLength(16)
   })
 
   it('does not retry a closed MCP connection', async () => {

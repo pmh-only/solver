@@ -80,10 +80,7 @@ export const additionalApplicationCommands = [
   }
 ]
 
-export const applicationCommands = [
-  ...agentApplicationCommands,
-  ...additionalApplicationCommands
-]
+export const applicationCommands = [...agentApplicationCommands, ...additionalApplicationCommands]
 
 export function areApplicationCommandsCurrent(
   existing: Array<{

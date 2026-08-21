@@ -34,6 +34,7 @@ import {
   loadSpotifyConfiguration
 } from '../spotify-auth.js'
 import type { EffortLevel } from './config.js'
+import { manageDynamicDiscordFeatures } from '../dynamic-features.js'
 
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
@@ -178,13 +179,47 @@ const googleCalendarAuthenticationTool = tool({
   }
 })
 
+const discordFeatureManagementTool = tool({
+  name: 'manage_discord_features',
+  description:
+    'List, create, update, or remove persistent Discord features. A command feature becomes /c <name>. User and message features become context-menu commands and trigger immediate Discord command redeployment. Features execute the agent with their configured instructions and the invocation payload. Use a stable lowercase id; upsert replaces the feature with that id.',
+  inputSchema: z.object({
+    action: z.enum(['list', 'upsert', 'remove']),
+    id: mcpServerNameSchema.optional().describe('Stable lowercase feature id'),
+    kind: z.enum(['command', 'user', 'message']).optional(),
+    name: z.string().optional().describe('/c token or context-menu command name'),
+    description: z.string().optional().describe('Short feature description'),
+    instructions: z
+      .string()
+      .optional()
+      .describe('Complete persistent instructions governing feature behavior')
+  }),
+  callback: async ({ action, id, kind, name, description, instructions }) => {
+    if (action === 'list') return manageDynamicDiscordFeatures({ action })
+    if (!id) return 'id is required.'
+    if (action === 'remove') return manageDynamicDiscordFeatures({ action, id })
+    if (!kind || !name || !description || !instructions) {
+      return 'kind, name, description, and instructions are required when upserting a feature.'
+    }
+    return manageDynamicDiscordFeatures({
+      action,
+      id,
+      kind,
+      name,
+      description,
+      instructions
+    })
+  }
+})
+
 export function createAgentUtilityTools(signal: AbortSignal): Tool[] {
   return [
     shellTool(signal),
     waitTool(signal),
     publishHtmlTool,
     spotifyAuthenticationTool,
-    googleCalendarAuthenticationTool
+    googleCalendarAuthenticationTool,
+    discordFeatureManagementTool
   ]
 }
 

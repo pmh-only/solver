@@ -61,6 +61,7 @@ export interface GptContext {
   effort: EffortLevel
   maxTokens: number
   toolsEnabled: boolean
+  systemInstructions?: string
   verbosity: VerbosityLevel
   userId: string
   sessionName: string

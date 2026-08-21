@@ -7,6 +7,7 @@ import {
   type ChatInputCommandInteraction,
   type MessageComponentInteraction,
   type ModalSubmitInteraction,
+  type RepliableInteraction,
   type StringSelectMenuInteraction
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
@@ -49,9 +50,9 @@ import {
 import {
   beginSessionCommand,
   clearConversation,
+  deleteInternalAgentSession,
   finishSessionCommand,
   loadContextConversation,
-  loadConversation,
   loadSelectedSession,
   loadSessionSettings,
   registerAgentSession,
@@ -61,6 +62,7 @@ import {
   storeSessionSettings
 } from './session-store.js'
 import { runGptStream } from './stream-runner.js'
+import type { StoredDiscordFeature } from '../helpers/discord-feature-store.js'
 
 type SelectKey = 'model' | 'effort' | 'verbosity'
 
@@ -354,7 +356,6 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     return
   }
 
-  loadConversation(interaction.user.id, sessionName)
   const storedSettings = loadSessionSettings(interaction.user.id, sessionName)
   const requestedModel = interaction.options.getString('model')
   const requestedEffort = interaction.options.getString('effort') as EffortLevel | null
@@ -396,18 +397,76 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
 
+  const aborted = await runDiscordAgentContext(interaction, ctx, token, startedAt, timing)
+  if (timing && !aborted) {
+    timing.mark('agent request complete')
+    await sendDiscordTiming(interaction, timing)
+  }
+}
+
+export async function runDynamicAgentFeature(
+  interaction: RepliableInteraction,
+  feature: StoredDiscordFeature,
+  input: string,
+  pub: boolean
+): Promise<void> {
+  const sessionName = `__feature:${feature.id}:${interaction.user.id}`
+  const settings = loadSessionSettings(interaction.user.id, sessionName)
+  const token = randomUUID().replace(/-/g, '').slice(0, 16)
+  const ctx: GptContext = {
+    prompt: input,
+    displayPrompt: feature.kind === 'command' ? `/c ${feature.name}` : feature.name,
+    input: [],
+    pub,
+    model: settings.model,
+    effort: settings.effort,
+    maxTokens: settings.maxTokens,
+    toolsEnabled: true,
+    systemInstructions: feature.instructions,
+    verbosity: 'normal',
+    userId: interaction.user.id,
+    sessionName,
+    history: [],
+    modelHistory: [],
+    components: [],
+    senderOnlyComponentIds: [],
+    modals: {},
+    expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
+  }
+
+  await runDiscordAgentContext(interaction, ctx, token, Date.now(), undefined, true)
+}
+
+export function deleteDynamicAgentFeatureSessions(
+  featureId: string,
+  userIds: Iterable<string>
+): void {
+  for (const userId of userIds) {
+    deleteInternalAgentSession(`__feature:${featureId}:${userId}`)
+  }
+}
+
+async function runDiscordAgentContext(
+  interaction: RepliableInteraction,
+  ctx: GptContext,
+  token: string,
+  startedAt: number,
+  timing?: RequestTiming,
+  resetConversation = false
+): Promise<boolean> {
   let phaseStarted = performance.now()
-  await interaction.deferReply()
+  if (ctx.pub) await interaction.deferReply()
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral })
   timing?.span('Discord acknowledgement', phaseStarted)
   phaseStarted = performance.now()
   await interaction.editReply(buildAgentProgressPayload(ctx))
   timing?.span('initial Discord response', phaseStarted)
 
-  const callbacks = makeCallbacks(interaction, pub)
-  const key = sessionKey(sessionName)
+  const callbacks = makeCallbacks(interaction, ctx.pub)
+  const key = sessionKey(ctx.sessionName)
   cancelActiveSession(key)
   const active: ActiveDiscordRun = {
-    prompt,
+    prompt: ctx.prompt,
     startedAt: new Date().toISOString(),
     controller: new AbortController(),
     latestPayload: buildAgentProgressPayload(ctx),
@@ -416,7 +475,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   activeDiscordRuns.set(key, active)
   try {
     const queueStarted = performance.now()
-    await runInSession(interaction.user.id, sessionName, async () => {
+    await runInSession(ctx.userId, ctx.sessionName, async () => {
       timing?.span('session queue wait', queueStarted)
       const sharedCallbacks: StreamCallbacks = {
         editMain: callbacks.editMain,
@@ -428,7 +487,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
           active.persisted = true
         }
       }
-      beginSessionCommand(interaction.user.id, sessionName)
+      beginSessionCommand(ctx.userId, ctx.sessionName)
       try {
         if (active.controller.signal.aborted) {
           await callbacks.editPayload(
@@ -437,6 +496,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
           return
         }
         const loadStarted = performance.now()
+        if (resetConversation) clearConversation(ctx.sessionName)
         loadContextConversation(ctx)
         timing?.span('conversation load', loadStarted)
         storeGptContext(token, ctx)
@@ -447,15 +507,11 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
         } else {
           storeGptContext(token, ctx)
         }
-        finishSessionCommand(interaction.user.id, sessionName)
+        finishSessionCommand(ctx.userId, ctx.sessionName)
       }
     })
   } finally {
     if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
-  }
-  if (timing && !active.controller.signal.aborted) {
-    timing.mark('agent request complete')
-    await sendDiscordTiming(interaction, timing)
   }
   if (!active.controller.signal.aborted && Date.now() - startedAt >= SLOW_RESPONSE_MS) {
     await interaction.followUp({
@@ -463,6 +519,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
       allowedMentions: { parse: [] }
     })
   }
+  return active.controller.signal.aborted
 }
 
 async function sendDiscordTiming(

@@ -1,5 +1,10 @@
 import type { MessageData } from '@strands-agents/sdk'
-import { getStoredValue, listStoredKeys, setStoredValue } from '../helpers/kv-store.js'
+import {
+  deleteStoredValue,
+  getStoredValue,
+  listStoredKeys,
+  setStoredValue
+} from '../helpers/kv-store.js'
 import { loadOpenAIEndpoint } from '../openai-config.js'
 import { AGENT_EFFORT_OPTIONS } from './config.js'
 import { activeDiscordRuns, activeWebRuns, sessionQueues } from './runtime-state.js'
@@ -97,7 +102,7 @@ export function loadAgentSessionNames(userId: string): string[] {
     if (!key.startsWith(prefix)) continue
     try {
       const name = decodeURIComponent(key.slice(prefix.length))
-      if (name.trim() && name.length <= 100) sessions.add(name)
+      if (name.trim() && name.length <= 100 && !name.startsWith('__feature:')) sessions.add(name)
     } catch {
       // Ignore malformed legacy keys.
     }
@@ -120,6 +125,13 @@ export function registerAgentSession(userId: string, sessionName: string): void 
 
 function settingsKey(sessionName: string): string {
   return `${GPT_SETTINGS_KEY}:${encodeURIComponent(sessionName)}`
+}
+
+export function deleteInternalAgentSession(sessionName: string): void {
+  if (!sessionName.startsWith('__feature:')) throw new Error('not an internal feature session')
+  deleteStoredValue(sessionKey(sessionName))
+  deleteStoredValue(sessionActivityKey(sessionName))
+  deleteStoredValue(settingsKey(sessionName))
 }
 
 export function loadSessionSettings(userId: string, sessionName: string): GptSessionSettings {

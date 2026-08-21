@@ -1,8 +1,5 @@
 import { Collection, type Interaction } from 'discord.js'
-import {
-  additionalApplicationCommands,
-  agentApplicationCommands
-} from './application-commands.js'
+import { additionalApplicationCommands, agentApplicationCommands } from './application-commands.js'
 import { matchesInteractiveId } from './components.js'
 import {
   AGENT_COMMAND_NAME,
@@ -37,7 +34,9 @@ function isAgentInteraction(interaction: Interaction): boolean {
   )
 }
 
-export function createAgentFeature(handler: (interaction: Interaction) => Promise<void>): DiscordFeature {
+export function createAgentFeature(
+  handler: (interaction: Interaction) => Promise<void>
+): DiscordFeature {
   return {
     id: 'agent',
     priority: CORE_FEATURE_PRIORITY,

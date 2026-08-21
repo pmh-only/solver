@@ -40,7 +40,16 @@ import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
 import { restoreStoredEnvironment } from './helpers/environment-store.js'
-import { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './agent/index.js'
+import {
+  closeAgentMcpRuntime,
+  deleteDynamicAgentFeatureSessions,
+  initializeAgentMcpRuntime,
+  runDynamicAgentFeature
+} from './agent/index.js'
+import {
+  DynamicDiscordFeatureManager,
+  setDynamicDiscordFeatureManager
+} from './dynamic-features.js'
 
 restoreStoredEnvironment()
 
@@ -84,11 +93,12 @@ for (const sub of [...commands, createPubtabSubcommand(commands)]) {
 
 const featureRegistry = createFeatureRegistry(subcommands)
 
-async function ensureDeployed(clientId: string, token: string) {
-  const rest = new REST().setToken(token)
-  const existing = (await rest.get(
-    Routes.applicationCommands(clientId)
-  )) as RegisteredApplicationCommand[]
+async function loadRegisteredCommands(rest: REST, clientId: string) {
+  return (await rest.get(Routes.applicationCommands(clientId))) as RegisteredApplicationCommand[]
+}
+
+async function ensureDeployed(rest: REST, clientId: string) {
+  const existing = await loadRegisteredCommands(rest, clientId)
 
   if (areApplicationCommandsCurrent(existing, featureRegistry.commands)) {
     console.log('skip')
@@ -105,9 +115,28 @@ const clientId = process.env.DISCORD_CLIENT_ID
 
 if (!token) throw new Error('no token')
 if (!clientId) throw new Error('no client id')
-requireAdminUserIds()
+const configuredAdminUserIds = requireAdminUserIds()
 
-await Promise.all([ensureDeployed(clientId, token), initializeAgentMcpRuntime()])
+const rest = new REST().setToken(token)
+const dynamicFeatureManager = new DynamicDiscordFeatureManager({
+  registry: featureRegistry,
+  subcommands,
+  run: ({ interaction, feature, input, pub }) =>
+    runDynamicAgentFeature(interaction, feature, input, pub),
+  cleanup: (feature) => deleteDynamicAgentFeatureSessions(feature.id, configuredAdminUserIds),
+  syncCommands: async (registry) => {
+    await replaceApplicationCommands(
+      rest,
+      clientId,
+      await loadRegisteredCommands(rest, clientId),
+      registry.commands
+    )
+  }
+})
+dynamicFeatureManager.initialize()
+setDynamicDiscordFeatureManager(dynamicFeatureManager)
+
+await Promise.all([ensureDeployed(rest, clientId), initializeAgentMcpRuntime()])
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
