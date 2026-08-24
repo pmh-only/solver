@@ -325,7 +325,7 @@ describe('lyrics command', () => {
     const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
+    expect(JSON.stringify(updated)).toContain('offsets: Discord 0s / Spotify +1s')
     expect(JSON.stringify(updated)).toContain('## __After one__')
   })
 
@@ -341,7 +341,7 @@ describe('lyrics command', () => {
     )
     const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
-    expect(JSON.stringify(positive)).toContain('lyrics offset: +0.5s')
+    expect(JSON.stringify(positive)).toContain('Spotify +0.5s')
     expect(JSON.stringify(positive)).toContain('## __After__ one')
 
     await clearLyricsSessions()
@@ -358,7 +358,7 @@ describe('lyrics command', () => {
     )
     const negative = negativeCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
-    expect(JSON.stringify(negative)).toContain('lyrics offset: -0.5s')
+    expect(JSON.stringify(negative)).toContain('Spotify -0.5s')
     expect(JSON.stringify(negative)).toContain('## __Current__ line')
   })
 
@@ -390,7 +390,7 @@ describe('lyrics command', () => {
     const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(JSON.stringify(updated)).toContain('lyrics offset: +0.5s')
+    expect(JSON.stringify(updated)).toContain('Spotify +0.5s')
   })
 
   it('restores a song timing adjustment in a later live session', async () => {
@@ -409,7 +409,7 @@ describe('lyrics command', () => {
     const laterCalls = await startCommand()
     const later = JSON.stringify(getEdit(laterCalls))
 
-    expect(later).toContain('lyrics offset: +0.5s')
+    expect(later).toContain('Spotify +0.5s')
     expect(later).toContain('## __After__ one')
   })
 
@@ -488,6 +488,7 @@ describe('lyrics presentation', () => {
       currentIndex: currentSyncedLineIndex(lines, 62_500),
       progressMs: 62_500,
       spotifyProgressMs: 62_500,
+      discordOffsetMs: 250,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'
@@ -501,6 +502,7 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('## __Current line__')
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('After two')
+    expect(rendered).toContain('offsets: Discord +0.25s / Spotify 0s')
   })
 
   it('renders only Japanese lyrics in Japanese display mode', () => {
@@ -514,6 +516,7 @@ describe('lyrics presentation', () => {
       currentIndex: 0,
       progressMs: 0,
       spotifyProgressMs: 0,
+      discordOffsetMs: 0,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'
@@ -542,6 +545,7 @@ describe('lyrics presentation', () => {
       currentIndex: 0,
       progressMs: 0,
       spotifyProgressMs: 0,
+      discordOffsetMs: 0,
       offsetMs: 0,
       stopped: false,
       displayMode: 'korean-pronunciation'
@@ -569,6 +573,7 @@ describe('lyrics presentation', () => {
       currentIndex: 0,
       progressMs: 0,
       spotifyProgressMs: 0,
+      discordOffsetMs: 0,
       offsetMs: 0,
       stopped: false,
       displayMode: 'korean-pronunciation'
@@ -593,6 +598,7 @@ describe('lyrics presentation', () => {
       currentIndex: 0,
       progressMs: 0,
       spotifyProgressMs: 0,
+      discordOffsetMs: 0,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'

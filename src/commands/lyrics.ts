@@ -132,7 +132,9 @@ function formatClock(milliseconds: number): string {
 
 function formatOffset(milliseconds: number): string {
   const seconds = milliseconds / 1_000
-  const value = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)
+  const value = Number.isInteger(seconds)
+    ? String(seconds)
+    : seconds.toFixed(3).replace(/0+$/, '')
   return `${seconds > 0 ? '+' : ''}${value}s`
 }
 
@@ -140,7 +142,7 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
   if (!view.track) {
     return summarySection('Live lyrics', [
       '-# Spotify playback: inactive',
-      `-# lyrics offset: ${formatOffset(view.offsetMs)}`,
+      `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
       '-# timing: checked every 5 seconds',
       '-# source: LRCLIB'
     ])
@@ -157,7 +159,7 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
       `-# artist: ${inlineText(view.track.artists)}`,
       `-# album: ${inlineText(view.track.album)}`,
       `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.spotifyProgressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`,
-      `-# lyrics offset: ${formatOffset(view.offsetMs)}`,
+      `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
       '-# timing: local transitions; Spotify correction every 5 seconds',
       ...(pronunciationSource
         ? [

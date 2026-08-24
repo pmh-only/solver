@@ -240,7 +240,7 @@ describe('live lyrics scheduling', () => {
   it('starts Discord edits early by the measured render latency', async () => {
     const currentTrack = track()
     const state = stateFor(currentTrack, '[00:00.00] A\n[00:02.00] B')
-    const rendered: Array<{ at: number; index: number }> = []
+    const rendered: Array<{ at: number; index: number; discordOffsetMs: number }> = []
     const session = new LiveLyricsSession({
       token: '0000000000000014',
       ownerId: 'owner',
@@ -249,7 +249,11 @@ describe('live lyrics scheduling', () => {
       renderedView: initialView(state),
       initialRenderLatencyMs: 200,
       render: async (view) => {
-        rendered.push({ at: Date.now(), index: view.currentIndex })
+        rendered.push({
+          at: Date.now(),
+          index: view.currentIndex,
+          discordOffsetMs: view.discordOffsetMs
+        })
       },
       onClose: () => undefined,
       dependencies: {
@@ -262,7 +266,7 @@ describe('live lyrics scheduling', () => {
     await vi.advanceTimersByTimeAsync(1_824)
     expect(rendered).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
-    expect(rendered).toEqual([{ at: 1_825, index: 1 }])
+    expect(rendered).toEqual([{ at: 1_825, index: 1, discordOffsetMs: 200 }])
     await session.stop('test complete', false)
   })
 

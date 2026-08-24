@@ -46,6 +46,7 @@ export interface LiveLyricsView extends LiveLyricsState {
   currentIndex: number
   progressMs: number
   spotifyProgressMs: number
+  discordOffsetMs: number
   offsetMs: number
   stopped: boolean
   displayMode: LyricsDisplayMode
@@ -439,7 +440,8 @@ export function liveLyricsView(
   now = Date.now(),
   stopped = false,
   offsetMs = 0,
-  displayMode: LyricsDisplayMode = 'japanese'
+  displayMode: LyricsDisplayMode = 'japanese',
+  discordOffsetMs = 0
 ): LiveLyricsView {
   const durationMs = (state.track?.durationSeconds ?? 0) * 1_000
   const elapsed = state.track?.isPlaying && !stopped ? Math.max(0, now - state.anchorTimeMs) : 0
@@ -450,6 +452,7 @@ export function liveLyricsView(
     currentIndex: state.mode === 'lyrics' ? currentSyncedLineIndex(state.lines, progressMs) : -1,
     progressMs,
     spotifyProgressMs,
+    discordOffsetMs: normalizedRenderLatency(discordOffsetMs),
     offsetMs,
     stopped,
     displayMode
@@ -505,7 +508,14 @@ export class LiveLyricsSession {
   }
 
   view(now = this.dependencies.now()): LiveLyricsView {
-    return liveLyricsView(this.state, now, !this.active, this.offsetMs, this.displayMode)
+    return liveLyricsView(
+      this.state,
+      now,
+      !this.active,
+      this.offsetMs,
+      this.displayMode,
+      this.renderLatencyMs
+    )
   }
 
   private viewForRender(now = this.dependencies.now()): LiveLyricsView {
