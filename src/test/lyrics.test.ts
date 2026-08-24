@@ -156,15 +156,19 @@ describe('lyrics command', () => {
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-one$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-half$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-half$`)),
-      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-one$`)),
-      expect.stringMatching(new RegExp(`^${LYRICS_STOP_BUTTON_ID}:[a-f0-9]{16}$`))
+      expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-one$`))
     ])
+    expect(
+      edit.components.map((component) => (component as { type?: number }).type)
+    ).toEqual([17, 17, 17, 1])
     expect(rendered).toContain('"label":"-1s"')
     expect(rendered).toContain('"label":"-0.5s"')
     expect(rendered).toContain('"label":"+0.5s"')
     expect(rendered).toContain('"label":"+1s"')
     expect(rendered).not.toContain('"label":"Japanese"')
     expect(rendered).not.toContain('"label":"Korean pronunciation"')
+    expect(rendered).not.toContain('"label":"Stop"')
+    expect(rendered).toContain('render interval: 0.401s')
   })
 
   it('switches between Japanese and Korean pronunciation display modes', async () => {
@@ -267,6 +271,7 @@ describe('lyrics command', () => {
       })
     )
     expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('Live lyrics: Test Song')
+    expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('render interval: 1s')
     client.destroy()
   })
 
@@ -282,6 +287,7 @@ describe('lyrics command', () => {
 
     const published = publicMessageBody(calls)
     expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
+    expect(JSON.stringify(published)).toContain('render interval: 1s')
     expect(JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)).toContain(
       'Continued in a bot message after 10 minutes.'
     )
@@ -422,44 +428,6 @@ describe('lyrics command', () => {
     expect(later).toContain('## __After__ one')
   })
 
-  it('stops the session when its owner presses Stop', async () => {
-    const startCalls = await startCommand()
-    const edit = getEdit(startCalls) as { components: unknown[] }
-    const stopCalls = await dispatch(
-      buttonJSON(edit.components, LYRICS_STOP_BUTTON_ID, {}, MessageFlags.IsComponentsV2),
-      subs
-    )
-    const callback = getCallback(stopCalls) as { type: number }
-    const stopped = JSON.stringify(getEdit(stopCalls))
-
-    expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(stopped).toContain('Live session stopped')
-    expect(stopped).toContain('Stopped by requester')
-  })
-
-  it('does not let another user stop a public session', async () => {
-    const startCalls = await startCommand('lyrics --pub')
-    const edit = getEdit(startCalls) as { components: unknown[] }
-    const stopCalls = await dispatch(
-      buttonJSON(edit.components, LYRICS_STOP_BUTTON_ID, {
-        user: {
-          id: '777777777777777777',
-          username: 'other',
-          discriminator: '0',
-          avatar: null,
-          global_name: 'Other User'
-        }
-      }),
-      subs
-    )
-    const callback = getCallback(stopCalls) as { data: { flags: number } }
-
-    expect(callback.data.flags & MessageFlags.Ephemeral).toBeTruthy()
-    expect(JSON.stringify(callback)).toContain(
-      'Only the user who started this session can control it'
-    )
-  })
-
   it('reports an expired Stop button without throwing', async () => {
     const calls = await dispatch(buttonJSON([], `${LYRICS_STOP_BUTTON_ID}:0000000000000000`), subs)
     const callback = getCallback(calls) as { data: { flags: number } }
@@ -488,7 +456,7 @@ describe('lyrics presentation', () => {
   function lyricWindowContent(view: LiveLyricsView): string {
     const component = formatLiveLyrics(view)[2]
     if (!component || typeof component === 'string') throw new Error('missing lyric window')
-    return (component.toJSON() as { content: string }).content
+    return (component.toJSON() as { content: string }).content.replace(/^## Lyrics\n/, '')
   }
 
   it('renders a five-line synchronized window around the current line', () => {
@@ -505,6 +473,7 @@ describe('lyrics presentation', () => {
       progressMs: 62_500,
       spotifyProgressMs: 62_500,
       discordOffsetMs: 250,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'
@@ -537,6 +506,7 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       discordOffsetMs: 0,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'
@@ -583,6 +553,7 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       discordOffsetMs: 0,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'
@@ -612,6 +583,7 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       discordOffsetMs: 0,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'korean-pronunciation'
@@ -640,6 +612,7 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       discordOffsetMs: 0,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'korean-pronunciation'
@@ -665,6 +638,7 @@ describe('lyrics presentation', () => {
       progressMs: 0,
       spotifyProgressMs: 0,
       discordOffsetMs: 0,
+      renderIntervalMs: 401,
       offsetMs: 0,
       stopped: false,
       displayMode: 'japanese'

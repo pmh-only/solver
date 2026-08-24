@@ -50,6 +50,7 @@ export interface LiveLyricsView extends LiveLyricsState {
   progressMs: number
   spotifyProgressMs: number
   discordOffsetMs: number
+  renderIntervalMs: number
   offsetMs: number
   stopped: boolean
   displayMode: LyricsDisplayMode
@@ -64,6 +65,7 @@ export interface LyricsSessionDependencies {
   loadOffset: (trackId: string) => number
   saveOffset: (trackId: string, offsetMs: number) => void
   automaticEditDelay: (lastEditAt: number, now: number) => number
+  renderInterval: () => number
 }
 
 export interface LiveLyricsSessionOptions {
@@ -214,7 +216,8 @@ const defaultDependencies: LyricsSessionDependencies = {
   loadOffset: loadLyricsOffset,
   saveOffset: saveLyricsOffset,
   automaticEditDelay: (lastEditAt, now) =>
-    Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
+    Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now),
+  renderInterval: () => MIN_LYRICS_EDIT_INTERVAL_MS
 }
 
 function fractionMilliseconds(value: string | undefined): number {
@@ -455,7 +458,8 @@ export function liveLyricsView(
   stopped = false,
   offsetMs = 0,
   displayMode: LyricsDisplayMode = 'japanese',
-  discordOffsetMs = 0
+  discordOffsetMs = 0,
+  renderIntervalMs = MIN_LYRICS_EDIT_INTERVAL_MS
 ): LiveLyricsView {
   const durationMs = (state.track?.durationSeconds ?? 0) * 1_000
   const elapsed = state.track?.isPlaying && !stopped ? Math.max(0, now - state.anchorTimeMs) : 0
@@ -467,6 +471,7 @@ export function liveLyricsView(
     progressMs,
     spotifyProgressMs,
     discordOffsetMs: normalizedRenderLatency(discordOffsetMs),
+    renderIntervalMs: Math.max(0, Math.trunc(renderIntervalMs)),
     offsetMs,
     stopped,
     displayMode
@@ -532,7 +537,8 @@ export class LiveLyricsSession {
       !this.active,
       this.offsetMs,
       this.displayMode,
-      this.renderLatencyMs
+      this.renderLatencyMs,
+      this.dependencies.renderInterval()
     )
   }
 

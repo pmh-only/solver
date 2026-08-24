@@ -2,9 +2,12 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   MessageFlags,
   RESTEvents,
   Routes,
+  SectionBuilder,
+  TextDisplayBuilder,
   type APIRequest,
   type ButtonInteraction,
   type Client,
@@ -23,7 +26,6 @@ import {
   deferCommandResponse,
   errorContainer,
   sendCommandReply,
-  separator,
   summarySection,
   text,
   type TopLevelComponent
@@ -33,6 +35,7 @@ import {
   LyricsEditRateLimit,
   MAX_LYRICS_OFFSET_MS,
   MESSAGE_LYRICS_EDIT_INTERVAL_MS,
+  MIN_LYRICS_EDIT_INTERVAL_MS,
   PUBLIC_LYRICS_SESSION_MS,
   currentSyncedWordCount,
   displayedLyricText,
@@ -144,14 +147,14 @@ function formatOffset(milliseconds: number): string {
   return `${seconds > 0 ? '+' : ''}${value}s`
 }
 
-function trackHeader(view: LiveLyricsView): TopLevelComponent {
+function formatPeriod(milliseconds: number): string {
+  const seconds = milliseconds / 1_000
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(3).replace(/0+$/, '')}s`
+}
+
+function trackMetadata(view: LiveLyricsView): TopLevelComponent {
   if (!view.track) {
-    return summarySection('Live lyrics', [
-      '-# Spotify playback: inactive',
-      `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
-      '-# timing: checked every 5 seconds',
-      `-# source: ${view.lyricsSource ?? 'LRCLIB'}`
-    ])
+    return summarySection('Live lyrics', [`-# source: ${view.lyricsSource ?? 'pending'}`])
   }
 
   const pronunciationSource =
@@ -164,9 +167,6 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
     [
       `-# artist: ${inlineText(view.track.artists)}`,
       `-# album: ${inlineText(view.track.album)}`,
-      `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.spotifyProgressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`,
-      `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
-      '-# timing: local transitions; Spotify correction every 5 seconds',
       ...(pronunciationSource
         ? [
             `-# pronunciation: [Vocaloid Lyrics Wiki](${pronunciationSource}); [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)`
@@ -178,8 +178,20 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
   )
 }
 
-export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
-  const header = trackHeader(view)
+function timingMetrics(view: LiveLyricsView): TopLevelComponent {
+  return summarySection('Metrics', [
+    view.track
+      ? `-# playback: ${view.track.isPlaying ? 'playing' : 'paused'} at ${formatClock(view.spotifyProgressMs)} / ${formatClock(view.track.durationSeconds * 1_000)}`
+      : '-# Spotify playback: inactive',
+    `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
+    `-# render interval: ${formatPeriod(view.renderIntervalMs)}`,
+    view.track
+      ? '-# synchronization: local transitions; Spotify correction every 5 seconds'
+      : '-# synchronization: checked every 5 seconds'
+  ])
+}
+
+function lyricsContent(view: LiveLyricsView): TopLevelComponent[] {
   if (view.mode !== 'lyrics') {
     const title =
       view.mode === 'idle'
@@ -189,7 +201,7 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
           : view.mode === 'error'
             ? 'Temporary error'
             : 'Synchronized lyrics unavailable'
-    return [header, separator(), text(`**${title}**\n-# ${inlineText(view.detail)}`)]
+    return [text(`## Lyrics\n**${title}**\n-# ${inlineText(view.detail)}`)]
   }
 
   const window = syncedLyricsWindow(view.lines, view.currentIndex, LYRICS_WINDOW_RADIUS)
@@ -235,15 +247,24 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
   }
 
   return [
-    header,
-    separator(),
-    text(renderedLines.join('\n')),
+    text(`## Lyrics\n${renderedLines.join('\n')}`),
     text(
       view.currentIndex >= 0
         ? `-# line ${view.currentIndex + 1} of ${view.lines.length}`
         : `-# ${view.lines.length} synchronized lines loaded`
     )
   ]
+}
+
+export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
+  return [trackMetadata(view), timingMetrics(view), ...lyricsContent(view)]
+}
+
+function componentCard(component: TopLevelComponent): ContainerBuilder {
+  const card = new ContainerBuilder()
+  if (component instanceof SectionBuilder) return card.addSectionComponents(component)
+  if (component instanceof TextDisplayBuilder) return card.addTextDisplayComponents(component)
+  throw new Error('unsupported lyrics card component')
 }
 
 function controlButtons(view: LiveLyricsView, token: string) {
@@ -267,12 +288,7 @@ function controlButtons(view: LiveLyricsView, token: string) {
       .setCustomId(`${LYRICS_OFFSET_BUTTON_ID}:${token}:plus-one`)
       .setLabel('+1s')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(view.stopped || view.offsetMs >= MAX_LYRICS_OFFSET_MS),
-    new ButtonBuilder()
-      .setCustomId(`${LYRICS_STOP_BUTTON_ID}:${token}`)
-      .setLabel(view.stopped ? 'Stopped' : 'Stop')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(view.stopped)
+      .setDisabled(view.stopped || view.offsetMs >= MAX_LYRICS_OFFSET_MS)
   )
 }
 
@@ -295,12 +311,19 @@ function displayModeButtons(view: LiveLyricsView, token: string) {
 }
 
 function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flags: Flags) {
-  const base = commandContainer(subcommand, args, flags, ...formatLiveLyrics(view))
+  const formatted = formatLiveLyrics(view)
+  const base = commandContainer(subcommand, args, flags, ...formatted.slice(2))
   const displayModes = view.lines.some((line) => line.pronunciation)
     ? [displayModeButtons(view, token)]
     : []
   return {
-    components: [base.components[0]!, ...displayModes, controlButtons(view, token)],
+    components: [
+      componentCard(formatted[0]!),
+      componentCard(formatted[1]!),
+      base.components[0]!,
+      ...displayModes,
+      controlButtons(view, token)
+    ],
     files: base.files,
     flags: base.flags
   }
@@ -320,6 +343,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
   const initialState = await loadInitialLiveLyricsState()
   const initialOffsetMs = initialState.track ? loadLyricsOffset(initialState.track.id) : 0
   const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
+  initialView.renderIntervalMs = MESSAGE_LYRICS_EDIT_INTERVAL_MS
   const flags: Flags = new Map([['pub', true]])
   const rateLimit = new LyricsEditRateLimit()
   const removeRateLimitObserver = observeLyricsEditRateLimit(
@@ -360,7 +384,8 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     render,
     dependencies: {
       automaticEditDelay: (lastEditAt, now) =>
-        rateLimit.nextDelay(lastEditAt, now, MESSAGE_LYRICS_EDIT_INTERVAL_MS)
+        rateLimit.nextDelay(lastEditAt, now, MESSAGE_LYRICS_EDIT_INTERVAL_MS),
+      renderInterval: () => MESSAGE_LYRICS_EDIT_INTERVAL_MS
     },
     onClose: () => {
       removeRateLimitObserver()
@@ -528,7 +553,9 @@ export const subcommand: Subcommand = {
             lastEditAt,
             now,
             messageMode ? MESSAGE_LYRICS_EDIT_INTERVAL_MS : undefined
-          )
+          ),
+        renderInterval: () =>
+          messageMode ? MESSAGE_LYRICS_EDIT_INTERVAL_MS : MIN_LYRICS_EDIT_INTERVAL_MS
       },
       onClose: () => {
         if (migrationTimer) clearTimeout(migrationTimer)
@@ -543,7 +570,12 @@ export const subcommand: Subcommand = {
       migrationTimer = setTimeout(() => {
         migrationTimer = null
         void session.migrateToPublic(async (view) => {
-          const reply = liveLyricsReply(view, token, args, flags)
+          const reply = liveLyricsReply(
+            { ...view, renderIntervalMs: MESSAGE_LYRICS_EDIT_INTERVAL_MS },
+            token,
+            args,
+            flags
+          )
           const created = (await interaction.client.rest.post(
             Routes.channelMessages(publicChannelId),
             {
