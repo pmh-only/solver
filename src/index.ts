@@ -36,7 +36,6 @@ import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
 import { subcommand as gohome } from './commands/gohome.js'
 import { restoreLyricsSession, subcommand as lyrics } from './commands/lyrics.js'
-import { subcommand as ratelimitTest } from './commands/ratelimit-test.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
@@ -83,7 +82,6 @@ const commands = [
   chess,
   gohome,
   lyrics,
-  ratelimitTest,
   coin,
   dice,
   rps,
