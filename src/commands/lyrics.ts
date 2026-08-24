@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { isAdminUser } from '../authorization.js'
 import type { Flags } from '../flags.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { interactionOriginalMessageRoute } from '../helpers/interaction-routes.js'
 import type { Subcommand } from '../types.js'
 import {
   commandContainer,
@@ -500,7 +501,7 @@ export const subcommand: Subcommand = {
     const editPath =
       durablePublic && publicChannelId
         ? Routes.channelMessage(publicChannelId, messageId)
-        : Routes.webhookMessage(interaction.applicationId, interaction.token)
+        : interactionOriginalMessageRoute(interaction.applicationId, interaction.token)
     const removeRateLimitObserver = observeLyricsEditRateLimit(
       interaction.client,
       editPath,

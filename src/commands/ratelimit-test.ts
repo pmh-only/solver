@@ -1,5 +1,6 @@
 import { MessageFlags, RESTEvents, Routes, type APIRequest, type ResponseLike } from 'discord.js'
 import { commandReferenceReply, sendCommandReply, text } from '../components.js'
+import { interactionOriginalMessageRoute } from '../helpers/interaction-routes.js'
 import type { Subcommand } from '../types.js'
 
 interface RateLimitSample {
@@ -61,7 +62,10 @@ export const subcommand: Subcommand = {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
-    const originalPath = Routes.webhookMessage(interaction.applicationId, interaction.token)
+    const originalPath = interactionOriginalMessageRoute(
+      interaction.applicationId,
+      interaction.token
+    )
     const samples: RateLimitSample[] = []
     let expectedPath: string = originalPath
     let pendingLabel: string | null = null

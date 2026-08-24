@@ -2,10 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { formatRateLimitSamples, subcommand as ratelimitTest } from '../commands/ratelimit-test.js'
 import { commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
+import { interactionOriginalMessageRoute } from '../helpers/interaction-routes.js'
 
 const subs = makeSubcommands(ratelimitTest)
 
 describe('rate-limit diagnostic command', () => {
+  it('matches Discord.js encoded original-response edit paths', () => {
+    expect(interactionOriginalMessageRoute('application', 'token')).toBe(
+      '/webhooks/application/token/messages/%40original'
+    )
+  })
+
   it('runs privately and cleans up its temporary follow-up', async () => {
     const calls = await dispatch(commandJSON('ratelimit-test'), subs, {
       postResult: (route) =>
