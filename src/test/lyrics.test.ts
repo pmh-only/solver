@@ -8,7 +8,6 @@ import {
   type SpotifyCurrentTrack
 } from '../commands/_lyrics.js'
 import {
-  LYRICS_DISPLAY_BUTTON_ID,
   LYRICS_OFFSET_BUTTON_ID,
   LYRICS_SESSION_KEY,
   LYRICS_STOP_BUTTON_ID,
@@ -154,10 +153,6 @@ describe('lyrics command', () => {
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
     expect(collectCustomIds(edit.components)).toEqual([
-      expect.stringMatching(new RegExp(`^${LYRICS_DISPLAY_BUTTON_ID}:[a-f0-9]{16}:japanese$`)),
-      expect.stringMatching(
-        new RegExp(`^${LYRICS_DISPLAY_BUTTON_ID}:[a-f0-9]{16}:korean-pronunciation$`)
-      ),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-one$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-half$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-half$`)),
@@ -168,8 +163,8 @@ describe('lyrics command', () => {
     expect(rendered).toContain('"label":"-0.5s"')
     expect(rendered).toContain('"label":"+0.5s"')
     expect(rendered).toContain('"label":"+1s"')
-    expect(rendered).toContain('"label":"Japanese"')
-    expect(rendered).toContain('"label":"Korean pronunciation"')
+    expect(rendered).not.toContain('"label":"Japanese"')
+    expect(rendered).not.toContain('"label":"Korean pronunciation"')
   })
 
   it('switches between Japanese and Korean pronunciation display modes', async () => {
@@ -199,6 +194,8 @@ describe('lyrics command', () => {
 
     expect(JSON.stringify(initial)).toContain('## __君の名は__')
     expect(JSON.stringify(initial)).not.toContain('키미노나와')
+    expect(JSON.stringify(initial)).toContain('"label":"Japanese"')
+    expect(JSON.stringify(initial)).toContain('"label":"Korean pronunciation"')
 
     const modeCalls = await dispatch(
       buttonJSON(initial.components, koreanModeId, {}, MessageFlags.IsComponentsV2),

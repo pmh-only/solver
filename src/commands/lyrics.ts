@@ -278,8 +278,11 @@ function displayModeButtons(view: LiveLyricsView, token: string) {
 
 function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flags: Flags) {
   const base = commandContainer(subcommand, args, flags, ...formatLiveLyrics(view))
+  const displayModes = view.lines.some((line) => line.pronunciation)
+    ? [displayModeButtons(view, token)]
+    : []
   return {
-    components: [base.components[0]!, displayModeButtons(view, token), controlButtons(view, token)],
+    components: [base.components[0]!, ...displayModes, controlButtons(view, token)],
     files: base.files,
     flags: base.flags
   }
