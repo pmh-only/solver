@@ -149,7 +149,7 @@ describe('lyrics command', () => {
     expect(rendered).toContain('Live lyrics: Test Song')
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('Before one')
-    expect(rendered).toContain('## *Current line*')
+    expect(rendered).toContain('## __Current line__')
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
     expect(collectCustomIds(edit.components)).toEqual([
@@ -196,7 +196,7 @@ describe('lyrics command', () => {
       customId.endsWith(':korean-pronunciation')
     )!
 
-    expect(JSON.stringify(initial)).toContain('## *君の名は*')
+    expect(JSON.stringify(initial)).toContain('## __君の名は__')
     expect(JSON.stringify(initial)).not.toContain('키미노나와')
 
     const modeCalls = await dispatch(
@@ -207,7 +207,7 @@ describe('lyrics command', () => {
     const korean = JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(korean).toContain('## *키미노나와*')
+    expect(korean).toContain('## __키미노나와__')
     expect(korean).not.toContain('## 君の名は')
 
     const koreanEdit = calls.filter(({ method }) => method === 'PATCH').at(-1)?.body as {
@@ -222,7 +222,7 @@ describe('lyrics command', () => {
     )
     const japanese = JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)
 
-    expect(japanese).toContain('## *君の名は*')
+    expect(japanese).toContain('## __君の名は__')
     expect(japanese).not.toContain('## 키미노나와')
   })
 
@@ -332,7 +332,7 @@ describe('lyrics command', () => {
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
     expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
-    expect(JSON.stringify(updated)).toContain('## *After one*')
+    expect(JSON.stringify(updated)).toContain('## __After one__')
   })
 
   it('supports positive and negative half-second lyric adjustments', async () => {
@@ -348,7 +348,7 @@ describe('lyrics command', () => {
     const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(JSON.stringify(positive)).toContain('lyrics offset: +0.5s')
-    expect(JSON.stringify(positive)).toContain('## *After* one')
+    expect(JSON.stringify(positive)).toContain('## __After__ one')
 
     await clearLyricsSessions()
     deleteStoredValue(LYRICS_OFFSETS_KEY)
@@ -365,7 +365,7 @@ describe('lyrics command', () => {
     const negative = negativeCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(JSON.stringify(negative)).toContain('lyrics offset: -0.5s')
-    expect(JSON.stringify(negative)).toContain('## *Current* line')
+    expect(JSON.stringify(negative)).toContain('## __Current__ line')
   })
 
   it("allows an administrator to adjust another user's lyric timing", async () => {
@@ -416,7 +416,7 @@ describe('lyrics command', () => {
     const later = JSON.stringify(getEdit(laterCalls))
 
     expect(later).toContain('lyrics offset: +0.5s')
-    expect(later).toContain('## *After* one')
+    expect(later).toContain('## __After__ one')
   })
 
   it('stops the session when its owner presses Stop', async () => {
@@ -504,7 +504,7 @@ describe('lyrics presentation', () => {
       )
     )
 
-    expect(rendered).toContain('## *Current line*')
+    expect(rendered).toContain('## __Current line__')
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('After two')
   })
@@ -530,7 +530,7 @@ describe('lyrics presentation', () => {
       )
     )
 
-    expect(rendered).toContain('## *君の名は*')
+    expect(rendered).toContain('## __君の名は__')
     expect(rendered).not.toContain('키미노나와')
   })
 
@@ -560,7 +560,7 @@ describe('lyrics presentation', () => {
 
     expect(rendered).toContain(`[Vocaloid Lyrics Wiki](${sourceUrl})`)
     expect(rendered).toContain('CC BY-SA 4.0')
-    expect(rendered).toContain('## *키미노나와*')
+    expect(rendered).toContain('## __키미노나와__')
     expect(rendered).not.toContain('## 君の名は')
   })
 
@@ -585,7 +585,7 @@ describe('lyrics presentation', () => {
       )
     )
 
-    expect(rendered).toContain('## *키미노나와* / Never mind')
+    expect(rendered).toContain('## __키미노나와__ / Never mind')
   })
 
   it('separates lines merged into a synchronized block with slashes', () => {
@@ -609,7 +609,7 @@ describe('lyrics presentation', () => {
       )
     )
 
-    expect(rendered).toContain('## *First* / Second')
+    expect(rendered).toContain('## __First__ / Second')
     expect(rendered).not.toContain('## First\\n## Second')
   })
 })

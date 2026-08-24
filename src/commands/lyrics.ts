@@ -201,10 +201,10 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
       view.displayMode
     )
     const words = [...content.matchAll(/\S+/g)].filter(([word]) => word !== '/')
-    const italicEnd = words[Math.max(0, expectedWords - 1)]
-    if (!italicEnd || italicEnd.index === undefined) return `## ${content}`
-    const end = italicEnd.index + italicEnd[0].length
-    return `## *${content.slice(0, end)}*${content.slice(end)}`
+    const underlineEnd = words[Math.max(0, expectedWords - 1)]
+    if (!underlineEnd || underlineEnd.index === undefined) return `## ${content}`
+    const end = underlineEnd.index + underlineEnd[0].length
+    return `## __${content.slice(0, end)}__${content.slice(end)}`
   })
   if (view.currentIndex < 0) {
     renderedLines.unshift('**Waiting for the first synchronized line**')
