@@ -2,8 +2,12 @@ import type { JSONValue } from '@strands-agents/sdk'
 import { callAgentMcpTool } from '../agent/mcp-runtime.js'
 
 const LRCLIB_ORIGIN = 'https://lrclib.net'
+const SYNCLRC_ORIGIN = 'https://api.synclrc.dev'
+const LRCAPI_ORIGIN = 'https://api.lrc.cx'
 const REQUEST_TIMEOUT_MS = 10_000
 const MAX_RESPONSE_BYTES = 512 * 1024
+
+export type LyricsSource = 'LRCLIB' | 'SyncLRC' | 'LrcApi'
 
 export interface SpotifyCurrentTrack {
   id: string
@@ -25,6 +29,7 @@ export interface LrcLibTrack {
   instrumental: boolean
   plainLyrics: string | null
   syncedLyrics: string | null
+  source?: LyricsSource
 }
 
 export interface CurrentTrackLyrics {
@@ -116,12 +121,12 @@ export function parseSpotifyCurrentTrack(value: JSONValue): SpotifyCurrentTrack 
   }
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+async function readBoundedBytes(response: Response, provider: LyricsSource): Promise<Uint8Array> {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-    throw new Error('LRCLIB returned too much data')
+    throw new Error(`${provider} returned too much data`)
   }
-  if (!response.body) throw new Error('LRCLIB returned an empty response')
+  if (!response.body) throw new Error(`${provider} returned an empty response`)
 
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
@@ -131,7 +136,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       const { done, value } = await reader.read()
       if (done) break
       size += value.byteLength
-      if (size > MAX_RESPONSE_BYTES) throw new Error('LRCLIB returned too much data')
+      if (size > MAX_RESPONSE_BYTES) throw new Error(`${provider} returned too much data`)
       chunks.push(value)
     }
   } catch (error) {
@@ -146,11 +151,20 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     offset += chunk.byteLength
   }
 
+  return bytes
+}
+
+async function readBoundedJson(response: Response, provider: LyricsSource): Promise<unknown> {
+  const bytes = await readBoundedBytes(response, provider)
   try {
     return JSON.parse(new TextDecoder().decode(bytes))
   } catch {
-    throw new Error('LRCLIB returned invalid JSON')
+    throw new Error(`${provider} returned invalid JSON`)
   }
+}
+
+async function readBoundedText(response: Response, provider: LyricsSource): Promise<string> {
+  return new TextDecoder().decode(await readBoundedBytes(response, provider))
 }
 
 function nullableString(value: unknown): string | null | undefined {
@@ -224,7 +238,7 @@ async function lrclibRequest(url: URL): Promise<{ status: number; data?: unknown
   })
   if (response.status === 404) return { status: response.status }
   if (!response.ok) throw new Error(`LRCLIB request failed (${response.status})`)
-  return { status: response.status, data: await readBoundedJson(response) }
+  return { status: response.status, data: await readBoundedJson(response, 'LRCLIB') }
 }
 
 async function findLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrack | null> {
@@ -257,6 +271,73 @@ async function findLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrack | nul
   return (
     matches.sort((left, right) => matchScore(right, track) - matchScore(left, track))[0] ?? null
   )
+}
+
+function fallbackMatch(
+  track: SpotifyCurrentTrack,
+  syncedLyrics: string | null,
+  source: Exclude<LyricsSource, 'LRCLIB'>,
+  instrumental = false
+): LrcLibTrack {
+  return {
+    id: 0,
+    trackName: track.name,
+    artistName: track.artists,
+    albumName: track.album,
+    duration: track.durationSeconds,
+    instrumental,
+    plainLyrics: syncedLyrics ? plainFromSynced(syncedLyrics) : null,
+    syncedLyrics,
+    source
+  }
+}
+
+async function findSyncLrcLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrack | null> {
+  const url = new URL('/lyrics', SYNCLRC_ORIGIN)
+  url.searchParams.set('track', track.name)
+  url.searchParams.set('artist', track.artists)
+  url.searchParams.set('album', track.album)
+  url.searchParams.set('duration', String(track.durationSeconds))
+  url.searchParams.set('type', 'synced')
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'User-Agent': 'solver/1.0.0' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`SyncLRC request failed (${response.status})`)
+
+  const data = await readBoundedJson(response, 'SyncLRC')
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('SyncLRC returned invalid lyrics data')
+  }
+  const record = data as Record<string, unknown>
+  if (record.instrumental === true) return fallbackMatch(track, null, 'SyncLRC', true)
+  const syncedLyrics = typeof record.lyrics === 'string' ? record.lyrics.trim() : ''
+  if (!syncedLyrics || !/^\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]/m.test(syncedLyrics)) {
+    throw new Error('SyncLRC returned invalid synchronized lyrics')
+  }
+  return fallbackMatch(track, syncedLyrics, 'SyncLRC')
+}
+
+async function findLrcApiLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrack | null> {
+  const url = new URL('/lyrics', LRCAPI_ORIGIN)
+  url.searchParams.set('title', track.name)
+  url.searchParams.set('artist', track.artists)
+  url.searchParams.set('album', track.album)
+  const response = await fetch(url, {
+    headers: { Accept: 'text/plain', 'User-Agent': 'solver/1.0.0' },
+    redirect: 'error',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`LrcApi request failed (${response.status})`)
+
+  const syncedLyrics = (await readBoundedText(response, 'LrcApi')).trim()
+  if (!/^\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]/m.test(syncedLyrics)) {
+    throw new Error('LrcApi returned invalid synchronized lyrics')
+  }
+  return fallbackMatch(track, syncedLyrics, 'LrcApi')
 }
 
 function plainFromSynced(value: string): string {
@@ -292,7 +373,30 @@ async function getCurrentTrack(): Promise<SpotifyCurrentTrack> {
 }
 
 async function getLyricsForTrack(track: SpotifyCurrentTrack): Promise<CurrentTrackLyrics> {
-  const match = await findLyrics(track)
+  let primaryError: unknown
+  let match: LrcLibTrack | null = null
+  try {
+    match = await findLyrics(track)
+    if (match) match.source = 'LRCLIB'
+  } catch (error) {
+    primaryError = error
+  }
+
+  if (!match?.instrumental && !match?.syncedLyrics?.trim()) {
+    for (const fallback of [findSyncLrcLyrics, findLrcApiLyrics]) {
+      try {
+        const fallbackMatch = await fallback(track)
+        if (fallbackMatch) {
+          match = fallbackMatch
+          break
+        }
+      } catch {
+        // Continue through independent providers before surfacing the primary failure.
+      }
+    }
+  }
+
+  if (!match && primaryError) throw primaryError
   if (!match) {
     return { track, match: null, lyrics: null, synchronized: false }
   }

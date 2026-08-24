@@ -2,6 +2,7 @@ import {
   lyricsClient,
   NoSpotifyPlaybackError,
   type CurrentTrackLyrics,
+  type LyricsSource,
   type SpotifyCurrentTrack
 } from './_lyrics.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
@@ -41,6 +42,7 @@ export interface LiveLyricsState {
   detail: string
   anchorProgressMs: number
   anchorTimeMs: number
+  lyricsSource?: LyricsSource
 }
 
 export interface LiveLyricsView extends LiveLyricsState {
@@ -367,7 +369,8 @@ async function stateFromLyrics(result: CurrentTrackLyrics, now: number): Promise
   const base = {
     track: result.track,
     anchorProgressMs: progressAnchor(result.track),
-    anchorTimeMs: now
+    anchorTimeMs: now,
+    lyricsSource: result.match?.source ?? (result.match ? 'LRCLIB' : undefined)
   }
   if (result.match?.instrumental) {
     return { ...base, mode: 'unavailable', lines: [], detail: 'Instrumental track' }

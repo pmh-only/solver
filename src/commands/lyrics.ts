@@ -147,7 +147,7 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
       '-# Spotify playback: inactive',
       `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
       '-# timing: checked every 5 seconds',
-      '-# source: LRCLIB'
+      `-# source: ${view.lyricsSource ?? 'LRCLIB'}`
     ])
   }
 
@@ -169,7 +169,7 @@ function trackHeader(view: LiveLyricsView): TopLevelComponent {
             `-# pronunciation: [Vocaloid Lyrics Wiki](${pronunciationSource}); [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)`
           ]
         : []),
-      '-# source: LRCLIB'
+      `-# source: ${view.lyricsSource ?? 'LRCLIB'}`
     ],
     { label: 'Open in Spotify', url: `https://open.spotify.com/track/${view.track.id}` }
   )

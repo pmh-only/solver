@@ -494,6 +494,7 @@ describe('lyrics presentation', () => {
       detail: '',
       anchorProgressMs: 62_500,
       anchorTimeMs: 0,
+      lyricsSource: 'SyncLRC',
       currentIndex: currentSyncedLineIndex(lines, 62_500),
       progressMs: 62_500,
       spotifyProgressMs: 62_500,
@@ -512,6 +513,7 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('After two')
     expect(rendered).toContain('offsets: Discord +0.25s / Spotify 0s')
+    expect(rendered).toContain('source: SyncLRC')
   })
 
   it('renders only Japanese lyrics in Japanese display mode', () => {
@@ -692,6 +694,88 @@ describe('lyrics API runtime', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect((fetchMock.mock.calls[1]![0] as URL).pathname).toBe('/api/search')
     expect(result.match?.id).toBe(42)
+  })
+
+  it('uses SyncLRC when LRCLIB has no synchronized lyrics', async () => {
+    vi.spyOn(mcpRuntime, 'callAgentMcpTool').mockResolvedValue(playbackResult())
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          id: 42,
+          trackName: 'Test Song',
+          artistName: 'Test Artist',
+          albumName: 'Test Album',
+          duration: 225,
+          instrumental: false,
+          plainLyrics: 'Unsynchronized lyrics',
+          syncedLyrics: null
+        })
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          lyrics: '[00:01.00] First line\n[00:02.00] Second line',
+          type: 'synced',
+          instrumental: false
+        })
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await lyricsClient.getCurrentTrackLyrics()
+    const [requestUrl, requestInit] = fetchMock.mock.calls[1] as [URL, RequestInit]
+
+    expect(requestUrl.origin).toBe('https://api.synclrc.dev')
+    expect(requestUrl.pathname).toBe('/lyrics')
+    expect(requestUrl.searchParams.get('track')).toBe('Test Song')
+    expect(requestUrl.searchParams.get('artist')).toBe('Test Artist')
+    expect(requestUrl.searchParams.get('album')).toBe('Test Album')
+    expect(requestUrl.searchParams.get('duration')).toBe('225')
+    expect(requestUrl.searchParams.get('type')).toBe('synced')
+    expect(requestInit).toMatchObject({ redirect: 'error' })
+    expect(result).toMatchObject({
+      synchronized: true,
+      match: { source: 'SyncLRC', syncedLyrics: '[00:01.00] First line\n[00:02.00] Second line' }
+    })
+  })
+
+  it('uses LrcApi when SyncLRC returns malformed lyrics', async () => {
+    vi.spyOn(mcpRuntime, 'callAgentMcpTool').mockResolvedValue(playbackResult())
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValueOnce(Response.json({ lyrics: 'Missing timestamps', type: 'synced' }))
+      .mockResolvedValueOnce(
+        new Response('[Verse]\n[00:01.00] First line\n[00:02.00] Second line')
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await lyricsClient.getCurrentTrackLyrics()
+    const [requestUrl, requestInit] = fetchMock.mock.calls[3] as [URL, RequestInit]
+
+    expect(requestUrl.origin).toBe('https://api.lrc.cx')
+    expect(requestUrl.pathname).toBe('/lyrics')
+    expect(requestUrl.searchParams.get('title')).toBe('Test Song')
+    expect(requestUrl.searchParams.get('artist')).toBe('Test Artist')
+    expect(requestInit).toMatchObject({ redirect: 'error' })
+    expect(result).toMatchObject({ synchronized: true, match: { source: 'LrcApi' } })
+  })
+
+  it('continues to LrcApi when SyncLRC times out', async () => {
+    vi.spyOn(mcpRuntime, 'callAgentMcpTool').mockResolvedValue(playbackResult())
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json([]))
+      .mockRejectedValueOnce(new DOMException('Timed out', 'TimeoutError'))
+      .mockResolvedValueOnce(new Response('[00:01.00] Fallback line'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(lyricsClient.getCurrentTrackLyrics()).resolves.toMatchObject({
+      synchronized: true,
+      match: { source: 'LrcApi' }
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
   it('turns Spotify MCP authentication failures into an actionable error', async () => {
