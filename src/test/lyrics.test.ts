@@ -284,8 +284,12 @@ describe('lyrics command', () => {
     await vi.advanceTimersByTimeAsync(2_000)
 
     const patches = calls.filter(({ method }) => method === 'PATCH')
-    expect(patches).toHaveLength(1)
-    expect(patches[0]!.route).toBe('/channels/777777777777777777/messages/public-message-0')
+    expect(patches.length).toBeGreaterThan(0)
+    expect(
+      patches.every(
+        ({ route }) => route === '/channels/777777777777777777/messages/public-message-0'
+      )
+    ).toBe(true)
   })
 
   it('keeps the public interaction reply durable when normal message creation fails', async () => {
@@ -301,9 +305,11 @@ describe('lyrics command', () => {
     await vi.advanceTimersByTimeAsync(2_000)
 
     const patches = calls.filter(({ method }) => method === 'PATCH')
-    expect(patches).toHaveLength(2)
+    expect(patches.length).toBeGreaterThan(1)
     expect(patches[0]!.route).toContain('/webhooks/')
-    expect(patches[1]!.route).toBe('/channels/777777777777777777/messages/0')
+    expect(
+      patches.slice(1).every(({ route }) => route === '/channels/777777777777777777/messages/0')
+    ).toBe(true)
     expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
       channelId: '777777777777777777',
       messageId: '0'
@@ -326,7 +332,7 @@ describe('lyrics command', () => {
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
     expect(JSON.stringify(updated)).toContain('lyrics offset: +1s')
-    expect(JSON.stringify(updated)).toContain('## *Current line / After one*')
+    expect(JSON.stringify(updated)).toContain('## *After one*')
   })
 
   it('supports positive and negative half-second lyric adjustments', async () => {
@@ -342,7 +348,7 @@ describe('lyrics command', () => {
     const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(JSON.stringify(positive)).toContain('lyrics offset: +0.5s')
-    expect(JSON.stringify(positive)).toContain('## *Current line / After* one')
+    expect(JSON.stringify(positive)).toContain('## *After* one')
 
     await clearLyricsSessions()
     deleteStoredValue(LYRICS_OFFSETS_KEY)
@@ -410,7 +416,7 @@ describe('lyrics command', () => {
     const later = JSON.stringify(getEdit(laterCalls))
 
     expect(later).toContain('lyrics offset: +0.5s')
-    expect(later).toContain('## *Current line / After* one')
+    expect(later).toContain('## *After* one')
   })
 
   it('stops the session when its owner presses Stop', async () => {

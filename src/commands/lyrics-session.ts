@@ -8,7 +8,8 @@ import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv
 import { addKoreanPronunciations } from './lyrics-pronunciation.js'
 
 export const SPOTIFY_RESYNC_INTERVAL_MS = 5_000
-export const MIN_LYRICS_EDIT_INTERVAL_MS = 1_250
+// Keep every rolling two-second window below Discord's five-edit route limit.
+export const MIN_LYRICS_EDIT_INTERVAL_MS = 401
 export const EPHEMERAL_LYRICS_SESSION_MS = 14 * 60 * 1_000
 export const PUBLIC_LYRICS_SESSION_MS = 6 * 60 * 60 * 1_000
 export const MAX_LYRICS_OFFSET_MS = 30_000

@@ -137,8 +137,10 @@ describe('synchronized lyrics parsing', () => {
     )
 
     expect(groupRapidSyncedLyrics(lines)).toEqual([
-      { timeMs: 0, text: 'A\nB\nC' },
-      { timeMs: 1_250, text: 'D\nE' },
+      { timeMs: 0, text: 'A\nB' },
+      { timeMs: 800, text: 'C' },
+      { timeMs: 1_250, text: 'D' },
+      { timeMs: 1_900, text: 'E' },
       { timeMs: 2_500, text: 'F' }
     ])
   })
@@ -385,11 +387,48 @@ describe('live lyrics scheduling', () => {
     await vi.advanceTimersByTimeAsync(MIN_LYRICS_EDIT_INTERVAL_MS - 1)
     expect(rendered).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
-    expect(rendered).toEqual([{ at: MIN_LYRICS_EDIT_INTERVAL_MS, index: 4 }])
+    expect(rendered).toEqual([{ at: MIN_LYRICS_EDIT_INTERVAL_MS, index: 2 }])
 
     await vi.advanceTimersByTimeAsync(MIN_LYRICS_EDIT_INTERVAL_MS)
-    expect(rendered.at(-1)).toEqual({ at: MIN_LYRICS_EDIT_INTERVAL_MS * 2, index: 5 })
+    expect(rendered.at(-1)).toEqual({ at: MIN_LYRICS_EDIT_INTERVAL_MS * 2, index: 3 })
     expect(rendered).toHaveLength(2)
+    await session.stop('test complete', false)
+  })
+
+  it('keeps automatic edits within five requests per rolling two seconds', async () => {
+    const currentTrack = track()
+    const syncedLyrics = Array.from({ length: 31 }, (_, index) => {
+      const seconds = String(Math.floor(index / 10)).padStart(2, '0')
+      const fraction = String((index % 10) * 10).padStart(2, '0')
+      return `[00:${seconds}.${fraction}] Line ${index}`
+    }).join('\n')
+    const state = stateFor(currentTrack, syncedLyrics)
+    const editTimes = [0]
+    const session = new LiveLyricsSession({
+      token: '0000000000000016',
+      ownerId: 'owner',
+      isPublic: true,
+      initialState: state,
+      renderedView: initialView(state),
+      render: async () => {
+        editTimes.push(Date.now())
+      },
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+    session.start()
+
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    expect(editTimes.length).toBeGreaterThan(5)
+    for (const start of editTimes) {
+      expect(
+        editTimes.filter((time) => time >= start && time - start <= 2_000).length
+      ).toBeLessThanOrEqual(5)
+    }
     await session.stop('test complete', false)
   })
 
@@ -460,7 +499,7 @@ describe('live lyrics scheduling', () => {
     expect(getLyricsForTrack).toHaveBeenCalledWith(secondTrack)
     expect(render.mock.calls.at(-1)![0]).toMatchObject({
       mode: 'lyrics',
-      currentIndex: 1,
+      currentIndex: 2,
       offsetMs: -500,
       track: { uri: 'spotify:track:two' }
     })
