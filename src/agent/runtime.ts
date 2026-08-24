@@ -6,7 +6,11 @@ export {
   GPT_MODEL_SELECT_ID,
   GPT_VERBOSITY_SELECT_ID
 } from './runtime-types.js'
-export { closeAgentMcpRuntime, initializeAgentMcpRuntime } from './mcp-runtime.js'
+export {
+  closeAgentMcpRuntime,
+  initializeAgentMcpRuntime,
+  isAgentMcpRuntimeInitializing
+} from './mcp-runtime.js'
 export { loadAgentSessionNames } from './session-store.js'
 export {
   deleteDynamicAgentFeatureSessions,

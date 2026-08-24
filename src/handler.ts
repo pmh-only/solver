@@ -82,6 +82,7 @@ import {
   handleGptVerbositySelect,
   isGptActionComponentId,
   isGptModalId,
+  isAgentMcpRuntimeInitializing,
   loadAgentSessionNames
 } from './agent/index.js'
 import { loadModelsResponse } from './model-catalog.js'
@@ -555,6 +556,10 @@ export function createHandler(
 
       if (interaction.isAutocomplete()) {
         if (interaction.commandName === AGENT_COMMAND_NAME) {
+          if (isAgentMcpRuntimeInitializing()) {
+            await interaction.respond([])
+            return
+          }
           const focused = interaction.options.getFocused(true)
           const query = String(focused.value).toLowerCase()
           if (focused.name === 'session') {
@@ -705,6 +710,20 @@ export function createHandler(
 
       if (!interaction.isChatInputCommand()) return
       if (interaction.commandName === AGENT_COMMAND_NAME) {
+        if (isAgentMcpRuntimeInitializing()) {
+          await interaction.reply({
+            embeds: [],
+            components: [
+              {
+                type: ComponentType.TextDisplay,
+                content: 'MCP services are still starting. Try `/a` again shortly.'
+              }
+            ],
+            flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] }
+          })
+          return
+        }
         await handleAgentCommand(interaction)
         return
       }

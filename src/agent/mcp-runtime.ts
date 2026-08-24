@@ -91,6 +91,7 @@ interface AgentMcpCandidate {
 const agentMcpConnections = new Map<string, AgentMcpConnection>()
 const agentMcpFailures = new Map<string, string>()
 let agentMcpBoot: Promise<void> | undefined
+let agentMcpState: 'idle' | 'initializing' | 'ready' | 'failed' = 'idle'
 
 function shellTool(signal: AbortSignal): Tool {
   return tool({
@@ -458,8 +459,23 @@ async function bootAgentMcpRuntime(): Promise<void> {
 }
 
 export async function initializeAgentMcpRuntime(): Promise<void> {
-  agentMcpBoot ??= bootAgentMcpRuntime()
+  if (!agentMcpBoot) {
+    agentMcpState = 'initializing'
+    agentMcpBoot = bootAgentMcpRuntime().then(
+      () => {
+        agentMcpState = 'ready'
+      },
+      (error) => {
+        agentMcpState = 'failed'
+        throw error
+      }
+    )
+  }
   await agentMcpBoot
+}
+
+export function isAgentMcpRuntimeInitializing(): boolean {
+  return agentMcpState === 'initializing'
 }
 
 export async function callAgentMcpTool(
@@ -493,6 +509,7 @@ export async function closeAgentMcpRuntime(): Promise<void> {
   agentMcpConnections.clear()
   agentMcpFailures.clear()
   agentMcpBoot = undefined
+  agentMcpState = 'idle'
   await Promise.all(clients.map((client) => client.disconnect().catch(() => {})))
 }
 

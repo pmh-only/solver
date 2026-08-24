@@ -35,7 +35,7 @@ import { subcommand as memory } from './commands/memory.js'
 import { subcommand as usage } from './commands/usage.js'
 import { subcommand as chess } from './commands/chess.js'
 import { subcommand as gohome } from './commands/gohome.js'
-import { restoreLyricsSession, subcommand as lyrics } from './commands/lyrics.js'
+import { subcommand as lyrics } from './commands/lyrics.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
@@ -43,7 +43,6 @@ import { restoreStoredEnvironment } from './helpers/environment-store.js'
 import {
   closeAgentMcpRuntime,
   deleteDynamicAgentFeatureSessions,
-  initializeAgentMcpRuntime,
   recoverInteractionWithAgent,
   runDynamicAgentFeature
 } from './agent/index.js'
@@ -53,6 +52,7 @@ import {
 } from './dynamic-features.js'
 import { safeErrorMessage } from './safe-error.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
+import { initializeBotReadyServices } from './bot-ready.js'
 
 restoreStoredEnvironment()
 
@@ -148,17 +148,10 @@ const dynamicFeatureManager = new DynamicDiscordFeatureManager({
 dynamicFeatureManager.initialize()
 setDynamicDiscordFeatureManager(dynamicFeatureManager)
 
-await Promise.all([
-  ensureDeployed(rest, clientId).catch((error) => {
-    reportRuntimeIssue('application_command_deployment', error)
-    console.error(`application command deployment failed safely: ${safeErrorMessage(error)}`)
-  }),
-  initializeAgentMcpRuntime().catch(async (error) => {
-    reportRuntimeIssue('agent_mcp_startup', error)
-    console.error(`agent MCP startup failed safely: ${safeErrorMessage(error)}`)
-    await closeAgentMcpRuntime()
-  })
-])
+await ensureDeployed(rest, clientId).catch((error) => {
+  reportRuntimeIssue('application_command_deployment', error)
+  console.error(`application command deployment failed safely: ${safeErrorMessage(error)}`)
+})
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -166,11 +159,7 @@ const client = new Client({
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`ready: ${c.user.tag}`)
-  try {
-    if (await restoreLyricsSession(c)) console.log('restored live lyrics session')
-  } catch (error) {
-    console.error('failed to restore live lyrics session', error)
-  }
+  await initializeBotReadyServices(c)
 })
 
 client.on(Events.Error, (error) => {
