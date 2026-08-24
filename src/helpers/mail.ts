@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { ImapFlow, type MessageAddressObject } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import TurndownService from 'turndown'
+import { formatAgentDateTime } from './timezone.js'
 interface MailConfig {
   host: string
   port: number
@@ -119,7 +120,7 @@ function formatAddress(addresses?: MessageAddressObject[]): string {
 
 function formatDate(value?: Date): string {
   if (!value) return 'unknown'
-  return value.toISOString().replace('T', ' ').slice(0, 16)
+  return formatAgentDateTime(value).replace('T', ' ').slice(0, 16)
 }
 
 function cleanText(value: string): string {

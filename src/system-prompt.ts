@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { deleteStoredValue, getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import { formatAgentDateTime } from './helpers/timezone.js'
 
 const SYSTEM_PROMPT_KEY = 'global-system-prompt'
 const SESSION_SYSTEM_PROMPT_KEY = 'gpt-session-system-prompt'
@@ -78,7 +79,7 @@ export function loadEffectiveSystemPrompt(
   const configuredPrompt = sessionPrompt.isSet
     ? `${globalPrompt}\n\nAdditional instructions for the current session:\n${sessionPrompt.prompt}`
     : globalPrompt
-  return `${configuredPrompt}\n\nCurrent date and time: ${currentDateTime.toISOString()} (UTC).`
+  return `${configuredPrompt}\n\nCurrent date and time: ${formatAgentDateTime(currentDateTime)}.`
 }
 
 function persistSystemPrompt(

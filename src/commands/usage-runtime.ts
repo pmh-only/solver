@@ -1,3 +1,5 @@
+import { formatAgentDateTime } from '../helpers/timezone.js'
+
 const OPENAI_API_BASE = 'https://api.openai.com/v1'
 const DAY_SECONDS = 86_400
 const PAGE_LIMIT = 100
@@ -596,7 +598,7 @@ export function formatCosts(costs: Record<string, number>): string {
 }
 
 function formatTimestamp(value: number | null): string {
-  return value ? new Date(value * 1000).toISOString() : 'n/a'
+  return value ? formatAgentDateTime(new Date(value * 1000)) : 'n/a'
 }
 
 function list(values: string[]): string {

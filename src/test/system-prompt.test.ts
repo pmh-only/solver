@@ -74,10 +74,10 @@ describe('global system prompt', () => {
     const now = new Date('2026-08-24T14:35:12.345Z')
 
     expect(loadEffectiveSystemPrompt('user-1', 'work', now)).toBe(
-      'Global instructions.\n\nAdditional instructions for the current session:\nWork-session instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+      'Global instructions.\n\nAdditional instructions for the current session:\nWork-session instructions.\n\nCurrent date and time: 2026-08-24T23:35:12.345+09:00 [Asia/Seoul].'
     )
     expect(loadEffectiveSystemPrompt('user-1', 'other', now)).toBe(
-      'Global instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+      'Global instructions.\n\nCurrent date and time: 2026-08-24T23:35:12.345+09:00 [Asia/Seoul].'
     )
 
     expect(resetSessionSystemPrompt('user-1', 'work')).toEqual({
@@ -87,7 +87,7 @@ describe('global system prompt', () => {
       updatedBy: null
     })
     expect(loadEffectiveSystemPrompt('user-1', 'work', now)).toBe(
-      'Global instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+      'Global instructions.\n\nCurrent date and time: 2026-08-24T23:35:12.345+09:00 [Asia/Seoul].'
     )
   })
 
@@ -96,12 +96,12 @@ describe('global system prompt', () => {
     try {
       vi.setSystemTime(new Date('2026-08-24T01:02:03.004Z'))
       expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain(
-        'Current date and time: 2026-08-24T01:02:03.004Z (UTC).'
+        'Current date and time: 2026-08-24T10:02:03.004+09:00 [Asia/Seoul].'
       )
 
       vi.setSystemTime(new Date('2026-08-24T05:06:07.008Z'))
       expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain(
-        'Current date and time: 2026-08-24T05:06:07.008Z (UTC).'
+        'Current date and time: 2026-08-24T14:06:07.008+09:00 [Asia/Seoul].'
       )
     } finally {
       vi.useRealTimers()

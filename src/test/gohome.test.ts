@@ -20,7 +20,8 @@ describe('gohome — command', () => {
       holidayNames: [],
       isWeekend: false,
       targetHour: 22,
-      remainingMs: 36_000_000
+      remainingMs: 36_000_000,
+      timeZone: 'Asia/Seoul'
     })
   })
 
@@ -40,7 +41,7 @@ describe('gohome — command', () => {
     expect(countdown.holidayNames).toEqual(['대체공휴일(3ㆍ1절)'])
   })
 
-  it('uses the KST calendar date near the UTC date boundary', async () => {
+  it('uses the configured calendar date near the UTC date boundary', async () => {
     const countdown = await calculateGohomeCountdown(new Date('2026-03-01T16:00:00.000Z'))
 
     expect(countdown.date).toBe('2026-03-02')
@@ -54,7 +55,21 @@ describe('gohome — command', () => {
     expect(countdown.remainingMs).toBe(0)
   })
 
-  it('renders the remaining milliseconds and KST target through the command handler', async () => {
+  it('uses AGENT_TZ for calendar and target-time calculations', async () => {
+    process.env.AGENT_TZ = 'America/New_York'
+
+    const countdown = await calculateGohomeCountdown(new Date('2026-07-21T16:00:00.000Z'))
+
+    expect(countdown).toMatchObject({
+      date: '2026-07-21',
+      isWeekend: false,
+      targetHour: 22,
+      remainingMs: 36_000_000,
+      timeZone: 'America/New_York'
+    })
+  })
+
+  it('renders the remaining milliseconds and configured timezone through the command handler', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-21T03:00:00.000Z'))
 
@@ -65,6 +80,6 @@ describe('gohome — command', () => {
     expect(callback.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(callback.data.flags & MessageFlags.Ephemeral).toBeTruthy()
     expect(rendered).toContain('36000000 ms')
-    expect(rendered).toContain('10:00 PM KST')
+    expect(rendered).toContain('10:00 PM Asia/Seoul')
   })
 })

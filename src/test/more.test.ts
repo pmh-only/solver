@@ -47,12 +47,13 @@ describe('more — utility commands', () => {
     expect(rendered).toContain('5d41402abc4b2a76b9719d911017c592')
   })
 
-  it('shows current time without arguments', async () => {
-    const calls = await dispatch(commandJSON('time'), subs)
+  it('shows time in the configured agent timezone', async () => {
+    const calls = await dispatch(commandJSON('time 2026-08-24T14:35:12.345Z'), subs)
     const rendered = JSON.stringify(getEdit(calls))
 
     expect(rendered).toContain('Time')
-    expect(rendered).toContain('utc')
+    expect(rendered).toContain('Asia/Seoul')
+    expect(rendered).toContain('2026-08-24T23:35:12.345+09:00')
   })
 
   it('stores and resolves local URL shortcuts', async () => {

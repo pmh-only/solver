@@ -15,6 +15,7 @@ import {
 } from '../components.js'
 import { poll } from './more-poll.js'
 import { getStoredValue, listStoredKeys, setStoredValue } from '../helpers/kv-store.js'
+import { formatAgentDateTime, getAgentTimeZone } from '../helpers/timezone.js'
 import { loadOpenAIApiKey, openAIEndpointUrl } from '../openai-config.js'
 
 const PREVIEW_LIMIT = 120_000
@@ -167,8 +168,8 @@ function runTime(args: string): CommandRunResult {
   const date = input ? new Date(input) : new Date()
   if (Number.isNaN(date.getTime())) throw new Error('bad time')
   return keyValueBlock('Time', [
-    ['local', date.toString()],
-    ['utc', date.toISOString()],
+    ['timezone', getAgentTimeZone()],
+    ['datetime', formatAgentDateTime(date)],
     ['unix', Math.floor(date.getTime() / 1000)]
   ])
 }

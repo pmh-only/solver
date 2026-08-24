@@ -4,6 +4,7 @@ import { AttachmentBuilder, FileBuilder } from 'discord.js'
 import type { Flags } from '../flags.js'
 import type { Subcommand } from '../types.js'
 import { isAdminUser } from '../authorization.js'
+import { formatAgentDate, formatAgentDateTime } from '../helpers/timezone.js'
 import {
   deferCommandResponse,
   privateContainer,
@@ -127,7 +128,7 @@ async function reportAttachment(
 }
 
 async function buildAttachments(report: OpenAIUsageReport, summaries: ProjectUsageSummary[]) {
-  const date = new Date(report.generated_at * 1000).toISOString().slice(0, 10)
+  const date = formatAgentDate(new Date(report.generated_at * 1000))
   const candidates = await Promise.all([
     reportAttachment(
       formatOpenAIUsageMarkdown(report, summaries),
@@ -144,7 +145,7 @@ async function buildAttachments(report: OpenAIUsageReport, summaries: ProjectUsa
 }
 
 function period(report: OpenAIUsageReport): string {
-  return `${new Date(report.start_time * 1000).toISOString()} to ${new Date(report.end_time * 1000).toISOString()}`
+  return `${formatAgentDateTime(new Date(report.start_time * 1000))} to ${formatAgentDateTime(new Date(report.end_time * 1000))}`
 }
 
 async function privateReply(

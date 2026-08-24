@@ -1,8 +1,12 @@
 import { getHolidayNames } from '@hyunbinseo/holidays-kr'
 import type { Subcommand } from '../types.js'
 import { runRerunnableCommand, summarySection } from '../components.js'
-
-const KST_OFFSET_MS = 9 * 60 * 60 * 1000
+import {
+  formatAgentDate,
+  getAgentTimeZone,
+  getZonedDateParts,
+  zonedDateTimeToEpoch
+} from '../helpers/timezone.js'
 
 export interface GohomeCountdown {
   date: string
@@ -10,36 +14,34 @@ export interface GohomeCountdown {
   isWeekend: boolean
   targetHour: 18 | 22
   remainingMs: number
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, '0')
+  timeZone: string
 }
 
 export async function calculateGohomeCountdown(now = new Date()): Promise<GohomeCountdown> {
-  const kst = new Date(now.getTime() + KST_OFFSET_MS)
-  const year = kst.getUTCFullYear()
-  const month = kst.getUTCMonth()
-  const day = kst.getUTCDate()
-  const date = `${year}-${pad(month + 1)}-${pad(day)}`
+  const timeZone = getAgentTimeZone()
+  const local = getZonedDateParts(now, timeZone)
+  const date = formatAgentDate(now, timeZone)
   const holidayNames = (await getHolidayNames(date)) ?? []
-  const weekday = kst.getUTCDay()
-  const isWeekend = weekday === 0 || weekday === 6
+  const isWeekend = local.weekday === 0 || local.weekday === 6
   const targetHour = isWeekend || holidayNames.length > 0 ? 18 : 22
-  const target = Date.UTC(year, month, day, targetHour - 9)
+  const target = zonedDateTimeToEpoch(
+    { year: local.year, month: local.month, day: local.day, hour: targetHour },
+    timeZone
+  )
 
   return {
     date,
     holidayNames,
     isWeekend,
     targetHour,
-    remainingMs: Math.max(0, target - now.getTime())
+    remainingMs: Math.max(0, target - now.getTime()),
+    timeZone
   }
 }
 
 export const subcommand: Subcommand = {
   name: 'gohome',
-  description: 'count down to go-home time in KST',
+  description: 'count down to go-home time in the agent timezone',
   usage: 'gohome [--pub]',
   examples: ['gohome'],
 
@@ -54,7 +56,7 @@ export const subcommand: Subcommand = {
     return summarySection('Gohome', [
       `${countdown.remainingMs} ms`,
       `-# ${countdown.date} (${dayType})`,
-      `-# target: ${countdown.targetHour === 18 ? '6:00 PM' : '10:00 PM'} KST`
+      `-# target: ${countdown.targetHour === 18 ? '6:00 PM' : '10:00 PM'} ${countdown.timeZone}`
     ])
   },
 

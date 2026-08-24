@@ -24,6 +24,7 @@ import {
   text
 } from '../components.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
+import { getAgentTimeZone } from '../helpers/timezone.js'
 import {
   detectLocale,
   drawCanvasText,
@@ -210,7 +211,7 @@ function formatTimestamp(createdAt: Date): string {
     hour: 'numeric',
     minute: '2-digit',
     hour12: false,
-    timeZone: 'Asia/Seoul'
+    timeZone: getAgentTimeZone()
   }).format(createdAt)
 }
 
