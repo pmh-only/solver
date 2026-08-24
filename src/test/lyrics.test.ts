@@ -485,6 +485,12 @@ describe('lyrics command', () => {
 })
 
 describe('lyrics presentation', () => {
+  function lyricWindowContent(view: LiveLyricsView): string {
+    const component = formatLiveLyrics(view)[2]
+    if (!component || typeof component === 'string') throw new Error('missing lyric window')
+    return (component.toJSON() as { content: string }).content
+  }
+
   it('renders a five-line synchronized window around the current line', () => {
     const lines = parseSyncedLyrics(currentLyrics().match!.syncedLyrics)
     const view: LiveLyricsView = {
@@ -514,6 +520,55 @@ describe('lyrics presentation', () => {
     expect(rendered).toContain('After two')
     expect(rendered).toContain('offsets: Discord +0.25s / Spotify 0s')
     expect(rendered).toContain('source: SyncLRC')
+  })
+
+  it('pads the start, pre-start, and end of a song to keep the current line centered', () => {
+    const lines = parseSyncedLyrics(
+      '[00:01.00] First\n[00:02.00] Second\n[00:03.00] Third\n[00:04.00] Fourth\n[00:05.00] Fifth'
+    )
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines,
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: -1,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      discordOffsetMs: 0,
+      offsetMs: 0,
+      stopped: false,
+      displayMode: 'japanese'
+    }
+
+    expect(lyricWindowContent(view).split('\n')).toEqual([
+      '-# \u200b',
+      '-# \u200b',
+      '**Waiting for the first synchronized line**',
+      '-# First',
+      '-# Second'
+    ])
+
+    view.currentIndex = 0
+    view.progressMs = 1_000
+    expect(lyricWindowContent(view).split('\n')).toEqual([
+      '-# \u200b',
+      '-# \u200b',
+      '## __First__',
+      '-# Second',
+      '-# Third'
+    ])
+
+    view.currentIndex = 4
+    view.progressMs = 5_000
+    expect(lyricWindowContent(view).split('\n')).toEqual([
+      '-# Third',
+      '-# Fourth',
+      '## __Fifth__',
+      '-# \u200b',
+      '-# \u200b'
+    ])
   })
 
   it('renders only Japanese lyrics in Japanese display mode', () => {

@@ -54,6 +54,9 @@ export const LYRICS_DISPLAY_BUTTON_ID = 'lyrics-display'
 export const LYRICS_SESSION_KEY = 'lyrics-session'
 export const PUBLIC_LYRICS_INTERACTION_MS = 10 * 60 * 1_000
 
+const EMPTY_LYRIC_LINE = '-# \u200b'
+const LYRICS_WINDOW_RADIUS = 2
+
 interface StoredLyricsSession {
   version: 1
   token: string
@@ -189,8 +192,8 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
     return [header, separator(), text(`**${title}**\n-# ${inlineText(view.detail)}`)]
   }
 
-  const window = syncedLyricsWindow(view.lines, view.currentIndex)
-  const renderedLines = window.map(({ line, current }) => {
+  const window = syncedLyricsWindow(view.lines, view.currentIndex, LYRICS_WINDOW_RADIUS)
+  let renderedLines = window.map(({ line, current }) => {
     const displayedText = displayedLyricText(line, view.displayMode)
     const content = displayedText
       .split('\n')
@@ -213,7 +216,22 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
     return `## __${content.slice(0, end)}__${content.slice(end)}`
   })
   if (view.currentIndex < 0) {
-    renderedLines.unshift('**Waiting for the first synchronized line**')
+    const upcoming = renderedLines.slice(0, LYRICS_WINDOW_RADIUS)
+    renderedLines = [
+      ...Array<string>(LYRICS_WINDOW_RADIUS).fill(EMPTY_LYRIC_LINE),
+      '**Waiting for the first synchronized line**',
+      ...upcoming,
+      ...Array<string>(LYRICS_WINDOW_RADIUS - upcoming.length).fill(EMPTY_LYRIC_LINE)
+    ]
+  } else {
+    const leading = Math.max(0, LYRICS_WINDOW_RADIUS - view.currentIndex)
+    const following = view.lines.length - view.currentIndex - 1
+    const trailing = Math.max(0, LYRICS_WINDOW_RADIUS - following)
+    renderedLines = [
+      ...Array<string>(leading).fill(EMPTY_LYRIC_LINE),
+      ...renderedLines,
+      ...Array<string>(trailing).fill(EMPTY_LYRIC_LINE)
+    ]
   }
 
   return [
