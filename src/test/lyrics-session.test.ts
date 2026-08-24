@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   LiveLyricsSession,
+  LyricsEditRateLimit,
   LYRICS_OFFSETS_KEY,
   MAX_LYRICS_OFFSET_MS,
   MIN_LYRICS_EDIT_INTERVAL_MS,
@@ -171,6 +172,49 @@ describe('synchronized lyrics parsing', () => {
       { timeMs: 0, text: 'A\nB\nC' },
       { timeMs: 2_000, text: 'D' }
     ])
+  })
+})
+
+describe('lyrics edit rate limits', () => {
+  function rateLimitHeaders(remaining: number, resetAfter: number, bucket = 'lyrics-bucket') {
+    return new Headers({
+      'X-RateLimit-Bucket': bucket,
+      'X-RateLimit-Limit': '5',
+      'X-RateLimit-Remaining': String(remaining),
+      'X-RateLimit-Reset-After': String(resetAfter)
+    })
+  }
+
+  it('falls back to the conservative interval before receiving bucket headers', () => {
+    const rateLimit = new LyricsEditRateLimit()
+
+    expect(rateLimit.nextDelay(0, 0)).toBe(MIN_LYRICS_EDIT_INTERVAL_MS)
+    expect(rateLimit.nextDelay(0, MIN_LYRICS_EDIT_INTERVAL_MS)).toBe(0)
+  })
+
+  it('paces remaining requests across the reset window', () => {
+    const rateLimit = new LyricsEditRateLimit()
+
+    expect(rateLimit.observe(rateLimitHeaders(4, 1), true, 100)).toBe(true)
+    expect(rateLimit.nextDelay(100, 100)).toBe(275)
+    expect(rateLimit.nextDelay(100, 375)).toBe(0)
+  })
+
+  it('waits for reset when the learned bucket is exhausted', () => {
+    const rateLimit = new LyricsEditRateLimit()
+    rateLimit.observe(rateLimitHeaders(4, 1), true, 0)
+
+    expect(rateLimit.observe(rateLimitHeaders(0, 1), false, 400)).toBe(true)
+    expect(rateLimit.nextDelay(400, 400)).toBe(1_025)
+    expect(rateLimit.nextDelay(400, 1_425)).toBe(0)
+  })
+
+  it('ignores responses from unrelated buckets', () => {
+    const rateLimit = new LyricsEditRateLimit()
+    rateLimit.observe(rateLimitHeaders(4, 1), true, 0)
+
+    expect(rateLimit.observe(rateLimitHeaders(0, 10, 'other-bucket'), false, 100)).toBe(false)
+    expect(rateLimit.nextDelay(0, 100)).toBe(175)
   })
 })
 

@@ -3,9 +3,12 @@ import {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
+  RESTEvents,
   Routes,
+  type APIRequest,
   type ButtonInteraction,
-  type Client
+  type Client,
+  type ResponseLike
 } from 'discord.js'
 import { randomUUID } from 'node:crypto'
 import { isAdminUser } from '../authorization.js'
@@ -25,6 +28,7 @@ import {
 } from '../components.js'
 import {
   LiveLyricsSession,
+  LyricsEditRateLimit,
   MAX_LYRICS_OFFSET_MS,
   PUBLIC_LYRICS_SESSION_MS,
   currentSyncedWordCount,
@@ -53,6 +57,19 @@ interface StoredLyricsSession {
   channelId: string
   messageId: string
   startedAt: number
+}
+
+function observeLyricsEditRateLimit(
+  client: Client,
+  expectedPath: string,
+  rateLimit: LyricsEditRateLimit
+): () => void {
+  const listener = (request: APIRequest, response: ResponseLike) => {
+    if (request.method.toUpperCase() !== 'PATCH') return
+    rateLimit.observe(response.headers, String(request.path) === expectedPath)
+  }
+  client.rest.on(RESTEvents.Response, listener)
+  return () => client.rest.off(RESTEvents.Response, listener)
 }
 
 function readStoredLyricsSession(): StoredLyricsSession | null {
@@ -277,6 +294,12 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
   const initialOffsetMs = initialState.track ? loadLyricsOffset(initialState.track.id) : 0
   const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
   const flags: Flags = new Map([['pub', true]])
+  const rateLimit = new LyricsEditRateLimit()
+  const removeRateLimitObserver = observeLyricsEditRateLimit(
+    client,
+    Routes.channelMessage(stored.channelId, stored.messageId),
+    rateLimit
+  )
   const render = async (view: LiveLyricsView) => {
     const reply = liveLyricsReply(view, stored.token, 'lyrics --pub', flags)
     await client.rest.patch(Routes.channelMessage(stored.channelId, stored.messageId), {
@@ -293,6 +316,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
   try {
     await render(initialView)
   } catch {
+    removeRateLimitObserver()
     deleteStoredLyricsSession(stored.token)
     return false
   }
@@ -307,7 +331,11 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     initialRenderLatencyMs: Date.now() - initialRenderStartedAt,
     startedAt: stored.startedAt,
     render,
+    dependencies: {
+      automaticEditDelay: (lastEditAt, now) => rateLimit.nextDelay(lastEditAt, now)
+    },
     onClose: () => {
+      removeRateLimitObserver()
       unregisterLyricsSession(stored.token)
       deleteStoredLyricsSession(stored.token)
     }
@@ -468,6 +496,17 @@ export const subcommand: Subcommand = {
       durablePublic = requestedPublic && Boolean(publicChannelId)
     }
 
+    const rateLimit = new LyricsEditRateLimit()
+    const editPath =
+      durablePublic && publicChannelId
+        ? Routes.channelMessage(publicChannelId, messageId)
+        : Routes.webhookMessage(interaction.applicationId, interaction.token)
+    const removeRateLimitObserver = observeLyricsEditRateLimit(
+      interaction.client,
+      editPath,
+      rateLimit
+    )
+
     const render = async (view: LiveLyricsView) => {
       const reply = liveLyricsReply(view, token, args, flags)
       const payload = {
@@ -499,7 +538,11 @@ export const subcommand: Subcommand = {
       initialOffsetMs,
       initialRenderLatencyMs,
       render,
+      dependencies: {
+        automaticEditDelay: (lastEditAt, now) => rateLimit.nextDelay(lastEditAt, now)
+      },
       onClose: () => {
+        removeRateLimitObserver()
         unregisterLyricsSession(token)
         if (durablePublic) deleteStoredLyricsSession(token)
       }

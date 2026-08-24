@@ -18,6 +18,7 @@ export const LYRICS_OFFSETS_KEY = 'lyrics-offsets'
 
 const LYRICS_RETRY_INTERVAL_MS = 30_000
 const TIMER_FLOOR_MS = 50
+const RATE_LIMIT_SAFETY_MS = 25
 const SPOTIFY_PROGRESS_MIDPOINT_MS = 500
 const MAX_STORED_LYRICS_OFFSETS = 500
 const MAX_OFFSET_STORE_BYTES = 256 * 1_024
@@ -58,6 +59,7 @@ export interface LyricsSessionDependencies {
   clearTimer: (timer: ReturnType<typeof setTimeout>) => void
   loadOffset: (trackId: string) => number
   saveOffset: (trackId: string, offsetMs: number) => void
+  automaticEditDelay: (lastEditAt: number, now: number) => number
 }
 
 export interface LiveLyricsSessionOptions {
@@ -77,6 +79,46 @@ export interface LiveLyricsSessionOptions {
 interface StoredLyricsOffset {
   offsetMs: number
   updatedAt: number
+}
+
+export class LyricsEditRateLimit {
+  private bucket: string | null = null
+  private nextRequestAt: number | null = null
+
+  observe(headers: Pick<Headers, 'get'>, ownRoute: boolean, now = Date.now()): boolean {
+    const bucket = headers.get('x-ratelimit-bucket')
+    if (!ownRoute && (!bucket || bucket !== this.bucket)) return false
+    if (ownRoute && bucket && bucket.length <= 256) this.bucket = bucket
+
+    const limit = Number(headers.get('x-ratelimit-limit'))
+    const remaining = Number(headers.get('x-ratelimit-remaining'))
+    const resetAfterSeconds = Number(headers.get('x-ratelimit-reset-after'))
+    if (
+      !Number.isInteger(limit) ||
+      limit <= 0 ||
+      !Number.isInteger(remaining) ||
+      remaining < 0 ||
+      remaining > limit ||
+      !Number.isFinite(resetAfterSeconds) ||
+      resetAfterSeconds < 0
+    ) {
+      return false
+    }
+
+    const resetAfterMs = resetAfterSeconds * 1_000
+    this.nextRequestAt =
+      remaining === 0
+        ? now + resetAfterMs + RATE_LIMIT_SAFETY_MS
+        : now + Math.ceil(resetAfterMs / remaining) + RATE_LIMIT_SAFETY_MS
+    return true
+  }
+
+  nextDelay(lastEditAt: number, now = Date.now()): number {
+    if (this.nextRequestAt === null) {
+      return Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
+    }
+    return Math.max(0, this.nextRequestAt - now)
+  }
 }
 
 function normalizedOffset(value: number): number {
@@ -156,7 +198,9 @@ const defaultDependencies: LyricsSessionDependencies = {
   setTimer: (callback, delay) => setTimeout(callback, delay),
   clearTimer: (timer) => clearTimeout(timer),
   loadOffset: loadLyricsOffset,
-  saveOffset: saveLyricsOffset
+  saveOffset: saveLyricsOffset,
+  automaticEditDelay: (lastEditAt, now) =>
+    Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
 }
 
 function fractionMilliseconds(value: string | undefined): number {
@@ -641,7 +685,7 @@ export class LiveLyricsSession {
       this.renderPending = false
       return
     }
-    if (now - this.lastEditAt < MIN_LYRICS_EDIT_INTERVAL_MS) {
+    if (this.dependencies.automaticEditDelay(this.lastEditAt, now) > 0) {
       this.renderPending = true
       return
     }
@@ -688,7 +732,7 @@ export class LiveLyricsSession {
     if (viewKey(this.viewForRender(now)) !== this.lastRenderedKey) {
       delay = Math.min(
         delay,
-        Math.max(TIMER_FLOOR_MS, this.lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
+        Math.max(TIMER_FLOOR_MS, this.dependencies.automaticEditDelay(this.lastEditAt, now))
       )
     }
 
@@ -720,7 +764,7 @@ export class LiveLyricsSession {
     if (this.renderPending) {
       delay = Math.min(
         delay,
-        Math.max(TIMER_FLOOR_MS, this.lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
+        Math.max(TIMER_FLOOR_MS, this.dependencies.automaticEditDelay(this.lastEditAt, now))
       )
     }
 
