@@ -28,21 +28,11 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Restore TypeScript build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cache/tsconfig.tsbuildinfo
-            dist
-          key: ${{ runner.os }}-tsc-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.json') }}-${{ hashFiles('src/**/*.ts') }}
-          restore-keys: |
-            ${{ runner.os }}-tsc-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.json') }}-
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build TypeScript
-        run: pnpm build
+        run: rm -rf dist .cache/tsconfig.tsbuildinfo && pnpm build
 
       - name: Upload application build
         uses: actions/upload-artifact@v4
