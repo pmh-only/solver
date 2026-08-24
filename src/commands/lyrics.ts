@@ -27,6 +27,8 @@ import {
   LiveLyricsSession,
   MAX_LYRICS_OFFSET_MS,
   PUBLIC_LYRICS_SESSION_MS,
+  currentSyncedWordCount,
+  displayedLyricText,
   getLyricsSession,
   liveLyricsView,
   loadLyricsOffset,
@@ -166,18 +168,26 @@ export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
 
   const window = syncedLyricsWindow(view.lines, view.currentIndex)
   const renderedLines = window.map(({ line, current }) => {
-    const displayedText =
-      view.displayMode === 'korean-pronunciation'
-        ? line.text
-            .split('\n')
-            .map((text, index) => line.pronunciation?.split('\n')[index] || text)
-            .join('\n')
-        : line.text
+    const displayedText = displayedLyricText(line, view.displayMode)
     const content = displayedText
       .split('\n')
       .map((value) => inlineText(value || '[instrumental]'))
       .join(' / ')
-    return `${current ? '##' : '-#'} ${content}`
+    if (!current) return `-# ${content}`
+
+    const durationMs = (view.track?.durationSeconds ?? 0) * 1_000
+    const expectedWords = currentSyncedWordCount(
+      view.lines,
+      view.currentIndex,
+      view.progressMs,
+      durationMs,
+      view.displayMode
+    )
+    const words = [...content.matchAll(/\S+/g)].filter(([word]) => word !== '/')
+    const italicEnd = words[Math.max(0, expectedWords - 1)]
+    if (!italicEnd || italicEnd.index === undefined) return `## ${content}`
+    const end = italicEnd.index + italicEnd[0].length
+    return `## *${content.slice(0, end)}*${content.slice(end)}`
   })
   if (view.currentIndex < 0) {
     renderedLines.unshift('**Waiting for the first synchronized line**')

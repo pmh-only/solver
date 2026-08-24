@@ -232,6 +232,60 @@ export function currentSyncedLineIndex(lines: SyncedLyricLine[], progressMs: num
   return result
 }
 
+export function displayedLyricText(line: SyncedLyricLine, displayMode: LyricsDisplayMode): string {
+  if (displayMode !== 'korean-pronunciation') return line.text
+  const pronunciation = line.pronunciation?.split('\n') ?? []
+  return line.text
+    .split('\n')
+    .map((text, index) => pronunciation[index] || text)
+    .join('\n')
+}
+
+function lyricWordCount(value: string): number {
+  return value.split(/\s+/).filter(Boolean).length
+}
+
+export function currentSyncedWordCount(
+  lines: SyncedLyricLine[],
+  currentIndex: number,
+  progressMs: number,
+  durationMs: number,
+  displayMode: LyricsDisplayMode
+): number {
+  const line = lines[currentIndex]
+  if (!line) return 0
+
+  const words = Math.max(1, lyricWordCount(displayedLyricText(line, displayMode)))
+  const endMs = lines[currentIndex + 1]?.timeMs ?? durationMs
+  const lineDurationMs = Math.max(1, endMs - line.timeMs)
+  const elapsedMs = Math.max(0, Math.min(lineDurationMs, progressMs - line.timeMs))
+  return Math.min(words, Math.floor((elapsedMs / lineDurationMs) * words) + 1)
+}
+
+function nextSyncedWordProgressMs(
+  lines: SyncedLyricLine[],
+  currentIndex: number,
+  progressMs: number,
+  durationMs: number,
+  displayMode: LyricsDisplayMode
+): number | null {
+  const line = lines[currentIndex]
+  if (!line) return null
+
+  const words = Math.max(1, lyricWordCount(displayedLyricText(line, displayMode)))
+  const completedWords = currentSyncedWordCount(
+    lines,
+    currentIndex,
+    progressMs,
+    durationMs,
+    displayMode
+  )
+  if (completedWords >= words) return null
+
+  const endMs = lines[currentIndex + 1]?.timeMs ?? durationMs
+  return line.timeMs + ((endMs - line.timeMs) * completedWords) / words
+}
+
 export function syncedLyricsWindow(
   lines: SyncedLyricLine[],
   currentIndex: number,
@@ -316,11 +370,19 @@ export async function loadInitialLiveLyricsState(
 }
 
 function viewKey(view: LiveLyricsView): string {
+  const durationMs = (view.track?.durationSeconds ?? 0) * 1_000
   return [
     view.mode,
     view.track?.uri ?? '',
     view.track?.isPlaying ? 'playing' : 'paused',
     view.currentIndex,
+    currentSyncedWordCount(
+      view.lines,
+      view.currentIndex,
+      view.progressMs,
+      durationMs,
+      view.displayMode
+    ),
     view.offsetMs,
     view.displayMode,
     view.detail
@@ -632,6 +694,20 @@ export class LiveLyricsSession {
     if (this.state.mode === 'lyrics' && this.state.track?.isPlaying) {
       const progressMs = this.view(now).progressMs
       const currentIndex = currentSyncedLineIndex(this.state.lines, progressMs)
+      const durationMs = this.state.track.durationSeconds * 1_000
+      const nextWordProgressMs = nextSyncedWordProgressMs(
+        this.state.lines,
+        currentIndex,
+        progressMs,
+        durationMs,
+        this.displayMode
+      )
+      if (nextWordProgressMs !== null) {
+        delay = Math.min(
+          delay,
+          Math.max(TIMER_FLOOR_MS, nextWordProgressMs - progressMs - this.renderLatencyMs + 25)
+        )
+      }
       const nextLine = this.state.lines[currentIndex + 1]
       if (nextLine) {
         delay = Math.min(

@@ -7,6 +7,7 @@ import {
   SPOTIFY_RESYNC_INTERVAL_MS,
   clearLyricsSessions,
   currentSyncedLineIndex,
+  currentSyncedWordCount,
   getLyricsSession,
   groupRapidSyncedLyrics,
   liveLyricsView,
@@ -122,6 +123,14 @@ describe('synchronized lyrics parsing', () => {
     ])
   })
 
+  it('estimates completed words from the current line time window', () => {
+    const lines = parseSyncedLyrics('[00:10.00] one two three four\n[00:14.00] next line')
+
+    expect(currentSyncedWordCount(lines, 0, 10_000, 20_000, 'japanese')).toBe(1)
+    expect(currentSyncedWordCount(lines, 0, 11_900, 20_000, 'japanese')).toBe(2)
+    expect(currentSyncedWordCount(lines, 0, 13_900, 20_000, 'japanese')).toBe(4)
+  })
+
   it('groups rapid lines into blocks spaced far enough apart for message edits', () => {
     const lines = parseSyncedLyrics(
       '[00:00.00] A\n[00:00.20] B\n[00:00.80] C\n[00:01.25] D\n[00:01.90] E\n[00:02.50] F'
@@ -208,6 +217,34 @@ describe('live lyrics scheduling', () => {
     expect(rendered).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(rendered).toEqual([{ at: 1_825, index: 1 }])
+    await session.stop('test complete', false)
+  })
+
+  it('schedules updates as the expected word advances within a line', async () => {
+    const currentTrack = track()
+    const state = stateFor(currentTrack, '[00:00.00] one two three\n[00:06.00] next')
+    const rendered: Array<{ at: number; progressMs: number }> = []
+    const session = new LiveLyricsSession({
+      token: '0000000000000015',
+      ownerId: 'owner',
+      isPublic: true,
+      initialState: state,
+      renderedView: initialView(state),
+      render: async (view) => {
+        rendered.push({ at: Date.now(), progressMs: view.progressMs })
+      },
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+    session.start()
+
+    await vi.advanceTimersByTimeAsync(2_024)
+    expect(rendered).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(rendered).toEqual([{ at: 2_025, progressMs: 2_025 }])
     await session.stop('test complete', false)
   })
 
