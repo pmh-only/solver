@@ -12,6 +12,7 @@ import {
   LYRICS_OFFSET_BUTTON_ID,
   LYRICS_SESSION_KEY,
   LYRICS_STOP_BUTTON_ID,
+  PUBLIC_LYRICS_INTERACTION_MS,
   formatLiveLyrics,
   restoreLyricsSession,
   subcommand as lyrics
@@ -227,21 +228,17 @@ describe('lyrics command', () => {
   })
 
   it('supports a public live session through --pub', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
     const calls = await startCommand('lyrics --pub')
     const defer = getCallback(calls) as { type: number; data: { flags: number } }
-    const published = publicMessageBody(calls)
+    const published = getEdit(calls)
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
     expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
-    expect(
-      calls.some(({ method, route }) => method === 'DELETE' && route.includes('/webhooks/'))
-    ).toBe(true)
-    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
-      version: 1,
-      channelId: '777777777777777777',
-      messageId: 'public-message-0'
-    })
+    expect(publicMessageBody(calls)).toBeUndefined()
+    expect(getStoredValue(LYRICS_SESSION_KEY)).toBeUndefined()
   })
 
   it('restores a persisted public session and resumes bot-authenticated edits', async () => {
@@ -276,23 +273,38 @@ describe('lyrics command', () => {
     client.destroy()
   })
 
-  it('uses bot-authenticated message edits for public sessions after the initial reply', async () => {
+  it('moves a public interaction session to a bot message after ten minutes', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
     const calls = await startCommand('lyrics --pub')
 
+    await vi.advanceTimersByTimeAsync(PUBLIC_LYRICS_INTERACTION_MS - 1)
+    expect(publicMessageBody(calls)).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(1)
+
+    const published = publicMessageBody(calls)
+    expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
+    expect(JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)).toContain(
+      'Continued in a bot message after 10 minutes.'
+    )
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
+      version: 1,
+      channelId: '777777777777777777',
+      messageId: 'public-message-0'
+    })
+
+    const migrationCallCount = calls.length
     await vi.advanceTimersByTimeAsync(2_000)
 
-    const patches = calls.filter(({ method }) => method === 'PATCH')
-    expect(patches.length).toBeGreaterThan(0)
     expect(
-      patches.every(
+      calls.slice(migrationCallCount).some(
         ({ route }) => route === '/channels/777777777777777777/messages/public-message-0'
       )
     ).toBe(true)
   })
 
-  it('uses interaction edits when public bot message creation fails', async () => {
+  it('keeps using interaction edits when migration message creation fails', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
     const calls = await startCommand('lyrics --pub', {
@@ -302,7 +314,7 @@ describe('lyrics command', () => {
           : undefined
     })
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(PUBLIC_LYRICS_INTERACTION_MS)
 
     const patches = calls.filter(({ method }) => method === 'PATCH')
     expect(patches.length).toBeGreaterThan(1)
@@ -325,7 +337,7 @@ describe('lyrics command', () => {
     const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(JSON.stringify(updated)).toContain('offsets: Discord 0s / Spotify +1s')
+    expect(JSON.stringify(updated)).toContain('Spotify +1s')
     expect(JSON.stringify(updated)).toContain('## __After one__')
   })
 
@@ -430,7 +442,7 @@ describe('lyrics command', () => {
 
   it('does not let another user stop a public session', async () => {
     const startCalls = await startCommand('lyrics --pub')
-    const edit = publicMessageBody(startCalls)
+    const edit = getEdit(startCalls) as { components: unknown[] }
     const stopCalls = await dispatch(
       buttonJSON(edit.components, LYRICS_STOP_BUTTON_ID, {
         user: {

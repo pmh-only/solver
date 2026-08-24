@@ -10,6 +10,7 @@ import { addKoreanPronunciations } from './lyrics-pronunciation.js'
 export const SPOTIFY_RESYNC_INTERVAL_MS = 5_000
 // Keep every rolling two-second window below Discord's five-edit route limit.
 export const MIN_LYRICS_EDIT_INTERVAL_MS = 401
+export const MESSAGE_LYRICS_EDIT_INTERVAL_MS = 1_000
 export const EPHEMERAL_LYRICS_SESSION_MS = 14 * 60 * 1_000
 export const PUBLIC_LYRICS_SESSION_MS = 6 * 60 * 60 * 1_000
 export const MAX_LYRICS_OFFSET_MS = 30_000
@@ -114,11 +115,21 @@ export class LyricsEditRateLimit {
     return true
   }
 
-  nextDelay(lastEditAt: number, now = Date.now()): number {
+  nextDelay(
+    lastEditAt: number,
+    now = Date.now(),
+    minimumIntervalMs?: number
+  ): number {
+    const fallbackDelay = Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
     if (this.nextRequestAt === null) {
-      return Math.max(0, lastEditAt + MIN_LYRICS_EDIT_INTERVAL_MS - now)
+      return minimumIntervalMs === undefined
+        ? fallbackDelay
+        : Math.max(0, lastEditAt + minimumIntervalMs - now)
     }
-    return Math.max(0, this.nextRequestAt - now)
+    const rateLimitDelay = Math.max(0, this.nextRequestAt - now)
+    return minimumIntervalMs === undefined
+      ? rateLimitDelay
+      : Math.max(rateLimitDelay, lastEditAt + minimumIntervalMs - now)
   }
 }
 
@@ -462,11 +473,10 @@ export function liveLyricsView(
 export class LiveLyricsSession {
   readonly token: string
   readonly ownerId: string
-  readonly isPublic: boolean
   readonly startedAt: number
 
   private readonly dependencies: LyricsSessionDependencies
-  private readonly renderView: (view: LiveLyricsView) => Promise<void>
+  private renderView: (view: LiveLyricsView) => Promise<void>
   private readonly onClose: () => void
   private state: LiveLyricsState
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -480,11 +490,12 @@ export class LiveLyricsSession {
   private offsetMs = 0
   private displayMode: LyricsDisplayMode = 'japanese'
   private renderLatencyMs: number
+  private publicMode: boolean
 
   constructor(options: LiveLyricsSessionOptions) {
     this.token = options.token
     this.ownerId = options.ownerId
-    this.isPublic = options.isPublic
+    this.publicMode = options.isPublic
     this.state = options.initialState
     this.renderView = options.render
     this.onClose = options.onClose
@@ -505,6 +516,10 @@ export class LiveLyricsSession {
 
   get isActive(): boolean {
     return this.active
+  }
+
+  get isPublic(): boolean {
+    return this.publicMode
   }
 
   view(now = this.dependencies.now()): LiveLyricsView {
@@ -584,6 +599,45 @@ export class LiveLyricsSession {
     }
     this.displayMode = displayMode
     return this.renderControlUpdate()
+  }
+
+  async migrateToPublic(
+    migrate: (
+      view: LiveLyricsView
+    ) => Promise<((view: LiveLyricsView) => Promise<void>) | null>
+  ): Promise<boolean> {
+    if (!this.active || this.publicMode) return false
+    if (this.timer) {
+      this.dependencies.clearTimer(this.timer)
+      this.timer = null
+    }
+    const running = this.inFlight
+    if (running) await running.catch(() => {})
+    if (!this.active) return false
+
+    const migration = (async () => {
+      const view = this.viewForRender()
+      const renderer = await migrate(view).catch(() => null)
+      if (!renderer || !this.active) {
+        if (this.active) this.schedule()
+        return false
+      }
+
+      this.renderView = renderer
+      this.publicMode = true
+      this.lastRenderedKey = viewKey(view)
+      this.lastEditAt = this.dependencies.now()
+      this.renderPending = false
+      this.schedule()
+      return true
+    })()
+    const tracked = migration.then(() => undefined)
+    this.inFlight = tracked
+    try {
+      return await migration
+    } finally {
+      if (this.inFlight === tracked) this.inFlight = null
+    }
   }
 
   private async renderControlUpdate(): Promise<LiveLyricsView> {

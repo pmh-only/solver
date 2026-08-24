@@ -19,6 +19,7 @@ import type { Subcommand } from '../types.js'
 import {
   commandContainer,
   commandReferenceReply,
+  container,
   deferCommandResponse,
   errorContainer,
   sendCommandReply,
@@ -31,6 +32,7 @@ import {
   LiveLyricsSession,
   LyricsEditRateLimit,
   MAX_LYRICS_OFFSET_MS,
+  MESSAGE_LYRICS_EDIT_INTERVAL_MS,
   PUBLIC_LYRICS_SESSION_MS,
   currentSyncedWordCount,
   displayedLyricText,
@@ -50,6 +52,7 @@ export const LYRICS_STOP_BUTTON_ID = 'lyrics-stop'
 export const LYRICS_OFFSET_BUTTON_ID = 'lyrics-offset'
 export const LYRICS_DISPLAY_BUTTON_ID = 'lyrics-display'
 export const LYRICS_SESSION_KEY = 'lyrics-session'
+export const PUBLIC_LYRICS_INTERACTION_MS = 10 * 60 * 1_000
 
 interface StoredLyricsSession {
   version: 1
@@ -335,7 +338,8 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     startedAt: stored.startedAt,
     render,
     dependencies: {
-      automaticEditDelay: (lastEditAt, now) => rateLimit.nextDelay(lastEditAt, now)
+      automaticEditDelay: (lastEditAt, now) =>
+        rateLimit.nextDelay(lastEditAt, now, MESSAGE_LYRICS_EDIT_INTERVAL_MS)
     },
     onClose: () => {
       removeRateLimitObserver()
@@ -453,112 +457,145 @@ export const subcommand: Subcommand = {
     const token = randomUUID().replaceAll('-', '').slice(0, 16)
     const requestedPublic = flags.has('pub')
 
-    let session: LiveLyricsSession
     const initialOffsetMs = initialState.track ? loadLyricsOffset(initialState.track.id) : 0
     const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
 
     const initialReply = liveLyricsReply(initialView, token, args, flags)
     const publicChannelId = interaction.channelId
-    let messageId = ''
     let durablePublic = false
-    let initialRenderLatencyMs = 0
+    let messageId = ''
+    let messageMode = false
+    let migrationTimer: ReturnType<typeof setTimeout> | null = null
+    const renderStartedAt = Date.now()
+    await interaction.editReply({
+      components: initialReply.components,
+      files: initialReply.files,
+      attachments: [],
+      flags: MessageFlags.IsComponentsV2
+    })
+    const initialRenderLatencyMs = Date.now() - renderStartedAt
 
-    if (requestedPublic && publicChannelId) {
-      const renderStartedAt = Date.now()
-      try {
-        const created = (await interaction.client.rest.post(
-          Routes.channelMessages(publicChannelId),
-          {
-            body: {
-              components: initialReply.components.map((component) => component.toJSON()),
-              flags: MessageFlags.IsComponentsV2,
-              allowed_mentions: { parse: [] }
-            }
-          }
-        )) as { id?: unknown }
-        if (typeof created.id !== 'string') throw new Error('Discord did not return a message ID')
-        messageId = created.id
-        durablePublic = true
-        initialRenderLatencyMs = Date.now() - renderStartedAt
-        await interaction.deleteReply().catch(() => {})
-      } catch {
-        durablePublic = false
-      }
-    }
-
-    if (!durablePublic) {
-      const renderStartedAt = Date.now()
-      const message = await interaction.editReply({
-        components: initialReply.components,
-        files: initialReply.files,
-        attachments: [],
-        flags: MessageFlags.IsComponentsV2
-      })
-      messageId = message.id
-      initialRenderLatencyMs = Date.now() - renderStartedAt
-    }
-
-    const rateLimit = new LyricsEditRateLimit()
-    const editPath =
-      durablePublic && publicChannelId
-        ? Routes.channelMessage(publicChannelId, messageId)
-        : interactionOriginalMessageRoute(interaction.applicationId, interaction.token)
-    const removeRateLimitObserver = observeLyricsEditRateLimit(
+    let rateLimit = new LyricsEditRateLimit()
+    let removeRateLimitObserver = observeLyricsEditRateLimit(
       interaction.client,
-      editPath,
+      interactionOriginalMessageRoute(interaction.applicationId, interaction.token),
       rateLimit
     )
 
-    const render = async (view: LiveLyricsView) => {
+    const interactionRender = async (view: LiveLyricsView) => {
       const reply = liveLyricsReply(view, token, args, flags)
-      const payload = {
+      await interaction.editReply({
         components: reply.components,
         files: reply.files,
         attachments: [],
         flags: MessageFlags.IsComponentsV2 as const
-      }
-      if (durablePublic && publicChannelId) {
-        await interaction.client.rest.patch(Routes.channelMessage(publicChannelId, messageId), {
-          body: {
-            components: reply.components.map((component) => component.toJSON()),
-            attachments: [],
-            flags: MessageFlags.IsComponentsV2,
-            allowed_mentions: { parse: [] }
-          }
-        })
-      } else {
-        await interaction.editReply(payload)
-      }
+      })
     }
 
-    session = new LiveLyricsSession({
+    const session = new LiveLyricsSession({
       token,
       ownerId: interaction.user.id,
-      isPublic: durablePublic,
+      isPublic: false,
       initialState,
       renderedView: initialView,
       initialOffsetMs,
       initialRenderLatencyMs,
-      render,
+      render: interactionRender,
       dependencies: {
-        automaticEditDelay: (lastEditAt, now) => rateLimit.nextDelay(lastEditAt, now)
+        automaticEditDelay: (lastEditAt, now) =>
+          rateLimit.nextDelay(
+            lastEditAt,
+            now,
+            messageMode ? MESSAGE_LYRICS_EDIT_INTERVAL_MS : undefined
+          )
       },
       onClose: () => {
+        if (migrationTimer) clearTimeout(migrationTimer)
         removeRateLimitObserver()
         unregisterLyricsSession(token)
         if (durablePublic) deleteStoredLyricsSession(token)
       }
     })
     await registerLyricsSession(session)
-    if (durablePublic && publicChannelId) {
-      saveStoredLyricsSession({
-        version: 1,
-        token,
-        ownerId: interaction.user.id,
-        channelId: publicChannelId,
-        messageId,
-        startedAt: session.startedAt
-      })
+
+    if (requestedPublic && publicChannelId) {
+      migrationTimer = setTimeout(() => {
+        migrationTimer = null
+        void session.migrateToPublic(async (view) => {
+          const reply = liveLyricsReply(view, token, args, flags)
+          const created = (await interaction.client.rest.post(
+            Routes.channelMessages(publicChannelId),
+            {
+              body: {
+                components: reply.components.map((component) => component.toJSON()),
+                flags: MessageFlags.IsComponentsV2,
+                allowed_mentions: { parse: [] }
+              }
+            }
+          )) as { id?: unknown }
+          if (typeof created.id !== 'string') return null
+          if (!session.isActive) {
+            await interaction.client.rest
+              .delete(Routes.channelMessage(publicChannelId, created.id))
+              .catch(() => {})
+            return null
+          }
+
+          const moved = container(
+            args,
+            flags,
+            summarySection('Live lyrics moved', [
+              '-# Continued in a bot message after 10 minutes.'
+            ])
+          )
+          await interaction
+            .editReply({
+              components: moved.components,
+              files: moved.files,
+              attachments: [],
+              flags: MessageFlags.IsComponentsV2
+            })
+            .catch(() => {})
+          if (!session.isActive) {
+            await interaction.client.rest
+              .delete(Routes.channelMessage(publicChannelId, created.id))
+              .catch(() => {})
+            return null
+          }
+
+          messageId = created.id
+          durablePublic = true
+          messageMode = true
+          removeRateLimitObserver()
+          rateLimit = new LyricsEditRateLimit()
+          removeRateLimitObserver = observeLyricsEditRateLimit(
+            interaction.client,
+            Routes.channelMessage(publicChannelId, messageId),
+            rateLimit
+          )
+          saveStoredLyricsSession({
+            version: 1,
+            token,
+            ownerId: interaction.user.id,
+            channelId: publicChannelId,
+            messageId,
+            startedAt: session.startedAt
+          })
+
+          return async (nextView) => {
+            const nextReply = liveLyricsReply(nextView, token, args, flags)
+            await interaction.client.rest.patch(Routes.channelMessage(publicChannelId, messageId), {
+              body: {
+                components: nextReply.components.map((component) => component.toJSON()),
+                attachments: [],
+                flags: MessageFlags.IsComponentsV2,
+                allowed_mentions: { parse: [] }
+              }
+            })
+          }
+        })
+      }, PUBLIC_LYRICS_INTERACTION_MS)
+      migrationTimer.unref?.()
     }
     session.start()
   }

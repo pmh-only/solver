@@ -4,6 +4,7 @@ import {
   LyricsEditRateLimit,
   LYRICS_OFFSETS_KEY,
   MAX_LYRICS_OFFSET_MS,
+  MESSAGE_LYRICS_EDIT_INTERVAL_MS,
   MIN_LYRICS_EDIT_INTERVAL_MS,
   SPOTIFY_RESYNC_INTERVAL_MS,
   clearLyricsSessions,
@@ -216,6 +217,15 @@ describe('lyrics edit rate limits', () => {
     expect(rateLimit.observe(rateLimitHeaders(0, 10, 'other-bucket'), false, 100)).toBe(false)
     expect(rateLimit.nextDelay(0, 100)).toBe(175)
   })
+
+  it('keeps normal message edits at least one second apart', () => {
+    const rateLimit = new LyricsEditRateLimit()
+    rateLimit.observe(rateLimitHeaders(4, 1), true, 100)
+
+    expect(rateLimit.nextDelay(100, 100, MESSAGE_LYRICS_EDIT_INTERVAL_MS)).toBe(1_000)
+    expect(rateLimit.nextDelay(100, 1_099, MESSAGE_LYRICS_EDIT_INTERVAL_MS)).toBe(1)
+    expect(rateLimit.nextDelay(100, 1_100, MESSAGE_LYRICS_EDIT_INTERVAL_MS)).toBe(0)
+  })
 })
 
 describe('live lyrics scheduling', () => {
@@ -363,6 +373,41 @@ describe('live lyrics scheduling', () => {
     expect(first.isActive).toBe(false)
     expect(getLyricsSession(first.token)).toBeUndefined()
     expect(getLyricsSession(second.token)).toBe(second)
+  })
+
+  it('does not switch renderers when stopped during public migration', async () => {
+    const currentTrack = track()
+    const state = stateFor(currentTrack)
+    let finishMigration!: () => void
+    const migrationGate = new Promise<void>((resolve) => {
+      finishMigration = resolve
+    })
+    const session = new LiveLyricsSession({
+      token: '0000000000000017',
+      ownerId: 'owner',
+      isPublic: false,
+      initialState: state,
+      renderedView: initialView(state),
+      render: async () => undefined,
+      onClose: () => undefined,
+      dependencies: {
+        getCurrentTrack: async () => currentTrack,
+        getLyricsForTrack: async () => lyricsFor(currentTrack)
+      }
+    })
+
+    const migration = session.migrateToPublic(async () => {
+      await migrationGate
+      return async () => undefined
+    })
+    await Promise.resolve()
+    const stopping = session.stop('test complete', false)
+    finishMigration()
+
+    await expect(migration).resolves.toBe(false)
+    await stopping
+    expect(session.isPublic).toBe(false)
+    expect(session.isActive).toBe(false)
   })
 
   it('adjusts lyric time in half-second steps and clamps extreme offsets', async () => {
