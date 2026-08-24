@@ -494,7 +494,6 @@ export const subcommand: Subcommand = {
       })
       messageId = message.id
       initialRenderLatencyMs = Date.now() - renderStartedAt
-      durablePublic = requestedPublic && Boolean(publicChannelId)
     }
 
     const rateLimit = new LyricsEditRateLimit()

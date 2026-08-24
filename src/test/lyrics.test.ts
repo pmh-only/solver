@@ -292,7 +292,7 @@ describe('lyrics command', () => {
     ).toBe(true)
   })
 
-  it('keeps the public interaction reply durable when normal message creation fails', async () => {
+  it('uses interaction edits when public bot message creation fails', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
     const calls = await startCommand('lyrics --pub', {
@@ -306,14 +306,8 @@ describe('lyrics command', () => {
 
     const patches = calls.filter(({ method }) => method === 'PATCH')
     expect(patches.length).toBeGreaterThan(1)
-    expect(patches[0]!.route).toContain('/webhooks/')
-    expect(
-      patches.slice(1).every(({ route }) => route === '/channels/777777777777777777/messages/0')
-    ).toBe(true)
-    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
-      channelId: '777777777777777777',
-      messageId: '0'
-    })
+    expect(patches.every(({ route }) => route.includes('/webhooks/'))).toBe(true)
+    expect(getStoredValue(LYRICS_SESSION_KEY)).toBeUndefined()
   })
 
   it('advances synchronized lyrics by one second when the owner presses +1s', async () => {
