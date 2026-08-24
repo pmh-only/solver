@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deleteStoredValue, getStoredValue, isInternalStoredKey } from '../helpers/kv-store.js'
 import {
   DEFAULT_SYSTEM_PROMPT,
@@ -71,10 +71,14 @@ describe('global system prompt', () => {
   it('combines the permanent global prompt with only the selected session prompt', () => {
     updateSystemPrompt({ prompt: 'Global instructions.' }, 'admin')
     updateSessionSystemPrompt('user-1', 'work', { prompt: 'Work-session instructions.' }, 'user-1')
+    const now = new Date('2026-08-24T14:35:12.345Z')
 
-    expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Global instructions.')
-    expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain('Work-session instructions.')
-    expect(loadEffectiveSystemPrompt('user-1', 'other')).toBe('Global instructions.')
+    expect(loadEffectiveSystemPrompt('user-1', 'work', now)).toBe(
+      'Global instructions.\n\nAdditional instructions for the current session:\nWork-session instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+    )
+    expect(loadEffectiveSystemPrompt('user-1', 'other', now)).toBe(
+      'Global instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+    )
 
     expect(resetSessionSystemPrompt('user-1', 'work')).toEqual({
       prompt: '',
@@ -82,6 +86,25 @@ describe('global system prompt', () => {
       updatedAt: null,
       updatedBy: null
     })
-    expect(loadEffectiveSystemPrompt('user-1', 'work')).toBe('Global instructions.')
+    expect(loadEffectiveSystemPrompt('user-1', 'work', now)).toBe(
+      'Global instructions.\n\nCurrent date and time: 2026-08-24T14:35:12.345Z (UTC).'
+    )
+  })
+
+  it('computes the current date and time when each effective prompt is loaded', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-08-24T01:02:03.004Z'))
+      expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain(
+        'Current date and time: 2026-08-24T01:02:03.004Z (UTC).'
+      )
+
+      vi.setSystemTime(new Date('2026-08-24T05:06:07.008Z'))
+      expect(loadEffectiveSystemPrompt('user-1', 'work')).toContain(
+        'Current date and time: 2026-08-24T05:06:07.008Z (UTC).'
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

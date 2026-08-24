@@ -68,11 +68,17 @@ export function loadSessionSystemPromptSetting(
   }
 }
 
-export function loadEffectiveSystemPrompt(userId: string, sessionName: string): string {
+export function loadEffectiveSystemPrompt(
+  userId: string,
+  sessionName: string,
+  currentDateTime = new Date()
+): string {
   const globalPrompt = loadSystemPrompt()
   const sessionPrompt = loadSessionSystemPromptSetting(userId, sessionName)
-  if (!sessionPrompt.isSet) return globalPrompt
-  return `${globalPrompt}\n\nAdditional instructions for the current session:\n${sessionPrompt.prompt}`
+  const configuredPrompt = sessionPrompt.isSet
+    ? `${globalPrompt}\n\nAdditional instructions for the current session:\n${sessionPrompt.prompt}`
+    : globalPrompt
+  return `${configuredPrompt}\n\nCurrent date and time: ${currentDateTime.toISOString()} (UTC).`
 }
 
 function persistSystemPrompt(
