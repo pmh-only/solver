@@ -163,10 +163,6 @@ async function readBoundedJson(response: Response, provider: LyricsSource): Prom
   }
 }
 
-async function readBoundedText(response: Response, provider: LyricsSource): Promise<string> {
-  return new TextDecoder().decode(await readBoundedBytes(response, provider))
-}
-
 function nullableString(value: unknown): string | null | undefined {
   return value === null ? null : typeof value === 'string' ? value : undefined
 }
@@ -214,6 +210,33 @@ function parseLrcLibTrack(value: unknown): LrcLibTrack | null {
 
 function normalized(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase('en-US')
+}
+
+function identity(value: string): string {
+  return normalized(value).replace(/[\p{P}\p{S}\s]+/gu, '')
+}
+
+function exactMetadataMatch(
+  track: SpotifyCurrentTrack,
+  candidate: { track: unknown; artist: unknown; album: unknown; duration?: unknown },
+  requireDuration: boolean
+): boolean {
+  if (
+    typeof candidate.track !== 'string' ||
+    typeof candidate.artist !== 'string' ||
+    typeof candidate.album !== 'string' ||
+    identity(candidate.track) !== identity(track.name) ||
+    identity(candidate.artist) !== identity(track.artists) ||
+    identity(candidate.album) !== identity(track.album)
+  ) {
+    return false
+  }
+  if (!requireDuration) return true
+  return (
+    typeof candidate.duration === 'number' &&
+    Number.isFinite(candidate.duration) &&
+    Math.abs(candidate.duration - track.durationSeconds) <= 3
+  )
 }
 
 function matchScore(candidate: LrcLibTrack, track: SpotifyCurrentTrack): number {
@@ -312,6 +335,20 @@ async function findSyncLrcLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrac
     throw new Error('SyncLRC returned invalid lyrics data')
   }
   const record = data as Record<string, unknown>
+  if (
+    !exactMetadataMatch(
+      track,
+      {
+        track: record.track,
+        artist: record.artist,
+        album: record.album,
+        duration: record.duration
+      },
+      true
+    )
+  ) {
+    return null
+  }
   if (record.instrumental === true) return fallbackMatch(track, null, 'SyncLRC', true)
   const syncedLyrics = typeof record.lyrics === 'string' ? record.lyrics.trim() : ''
   if (!syncedLyrics || !/^\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]/m.test(syncedLyrics)) {
@@ -321,23 +358,38 @@ async function findSyncLrcLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrac
 }
 
 async function findLrcApiLyrics(track: SpotifyCurrentTrack): Promise<LrcLibTrack | null> {
-  const url = new URL('/lyrics', LRCAPI_ORIGIN)
+  const url = new URL('/jsonapi', LRCAPI_ORIGIN)
   url.searchParams.set('title', track.name)
   url.searchParams.set('artist', track.artists)
   url.searchParams.set('album', track.album)
   const response = await fetch(url, {
-    headers: { Accept: 'text/plain', 'User-Agent': 'solver/1.0.0' },
+    headers: { Accept: 'application/json', 'User-Agent': 'solver/1.0.0' },
     redirect: 'error',
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   })
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`LrcApi request failed (${response.status})`)
 
-  const syncedLyrics = (await readBoundedText(response, 'LrcApi')).trim()
-  if (!/^\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]/m.test(syncedLyrics)) {
-    throw new Error('LrcApi returned invalid synchronized lyrics')
+  const data = await readBoundedJson(response, 'LrcApi')
+  if (!Array.isArray(data)) throw new Error('LrcApi returned invalid lyrics data')
+  for (const value of data) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const record = value as Record<string, unknown>
+    if (
+      !exactMetadataMatch(
+        track,
+        { track: record.title, artist: record.artist, album: record.album },
+        false
+      )
+    ) {
+      continue
+    }
+    const syncedLyrics = typeof record.lyrics === 'string' ? record.lyrics.trim() : ''
+    if (/^\[\d{1,3}:[0-5]\d(?:[.:]\d{1,3})?\]/m.test(syncedLyrics)) {
+      return fallbackMatch(track, syncedLyrics, 'LrcApi')
+    }
   }
-  return fallbackMatch(track, syncedLyrics, 'LrcApi')
+  return null
 }
 
 function plainFromSynced(value: string): string {

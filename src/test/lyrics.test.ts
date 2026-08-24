@@ -745,6 +745,10 @@ describe('lyrics API runtime', () => {
         Response.json({
           lyrics: '[00:01.00] First line\n[00:02.00] Second line',
           type: 'synced',
+          track: 'Test Song',
+          artist: 'Test Artist',
+          album: 'Test Album',
+          duration: 225,
           instrumental: false
         })
       )
@@ -775,7 +779,20 @@ describe('lyrics API runtime', () => {
       .mockResolvedValueOnce(Response.json([]))
       .mockResolvedValueOnce(Response.json({ lyrics: 'Missing timestamps', type: 'synced' }))
       .mockResolvedValueOnce(
-        new Response('[Verse]\n[00:01.00] First line\n[00:02.00] Second line')
+        Response.json([
+          {
+            title: 'Different Song',
+            artist: 'Different Artist',
+            album: 'Different Album',
+            lyrics: '[00:01.00] Wrong line'
+          },
+          {
+            title: 'Test Song',
+            artist: 'Test Artist',
+            album: 'Test Album',
+            lyrics: '[Verse]\n[00:01.00] First line\n[00:02.00] Second line'
+          }
+        ])
       )
     vi.stubGlobal('fetch', fetchMock)
 
@@ -783,7 +800,7 @@ describe('lyrics API runtime', () => {
     const [requestUrl, requestInit] = fetchMock.mock.calls[3] as [URL, RequestInit]
 
     expect(requestUrl.origin).toBe('https://api.lrc.cx')
-    expect(requestUrl.pathname).toBe('/lyrics')
+    expect(requestUrl.pathname).toBe('/jsonapi')
     expect(requestUrl.searchParams.get('title')).toBe('Test Song')
     expect(requestUrl.searchParams.get('artist')).toBe('Test Artist')
     expect(requestInit).toMatchObject({ redirect: 'error' })
@@ -797,12 +814,59 @@ describe('lyrics API runtime', () => {
       .mockResolvedValueOnce(new Response(null, { status: 404 }))
       .mockResolvedValueOnce(Response.json([]))
       .mockRejectedValueOnce(new DOMException('Timed out', 'TimeoutError'))
-      .mockResolvedValueOnce(new Response('[00:01.00] Fallback line'))
+      .mockResolvedValueOnce(
+        Response.json([
+          {
+            title: 'Test Song',
+            artist: 'Test Artist',
+            album: 'Test Album',
+            lyrics: '[00:01.00] Fallback line'
+          }
+        ])
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(lyricsClient.getCurrentTrackLyrics()).resolves.toMatchObject({
       synchronized: true,
       match: { source: 'LrcApi' }
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('rejects synchronized fallback lyrics for a different track', async () => {
+    vi.spyOn(mcpRuntime, 'callAgentMcpTool').mockResolvedValue(playbackResult())
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValueOnce(
+        Response.json({
+          lyrics: '[00:01.00] Wrong SyncLRC line',
+          type: 'synced',
+          track: 'Completely Different Song',
+          artist: 'Different Artist',
+          album: 'Different Album',
+          duration: 300,
+          instrumental: false
+        })
+      )
+      .mockResolvedValueOnce(
+        Response.json([
+          {
+            title: 'Another Wrong Song',
+            artist: 'Another Artist',
+            album: 'Another Album',
+            lyrics: '[00:01.00] Wrong LrcApi line'
+          }
+        ])
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(lyricsClient.getCurrentTrackLyrics()).resolves.toEqual({
+      track: spotifyTrack(),
+      match: null,
+      lyrics: null,
+      synchronized: false
     })
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
