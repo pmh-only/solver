@@ -90,6 +90,10 @@ interface AgentMcpCandidate {
 
 const agentMcpConnections = new Map<string, AgentMcpConnection>()
 const agentMcpFailures = new Map<string, string>()
+const agentMcpServerReadiness = new Map<
+  string,
+  { promise: Promise<void>; resolve: () => void }
+>()
 let agentMcpBoot: Promise<void> | undefined
 let agentMcpState: 'idle' | 'initializing' | 'ready' | 'failed' = 'idle'
 
@@ -386,6 +390,23 @@ function mcpFailureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function mcpServerReadiness(serverName: string) {
+  let readiness = agentMcpServerReadiness.get(serverName)
+  if (!readiness) {
+    let resolve!: () => void
+    const promise = new Promise<void>((done) => {
+      resolve = done
+    })
+    readiness = { promise, resolve }
+    agentMcpServerReadiness.set(serverName, readiness)
+  }
+  return readiness
+}
+
+function markMcpServerReady(serverName: string): void {
+  mcpServerReadiness(serverName).resolve()
+}
+
 async function bootAgentMcpRuntime(): Promise<void> {
   const candidates = builtInMcpCandidates()
   const [spotifyResult, googleCalendarResult] = await Promise.allSettled([
@@ -399,6 +420,8 @@ async function bootAgentMcpRuntime(): Promise<void> {
   if (spotifyResult.status === 'rejected') {
     agentMcpFailures.set('spotify', mcpFailureMessage(spotifyResult.reason))
   }
+  if (!spotifyConfiguration) markMcpServerReady('spotify')
+  if (!googleCalendarConfiguration) markMcpServerReady('google_calendar')
   if (googleCalendarResult.status === 'rejected') {
     agentMcpFailures.set('google_calendar', mcpFailureMessage(googleCalendarResult.reason))
   }
@@ -453,6 +476,8 @@ async function bootAgentMcpRuntime(): Promise<void> {
       } catch (error) {
         agentMcpFailures.set(name, mcpFailureMessage(error))
         await client.disconnect().catch(() => {})
+      } finally {
+        markMcpServerReady(name)
       }
     })
   )
@@ -478,13 +503,18 @@ export function isAgentMcpRuntimeInitializing(): boolean {
   return agentMcpState === 'initializing'
 }
 
+export async function waitForAgentMcpServer(serverName: string): Promise<void> {
+  const boot = initializeAgentMcpRuntime()
+  await Promise.race([mcpServerReadiness(serverName).promise, boot])
+}
+
 export async function callAgentMcpTool(
   serverName: string,
   toolName: string,
   args: JSONValue = {},
   signal?: AbortSignal
 ): Promise<JSONValue> {
-  await initializeAgentMcpRuntime()
+  await waitForAgentMcpServer(serverName)
 
   const connection = agentMcpConnections.get(serverName)
   if (!connection) {
@@ -508,6 +538,7 @@ export async function closeAgentMcpRuntime(): Promise<void> {
   const clients = [...agentMcpConnections.values()].map(({ client }) => client)
   agentMcpConnections.clear()
   agentMcpFailures.clear()
+  agentMcpServerReadiness.clear()
   agentMcpBoot = undefined
   agentMcpState = 'idle'
   await Promise.all(clients.map((client) => client.disconnect().catch(() => {})))

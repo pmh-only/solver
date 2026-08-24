@@ -61,11 +61,11 @@ const EMPTY_LYRIC_LINE = '-# \u200b'
 const LYRICS_WINDOW_RADIUS = 2
 
 interface StoredLyricsSession {
-  version: 1
+  version: 1 | 2
   token: string
   ownerId: string
   channelId: string
-  messageId: string
+  messageId?: string
   startedAt: number
 }
 
@@ -90,12 +90,12 @@ function readStoredLyricsSession(): StoredLyricsSession | null {
     const safeId = (id: unknown) =>
       typeof id === 'string' && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id)
     if (
-      value.version !== 1 ||
+      (value.version !== 1 && value.version !== 2) ||
       typeof value.token !== 'string' ||
       !/^[a-f0-9]{16}$/.test(value.token) ||
       !safeId(value.ownerId) ||
       !safeId(value.channelId) ||
-      !safeId(value.messageId) ||
+      (value.version === 1 ? !safeId(value.messageId) : value.messageId !== undefined && !safeId(value.messageId)) ||
       typeof value.startedAt !== 'number' ||
       !Number.isFinite(value.startedAt)
     ) {
@@ -345,15 +345,38 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
   const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
   initialView.renderIntervalMs = MESSAGE_LYRICS_EDIT_INTERVAL_MS
   const flags: Flags = new Map([['pub', true]])
+  let messageId = stored.messageId
+  let initialRenderLatencyMs = 0
+
+  if (!messageId) {
+    const reply = liveLyricsReply(initialView, stored.token, 'lyrics --pub', flags)
+    const renderStartedAt = Date.now()
+    try {
+      const created = (await client.rest.post(Routes.channelMessages(stored.channelId), {
+        body: {
+          components: reply.components.map((component) => component.toJSON()),
+          flags: MessageFlags.IsComponentsV2,
+          allowed_mentions: { parse: [] }
+        }
+      })) as { id?: unknown }
+      if (typeof created.id !== 'string') return false
+      messageId = created.id
+      initialRenderLatencyMs = Date.now() - renderStartedAt
+      saveStoredLyricsSession({ ...stored, version: 2, messageId })
+    } catch {
+      return false
+    }
+  }
+
   const rateLimit = new LyricsEditRateLimit()
   const removeRateLimitObserver = observeLyricsEditRateLimit(
     client,
-    Routes.channelMessage(stored.channelId, stored.messageId),
+    Routes.channelMessage(stored.channelId, messageId),
     rateLimit
   )
   const render = async (view: LiveLyricsView) => {
     const reply = liveLyricsReply(view, stored.token, 'lyrics --pub', flags)
-    await client.rest.patch(Routes.channelMessage(stored.channelId, stored.messageId), {
+    await client.rest.patch(Routes.channelMessage(stored.channelId, messageId), {
       body: {
         components: reply.components.map((component) => component.toJSON()),
         attachments: [],
@@ -363,13 +386,16 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     })
   }
 
-  const initialRenderStartedAt = Date.now()
-  try {
-    await render(initialView)
-  } catch {
-    removeRateLimitObserver()
-    deleteStoredLyricsSession(stored.token)
-    return false
+  if (stored.messageId) {
+    const initialRenderStartedAt = Date.now()
+    try {
+      await render(initialView)
+      initialRenderLatencyMs = Date.now() - initialRenderStartedAt
+    } catch {
+      removeRateLimitObserver()
+      deleteStoredLyricsSession(stored.token)
+      return false
+    }
   }
 
   const session = new LiveLyricsSession({
@@ -379,7 +405,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
     initialState,
     renderedView: initialView,
     initialOffsetMs,
-    initialRenderLatencyMs: Date.now() - initialRenderStartedAt,
+    initialRenderLatencyMs,
     startedAt: stored.startedAt,
     render,
     dependencies: {
@@ -508,7 +534,6 @@ export const subcommand: Subcommand = {
 
     const initialReply = liveLyricsReply(initialView, token, args, flags)
     const publicChannelId = interaction.channelId
-    let durablePublic = false
     let messageId = ''
     let messageMode = false
     let migrationTimer: ReturnType<typeof setTimeout> | null = null
@@ -561,12 +586,19 @@ export const subcommand: Subcommand = {
         if (migrationTimer) clearTimeout(migrationTimer)
         removeRateLimitObserver()
         unregisterLyricsSession(token)
-        if (durablePublic) deleteStoredLyricsSession(token)
+        if (requestedPublic) deleteStoredLyricsSession(token)
       }
     })
     await registerLyricsSession(session)
 
     if (requestedPublic && publicChannelId) {
+      saveStoredLyricsSession({
+        version: 2,
+        token,
+        ownerId: interaction.user.id,
+        channelId: publicChannelId,
+        startedAt: session.startedAt
+      })
       migrationTimer = setTimeout(() => {
         migrationTimer = null
         void session.migrateToPublic(async (view) => {
@@ -617,7 +649,6 @@ export const subcommand: Subcommand = {
           }
 
           messageId = created.id
-          durablePublic = true
           messageMode = true
           removeRateLimitObserver()
           rateLimit = new LyricsEditRateLimit()
@@ -627,7 +658,7 @@ export const subcommand: Subcommand = {
             rateLimit
           )
           saveStoredLyricsSession({
-            version: 1,
+            version: 2,
             token,
             ownerId: interaction.user.id,
             channelId: publicChannelId,

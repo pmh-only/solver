@@ -9,7 +9,8 @@ export {
 export {
   closeAgentMcpRuntime,
   initializeAgentMcpRuntime,
-  isAgentMcpRuntimeInitializing
+  isAgentMcpRuntimeInitializing,
+  waitForAgentMcpServer
 } from './mcp-runtime.js'
 export { loadAgentSessionNames } from './session-store.js'
 export {

@@ -239,7 +239,12 @@ describe('lyrics command', () => {
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
     expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
     expect(publicMessageBody(calls)).toBeUndefined()
-    expect(getStoredValue(LYRICS_SESSION_KEY)).toBeUndefined()
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
+      version: 2,
+      ownerId: '666666666666666666',
+      channelId: '777777777777777777'
+    })
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).not.toHaveProperty('messageId')
   })
 
   it('restores a persisted public session and resumes bot-authenticated edits', async () => {
@@ -275,6 +280,43 @@ describe('lyrics command', () => {
     client.destroy()
   })
 
+  it('restores a public interaction session into a new bot message after restart', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    vi.spyOn(lyricsClient, 'getCurrentTrack').mockResolvedValue(spotifyTrack())
+    vi.spyOn(lyricsClient, 'getLyricsForTrack').mockResolvedValue(currentLyrics())
+    setStoredValue(
+      LYRICS_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        token: '0123456789abcdef',
+        ownerId: '111111111111111111',
+        channelId: '777777777777777777',
+        startedAt: 1_000
+      })
+    )
+    const client = new Client({ intents: [] })
+    const post = vi.fn<(_route: string, _request: unknown) => Promise<object>>(async () => ({
+      id: 'restored-message'
+    }))
+    ;(client.rest as unknown as { post: typeof post }).post = post
+
+    await expect(restoreLyricsSession(client)).resolves.toBe(true)
+
+    expect(post).toHaveBeenCalledWith(
+      '/channels/777777777777777777/messages',
+      expect.objectContaining({
+        body: expect.objectContaining({ flags: MessageFlags.IsComponentsV2 })
+      })
+    )
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('Live lyrics: Test Song')
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
+      version: 2,
+      messageId: 'restored-message'
+    })
+    client.destroy()
+  })
+
   it('moves a public interaction session to a bot message after ten minutes', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
@@ -292,7 +334,7 @@ describe('lyrics command', () => {
       'Continued in a bot message after 10 minutes.'
     )
     expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
-      version: 1,
+      version: 2,
       channelId: '777777777777777777',
       messageId: 'public-message-0'
     })
@@ -322,7 +364,11 @@ describe('lyrics command', () => {
     const patches = calls.filter(({ method }) => method === 'PATCH')
     expect(patches.length).toBeGreaterThan(1)
     expect(patches.every(({ route }) => route.includes('/webhooks/'))).toBe(true)
-    expect(getStoredValue(LYRICS_SESSION_KEY)).toBeUndefined()
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
+      version: 2,
+      channelId: '777777777777777777'
+    })
+    expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).not.toHaveProperty('messageId')
   })
 
   it('advances synchronized lyrics by one second when the owner presses +1s', async () => {

@@ -14,6 +14,10 @@ describe('post-ready service startup', () => {
       initializeMcp: async () => {
         order.push('mcp')
       },
+      waitForMcpServer: async (serverName) => {
+        expect(serverName).toBe('spotify')
+        order.push('spotify')
+      },
       restoreLyrics: async (receivedClient) => {
         expect(receivedClient).toBe(client)
         order.push('lyrics')
@@ -23,7 +27,7 @@ describe('post-ready service startup', () => {
       log
     })
 
-    expect(order).toEqual(['mcp', 'lyrics'])
+    expect(order).toEqual(['mcp', 'spotify', 'lyrics'])
     expect(clearIssue).toHaveBeenCalledWith('agent_mcp_startup')
     expect(log).toHaveBeenCalledWith('restored live lyrics session')
   })
@@ -39,6 +43,9 @@ describe('post-ready service startup', () => {
       initializeMcp: async () => {
         throw startupError
       },
+      waitForMcpServer: async () => {
+        throw startupError
+      },
       closeMcp,
       restoreLyrics,
       reportIssue,
@@ -49,5 +56,31 @@ describe('post-ready service startup', () => {
     expect(closeMcp).toHaveBeenCalledOnce()
     expect(restoreLyrics).not.toHaveBeenCalled()
     expect(logError).toHaveBeenCalledWith('agent MCP startup failed safely: boot failed')
+  })
+
+  it('restores lyrics after Spotify is ready without waiting for every MCP server', async () => {
+    let finishMcpStartup!: () => void
+    const mcpStartup = new Promise<void>((resolve) => {
+      finishMcpStartup = resolve
+    })
+    const restoreLyrics = vi.fn(async () => true)
+    const startup = initializeBotReadyServices(client, {
+      initializeMcp: () => mcpStartup,
+      waitForMcpServer: async (serverName) => {
+        expect(serverName).toBe('spotify')
+      },
+      restoreLyrics
+    })
+
+    await vi.waitFor(() => expect(restoreLyrics).toHaveBeenCalledOnce())
+    let completed = false
+    void startup.then(() => {
+      completed = true
+    })
+    await Promise.resolve()
+    expect(completed).toBe(false)
+
+    finishMcpStartup()
+    await startup
   })
 })
