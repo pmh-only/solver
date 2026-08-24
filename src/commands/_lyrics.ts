@@ -18,6 +18,7 @@ export interface SpotifyCurrentTrack {
   durationSeconds: number
   progressSeconds: number
   isPlaying: boolean
+  imageUrl?: string
 }
 
 export interface LrcLibTrack {
@@ -78,6 +79,24 @@ function parseClock(value: string): number {
   return parts[0]! * 60 + parts[1]!
 }
 
+function spotifyImageUrl(value: string | undefined): string | undefined {
+  if (!value || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      (url.hostname !== 'i.scdn.co' && !url.hostname.endsWith('.scdn.co'))
+    ) {
+      return undefined
+    }
+    return url.href
+  } catch {
+    return undefined
+  }
+}
+
 export function parseSpotifyCurrentTrack(value: JSONValue): SpotifyCurrentTrack {
   const output = resultText(value)
   if (output.trim() === 'Nothing is currently playing.') {
@@ -89,6 +108,9 @@ export function parseSpotifyCurrentTrack(value: JSONValue): SpotifyCurrentTrack 
   const status = nowLine.match(/^Now (playing|paused): "/)
   const divider = nowLine.lastIndexOf('" by ')
   const album = lines.find((line) => line.startsWith('Album: '))?.slice('Album: '.length)
+  const imageUrl = spotifyImageUrl(
+    lines.find((line) => line.startsWith('Art: '))?.slice('Art: '.length)
+  )
   const progress = lines
     .find((line) => line.startsWith('Progress: '))
     ?.match(/^Progress: (\d+:\d{2}) \/ (\d+:\d{2})$/)
@@ -117,7 +139,8 @@ export function parseSpotifyCurrentTrack(value: JSONValue): SpotifyCurrentTrack 
     album,
     progressSeconds: parseClock(progress[1]!),
     durationSeconds: parseClock(progress[2]!),
-    isPlaying: status[1] === 'playing'
+    isPlaying: status[1] === 'playing',
+    ...(imageUrl ? { imageUrl } : {})
   }
 }
 

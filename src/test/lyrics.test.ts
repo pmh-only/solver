@@ -37,6 +37,7 @@ import {
 } from './e2e.js'
 
 const subs = makeSubcommands(lyrics)
+const TRACK_IMAGE_URL = 'https://i.scdn.co/image/test-artwork'
 
 function spotifyTrack(overrides: Partial<SpotifyCurrentTrack> = {}): SpotifyCurrentTrack {
   return {
@@ -48,6 +49,7 @@ function spotifyTrack(overrides: Partial<SpotifyCurrentTrack> = {}): SpotifyCurr
     durationSeconds: 225,
     progressSeconds: 62,
     isPlaying: true,
+    imageUrl: TRACK_IMAGE_URL,
     ...overrides
   }
 }
@@ -60,6 +62,7 @@ function playbackResult() {
         text: [
           'Now playing: "Test Song" by Test Artist',
           'Album: Test Album',
+          `Art: ${TRACK_IMAGE_URL}`,
           'Progress: 1:02 / 3:45',
           'Device: Browser (Computer)',
           'URI: spotify:track:abc123'
@@ -152,6 +155,8 @@ describe('lyrics command', () => {
     expect(rendered).toContain('## __Current line__')
     expect(rendered).toContain('After one')
     expect(rendered).toContain('After two')
+    expect(rendered).toContain(TRACK_IMAGE_URL)
+    expect(rendered).toContain('"type":11')
     expect(collectCustomIds(edit.components)).toEqual([
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-one$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:minus-half$`)),
@@ -709,8 +714,27 @@ describe('lyrics API runtime', () => {
       album: 'Test Album',
       progressSeconds: 62,
       durationSeconds: 225,
-      isPlaying: true
+      isPlaying: true,
+      imageUrl: TRACK_IMAGE_URL
     })
+  })
+
+  it('accepts no artwork and rejects non-Spotify artwork URLs', () => {
+    const withoutArt = playbackResult()
+    const withoutArtText = (withoutArt.content[0] as { text: string }).text.replace(
+      `\nArt: ${TRACK_IMAGE_URL}`,
+      ''
+    )
+    ;(withoutArt.content[0] as { text: string }).text = withoutArtText
+
+    expect(parseSpotifyCurrentTrack(withoutArt)).not.toHaveProperty('imageUrl')
+
+    const invalidArt = playbackResult()
+    ;(invalidArt.content[0] as { text: string }).text = (
+      invalidArt.content[0] as { text: string }
+    ).text.replace(TRACK_IMAGE_URL, 'https://i.scdn.co.attacker.example/image/wrong')
+
+    expect(parseSpotifyCurrentTrack(invalidArt)).not.toHaveProperty('imageUrl')
   })
 
   it('looks up exact metadata in LRCLIB with a bounded identified request', async () => {

@@ -8,6 +8,7 @@ import {
   Routes,
   SectionBuilder,
   TextDisplayBuilder,
+  ThumbnailBuilder,
   type APIRequest,
   type ButtonInteraction,
   type Client,
@@ -162,20 +163,34 @@ function trackMetadata(view: LiveLyricsView): TopLevelComponent {
       ? view.lines.find((line) => line.pronunciationSource)?.pronunciationSource
       : undefined
 
-  return summarySection(
-    `Live lyrics: ${inlineText(view.track.name)}`,
-    [
-      `-# artist: ${inlineText(view.track.artists)}`,
-      `-# album: ${inlineText(view.track.album)}`,
-      ...(pronunciationSource
-        ? [
-            `-# pronunciation: [Vocaloid Lyrics Wiki](${pronunciationSource}); [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)`
-          ]
-        : []),
-      `-# source: ${view.lyricsSource ?? 'LRCLIB'}`
-    ],
-    { label: 'Open in Spotify', url: `https://open.spotify.com/track/${view.track.id}` }
-  )
+  const lines = [
+    `-# artist: ${inlineText(view.track.artists)}`,
+    `-# album: ${inlineText(view.track.album)}`,
+    ...(pronunciationSource
+      ? [
+          `-# pronunciation: [Vocaloid Lyrics Wiki](${pronunciationSource}); [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)`
+        ]
+      : []),
+    `-# source: ${view.lyricsSource ?? 'LRCLIB'}`
+  ]
+  const spotifyLink = {
+    label: 'Open in Spotify',
+    url: `https://open.spotify.com/track/${view.track.id}`
+  }
+  if (!view.track.imageUrl) {
+    return summarySection(`Live lyrics: ${inlineText(view.track.name)}`, lines, spotifyLink)
+  }
+
+  return new SectionBuilder()
+    .addTextDisplayComponents(
+      text(`## Live lyrics: ${inlineText(view.track.name)}`),
+      text([...lines, `-# [Open in Spotify](${spotifyLink.url})`].join('\n'))
+    )
+    .setThumbnailAccessory(
+      new ThumbnailBuilder()
+        .setURL(view.track.imageUrl)
+        .setDescription(`${view.track.name} album artwork`.slice(0, 1_024))
+    )
 }
 
 function timingMetrics(view: LiveLyricsView): TopLevelComponent {
