@@ -56,6 +56,46 @@ describe('Japanese lyrics pronunciation', () => {
     await expect(addKoreanPronunciations(lines)).resolves.toBe(lines)
   })
 
+  it('preserves English lines and segments when a Japanese song has wiki readings', async () => {
+    const source = `
+==Lyrics==
+{{lyrics toggle|jp:Japanese|rom:Romaji}}
+{| {{lyrics table class}}
+|-
+|君の名は
+|kimi no na wa
+|-
+|Never mind
+|Never mind
+|-
+|君の名は Never mind
+|kimi no na wa Never mind
+|}
+==External Links==`
+
+    await expect(
+      addKoreanPronunciations(
+        [
+          { timeMs: 0, text: '君の名は' },
+          { timeMs: 1_000, text: 'Never mind' },
+          { timeMs: 2_000, text: '君の名は Never mind' }
+        ],
+        track,
+        wikiFetcher(source)
+      )
+    ).resolves.toEqual([
+      {
+        timeMs: 0,
+        text: '君の名は',
+        pronunciation: '키미 노 나 와',
+        pronunciationSource:
+          'https://vocaloidlyrics.miraheze.org/wiki/%E7%9F%A5%E3%82%89%E3%81%AA%E3%81%84%E3%82%B8%E3%83%A5%E3%83%BC%E3%82%B9_(Shiranai_Juice)'
+      },
+      { timeMs: 1_000, text: 'Never mind' },
+      { timeMs: 2_000, text: '君の名は Never mind', pronunciation: '키미노나와 Never mind' }
+    ])
+  })
+
   it('parses Japanese and romaji columns from wiki lyrics tables', () => {
     expect(
       parseVocaloidLyricsRows(`

@@ -5,6 +5,7 @@ import type { SyncedLyricLine } from './lyrics-session.js'
 import { findVocaloidLyricsPronunciations } from './vocaloid-lyrics-wiki.js'
 
 const JAPANESE_TEXT = /[\u3040-\u30ff\u3400-\u9fff]/
+const LATIN_TEXT = /[A-Za-z]/
 const HANGUL_BASE = 0xac00
 const HANGUL_END = 0xd7a3
 
@@ -427,7 +428,10 @@ export async function addKoreanPronunciations(
   }
 
   const sourcedLines = lines.map((line, index) => {
-    const pronunciation = wikiMatch?.pronunciations.get(index)
+    const pronunciation =
+      JAPANESE_TEXT.test(line.text) && !LATIN_TEXT.test(line.text)
+        ? wikiMatch?.pronunciations.get(index)
+        : undefined
     return pronunciation && wikiMatch
       ? { ...line, pronunciation, pronunciationSource: wikiMatch.sourceUrl }
       : line
