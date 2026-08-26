@@ -175,6 +175,13 @@ function isPubtabInteraction(
       return false
     }
   }
+  if (
+    interaction.isModalSubmit() &&
+    isFileconvModalId(interaction.customId) &&
+    interaction.customId.endsWith(':public')
+  ) {
+    return Boolean(subcommands.get('fileconv')?.pubtab)
+  }
   return false
 }
 
@@ -439,6 +446,17 @@ export function createHandler(
           const template = loadConstrainedCommandTemplate(interaction.customId)
           if (!template) {
             await interaction.reply(container('pubtab', new Map(), 'no cmd'))
+            return
+          }
+
+          if (subcommands.get(template.command)?.pubtab?.direct) {
+            await runCommandInput(
+              interaction,
+              subcommands,
+              buildConstrainedCommandInput(template, template.args || '--null'),
+              true,
+              recover
+            )
             return
           }
 

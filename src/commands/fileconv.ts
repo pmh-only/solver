@@ -155,6 +155,7 @@ export const subcommand: Subcommand = {
   description: 'convert an uploaded image, audio, or video file',
   usage: 'fileconv [format] [--pub]',
   examples: ['fileconv', 'fileconv webp', 'fileconv mp3 --pub'],
+  pubtab: { label: 'File Convert', args: '--null', direct: true },
 
   async autocomplete(restArgs) {
     const query = restArgs.trim().toLowerCase()

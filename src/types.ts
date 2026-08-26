@@ -36,6 +36,7 @@ export interface Subcommand {
   pubtab?: {
     label: string
     args: string
+    direct?: boolean
   }
   flags?: Record<string, FlagDef>
   autocomplete?: (restArgs: string, flags: Flags) => Promise<{ name: string; value: string }[]>

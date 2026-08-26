@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InteractionResponseType, MessageFlags } from 'discord.js'
 import { adminUserIds, isAdminUser, requireAdminUserIds } from '../authorization.js'
 import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../commands/coin.js'
+import { subcommand as fileconv } from '../commands/fileconv.js'
 import { createPubtabSubcommand } from '../commands/pubtab.js'
 import { COMMAND_RUN_BUTTON_ID, COMMAND_RUN_INPUT_ID } from '../components.js'
 import type { Subcommand } from '../types.js'
@@ -176,5 +177,31 @@ describe('interaction authorization', () => {
     )
 
     expect(calls).toEqual([])
+  })
+
+  it('allows a non-admin to submit a public modal opened directly from Pubtab', async () => {
+    const nonAdmin = user('555555555555555555')
+    const directSubs = makeSubcommands(fileconv, createPubtabSubcommand([fileconv]))
+    const tabCalls = await dispatch(commandJSON('pubtab', { user: nonAdmin }), directSubs)
+    const tabBody = getCallback(tabCalls) as { data: { components: unknown[] } }
+
+    const openCalls = await dispatch(
+      buttonJSON(tabBody.data.components, COMMAND_RUN_BUTTON_ID, { user: nonAdmin }),
+      directSubs
+    )
+    const openBody = getCallback(openCalls) as { type: number; data: { custom_id: string } }
+
+    expect(openBody.type).toBe(InteractionResponseType.Modal)
+    expect(openBody.data.custom_id).toBe('fileconv:choose:public')
+
+    const submitCalls = await dispatch(
+      modalJSON('', { user: nonAdmin }, { customId: 'fileconv:png:public' }),
+      directSubs
+    )
+
+    expect((getCallback(submitCalls) as { type: number }).type).toBe(
+      InteractionResponseType.DeferredChannelMessageWithSource
+    )
+    expect(getEdit(submitCalls)).not.toBeNull()
   })
 })

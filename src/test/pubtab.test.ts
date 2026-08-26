@@ -13,6 +13,11 @@ import { subcommand as conv } from '../commands/conv.js'
 import { subcommand as dice } from '../commands/dice.js'
 import { subcommand as dig } from '../commands/dig.js'
 import { subcommand as geoip } from '../commands/geoip.js'
+import {
+  FILECONV_FORMAT_ID,
+  FILECONV_UPLOAD_ID,
+  subcommand as fileconv
+} from '../commands/fileconv.js'
 import { subcommand as hilo } from '../commands/hilo.js'
 import { subcommand as math } from '../commands/math.js'
 import { subcommand as memory } from '../commands/memory.js'
@@ -69,6 +74,7 @@ const commands = [
   ttt,
   blackjack,
   memory,
+  fileconv,
   run,
   sh
 ]
@@ -125,7 +131,8 @@ describe('pubtab — command', () => {
       'Quiz',
       'TTT',
       'Blackjack',
-      'Memory'
+      'Memory',
+      'File Convert'
     ])
     expect(JSON.stringify(body)).not.toContain('run js')
     expect(JSON.stringify(body)).not.toContain('run shell')
@@ -221,6 +228,27 @@ describe('pubtab — command', () => {
     expect(JSON.stringify(editBody.components)).toContain('-# `coin`')
     expect(JSON.stringify(editBody.components)).not.toContain('--null')
     expect(findButtonByLabel(editBody.components, 'Pubtab')).toBe(PUBTAB_BUTTON_ID)
+  })
+
+  it('directly opens modal-first commands with their --null default', async () => {
+    expect(fileconv.pubtab).toMatchObject({ args: '--null', direct: true })
+
+    const firstCalls = await dispatch(commandJSON('pubtab'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const customId = findButtonByLabel(firstBody.data.components, 'File Convert')
+
+    const openCalls = await dispatch(buttonJSON(firstBody.data.components, customId ?? ''), subs)
+    const openBody = getCallback(openCalls) as {
+      type: number
+      data: { custom_id: string; components: unknown[] }
+    }
+    const serialized = JSON.stringify(openBody.data.components)
+
+    expect(openBody.type).toBe(InteractionResponseType.Modal)
+    expect(openBody.data.custom_id).toBe('fileconv:choose:public')
+    expect(serialized).toContain(FILECONV_UPLOAD_ID)
+    expect(serialized).toContain(FILECONV_FORMAT_ID)
+    expect(serialized).not.toContain(COMMAND_RUN_INPUT_ID)
   })
 
   it('keeps the pubtab button on interactive game updates', async () => {
