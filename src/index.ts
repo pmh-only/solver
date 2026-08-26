@@ -37,6 +37,7 @@ import { subcommand as chess } from './commands/chess.js'
 import { subcommand as gohome } from './commands/gohome.js'
 import { subcommand as lyrics } from './commands/lyrics.js'
 import { subcommand as fileconv } from './commands/fileconv.js'
+import { subcommand as down } from './commands/down.js'
 import { extraSubcommands } from './commands/more.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
@@ -84,6 +85,7 @@ const commands = [
   gohome,
   lyrics,
   fileconv,
+  down,
   coin,
   dice,
   rps,
