@@ -16,6 +16,7 @@ export const subcommand: Subcommand = {
   description: 'download a URL and upload the file to Discord',
   usage: 'down <http-or-https-url> [--pub]',
   examples: ['down https://example.com/file.zip'],
+  pubtab: { label: 'Download', args: 'https://example.com/' },
 
   async execute(interaction, args, flags) {
     const input = args.replace(/^\S+\s*/, '').trim()

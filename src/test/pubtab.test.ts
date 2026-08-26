@@ -12,6 +12,7 @@ import { subcommand as coin } from '../commands/coin.js'
 import { subcommand as conv } from '../commands/conv.js'
 import { subcommand as dice } from '../commands/dice.js'
 import { subcommand as dig } from '../commands/dig.js'
+import { subcommand as down } from '../commands/down.js'
 import { subcommand as geoip } from '../commands/geoip.js'
 import {
   FILECONV_FORMAT_ID,
@@ -75,6 +76,7 @@ const commands = [
   blackjack,
   memory,
   fileconv,
+  down,
   run,
   sh
 ]
@@ -132,7 +134,8 @@ describe('pubtab — command', () => {
       'TTT',
       'Blackjack',
       'Memory',
-      'File Convert'
+      'File Convert',
+      'Download'
     ])
     expect(JSON.stringify(body)).not.toContain('run js')
     expect(JSON.stringify(body)).not.toContain('run shell')
@@ -249,6 +252,21 @@ describe('pubtab — command', () => {
     expect(serialized).toContain(FILECONV_UPLOAD_ID)
     expect(serialized).toContain(FILECONV_FORMAT_ID)
     expect(serialized).not.toContain(COMMAND_RUN_INPUT_ID)
+  })
+
+  it('opens Download with a safe editable default URL', async () => {
+    expect(down.pubtab).toEqual({ label: 'Download', args: 'https://example.com/' })
+
+    const firstCalls = await dispatch(commandJSON('pubtab'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const customId = findButtonByLabel(firstBody.data.components, 'Download')
+
+    const openCalls = await dispatch(buttonJSON(firstBody.data.components, customId ?? ''), subs)
+    const openBody = getCallback(openCalls) as { type: number; data: { components: unknown[] } }
+
+    expect(openBody.type).toBe(InteractionResponseType.Modal)
+    expect(JSON.stringify(openBody.data.components)).toContain('https://example.com/')
+    expect(JSON.stringify(openBody.data.components)).toContain(COMMAND_RUN_INPUT_ID)
   })
 
   it('keeps the pubtab button on interactive game updates', async () => {
