@@ -558,6 +558,7 @@ describe('lyrics presentation', () => {
   })
 
   it('pads the start, pre-start, and end of a song to keep the current line centered', () => {
+    const emptyLyricLine = `-# ${'\u200b'.repeat(100)}`
     const lines = parseSyncedLyrics(
       '[00:01.00] First\n[00:02.00] Second\n[00:03.00] Third\n[00:04.00] Fourth\n[00:05.00] Fifth'
     )
@@ -579,8 +580,8 @@ describe('lyrics presentation', () => {
     }
 
     expect(lyricWindowContent(view).split('\n')).toEqual([
-      '-# \u200b',
-      '-# \u200b',
+      emptyLyricLine,
+      emptyLyricLine,
       '**Waiting for the first synchronized line**',
       '-# First',
       '-# Second'
@@ -589,8 +590,8 @@ describe('lyrics presentation', () => {
     view.currentIndex = 0
     view.progressMs = 1_000
     expect(lyricWindowContent(view).split('\n')).toEqual([
-      '-# \u200b',
-      '-# \u200b',
+      emptyLyricLine,
+      emptyLyricLine,
       '## __First__',
       '-# Second',
       '-# Third'
@@ -602,8 +603,8 @@ describe('lyrics presentation', () => {
       '-# Third',
       '-# Fourth',
       '## __Fifth__',
-      '-# \u200b',
-      '-# \u200b'
+      emptyLyricLine,
+      emptyLyricLine
     ])
   })
 

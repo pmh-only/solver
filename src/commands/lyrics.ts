@@ -58,7 +58,7 @@ export const LYRICS_DISPLAY_BUTTON_ID = 'lyrics-display'
 export const LYRICS_SESSION_KEY = 'lyrics-session'
 export const PUBLIC_LYRICS_INTERACTION_MS = 10 * 60 * 1_000
 
-const EMPTY_LYRIC_LINE = '-# \u200b'
+const EMPTY_LYRIC_LINE = `-# ${'\u200b'.repeat(100)}`
 const LYRICS_WINDOW_RADIUS = 2
 
 interface StoredLyricsSession {
