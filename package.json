@@ -23,6 +23,7 @@
   "dependencies": {
     "@cocal/google-calendar-mcp": "2.6.2",
     "@hyunbinseo/holidays-kr": "5.2027.1",
+    "@mediabunny/server": "1.55.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server-filesystem": "2026.7.10",
     "@modelcontextprotocol/server-memory": "2026.7.4",
@@ -37,6 +38,7 @@
     "imapflow": "^1.2.18",
     "kuroshiro-analyzer-kuromoji": "1.1.0",
     "mailparser": "^3.9.6",
+    "mediabunny": "1.55.3",
     "openai": "^6.49.0",
     "openid-client": "6.8.4",
     "spotify-mcp": "^0.1.4",
