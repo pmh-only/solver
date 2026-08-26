@@ -205,8 +205,8 @@ function timingMetrics(view: LiveLyricsView): TopLevelComponent {
     `-# offsets: Discord ${formatOffset(view.discordOffsetMs)} / Spotify ${formatOffset(view.offsetMs)}`,
     `-# render interval: ${formatPeriod(view.renderIntervalMs)}`,
     view.track
-      ? '-# synchronization: local transitions; Spotify correction every 5 seconds'
-      : '-# synchronization: checked every 5 seconds'
+      ? '-# synchronization: local transitions; Spotify correction every 1 second'
+      : '-# synchronization: checked every 1 second'
   ])
 }
 

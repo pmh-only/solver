@@ -267,7 +267,9 @@ describe('live lyrics scheduling', () => {
       },
       onClose: () => undefined,
       dependencies: {
-        getCurrentTrack: async () => currentTrack,
+        getCurrentTrack: async () => {
+          throw new Error('timing test excludes Spotify resync')
+        },
         getLyricsForTrack: async () => lyricsFor(currentTrack)
       }
     })
@@ -295,16 +297,18 @@ describe('live lyrics scheduling', () => {
       },
       onClose: () => undefined,
       dependencies: {
-        getCurrentTrack: async () => currentTrack,
+        getCurrentTrack: async () => {
+          throw new Error('timing test excludes Spotify resync')
+        },
         getLyricsForTrack: async () => lyricsFor(currentTrack)
       }
     })
     session.start()
 
-    await vi.advanceTimersByTimeAsync(2_024)
+    await vi.advanceTimersByTimeAsync(1_999)
     expect(rendered).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
-    expect(rendered).toEqual([{ at: 2_025, progressMs: 2_025 }])
+    expect(rendered).toEqual([{ at: 2_000, progressMs: 2_000 }])
     await session.stop('test complete', false)
   })
 
@@ -525,7 +529,7 @@ describe('live lyrics scheduling', () => {
     await session.stop('test complete', false)
   })
 
-  it('corrects local timing from Spotify every five seconds', async () => {
+  it('corrects local timing from Spotify every second', async () => {
     const initialTrack = track('one', 0)
     const correctedTrack = track('one', 20)
     const state = stateFor(
@@ -549,6 +553,7 @@ describe('live lyrics scheduling', () => {
     })
     session.start()
 
+    expect(SPOTIFY_RESYNC_INTERVAL_MS).toBe(1_000)
     await vi.advanceTimersByTimeAsync(SPOTIFY_RESYNC_INTERVAL_MS)
 
     expect(getCurrentTrack).toHaveBeenCalledTimes(1)

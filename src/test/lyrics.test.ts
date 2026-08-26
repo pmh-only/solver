@@ -185,6 +185,7 @@ describe('lyrics command', () => {
 
     expect(rendered).toContain('## Metrics')
     expect(rendered).toContain('render interval: 0.401s')
+    expect(rendered).toContain('Spotify correction every 1 second')
     expect(edit.components.map((component) => (component as { type?: number }).type)).toEqual([
       17, 17, 17, 1
     ])
