@@ -7,6 +7,8 @@ export const DOWN_MAX_BYTES = 10 * 1024 * 1024
 
 const MAX_REDIRECTS = 5
 const TIMEOUT_MS = 15_000
+const ERROR_BODY_MAX_BYTES = 4 * 1024
+const ERROR_MESSAGE_MAX_LENGTH = 500
 const privateAddresses = new BlockList()
 
 for (const [address, prefix] of [
@@ -183,6 +185,54 @@ async function readBoundedBody(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks) as Buffer
 }
 
+async function responseErrorMessage(response: Response): Promise<string | null> {
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  if (!contentType.startsWith('text/') && !contentType.includes('json')) {
+    await response.body?.cancel()
+    return null
+  }
+  if (!response.body) return null
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (total < ERROR_BODY_MAX_BYTES) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const remaining = ERROR_BODY_MAX_BYTES - total
+      chunks.push(value.subarray(0, remaining))
+      total += Math.min(value.byteLength, remaining)
+      if (value.byteLength > remaining || total === ERROR_BODY_MAX_BYTES) {
+        await reader.cancel()
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const body = new TextDecoder().decode(Buffer.concat(chunks) as Buffer).trim()
+  if (!body) return null
+
+  let detail = body
+  if (contentType.includes('json')) {
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown; message?: unknown }
+      const candidate = parsed.message ?? parsed.error
+      if (typeof candidate === 'string') detail = candidate
+    } catch {
+      // A malformed JSON error response is still useful as plain text.
+    }
+  }
+
+  const normalized = detail.replace(/\s+/g, ' ').trim()
+  if (!normalized) return null
+  return normalized.length > ERROR_MESSAGE_MAX_LENGTH
+    ? `${normalized.slice(0, ERROR_MESSAGE_MAX_LENGTH - 3)}...`
+    : normalized
+}
+
 export async function downloadUrl(
   value: string,
   dependencies: DownloadDependencies = defaultDependencies
@@ -205,8 +255,8 @@ export async function downloadUrl(
         continue
       }
       if (!response.ok) {
-        await response.body?.cancel()
-        throw new Error(`download failed (${response.status})`)
+        const detail = await responseErrorMessage(response)
+        throw new Error(`download failed (${response.status})${detail ? `: ${detail}` : ''}`)
       }
 
       const contentType = response.headers.get('content-type') ?? 'application/octet-stream'

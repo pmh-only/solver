@@ -118,6 +118,36 @@ describe('down runtime', () => {
     ).rejects.toThrow('file is larger than 10 MB')
   })
 
+  it('includes a bounded server error message for failed downloads', async () => {
+    const fetchMock = vi.fn(async () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: 'The requested export is not ready' }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+    ) as unknown as typeof fetch
+
+    await expect(
+      downloadUrl('https://example.com/export', dependencies(fetchMock))
+    ).rejects.toThrow('download failed (409): The requested export is not ready')
+  })
+
+  it('does not expose binary error response bodies', async () => {
+    const fetchMock = vi.fn(async () =>
+      Promise.resolve(
+        new Response('secret binary content', {
+          status: 500,
+          headers: { 'content-type': 'application/octet-stream' }
+        })
+      )
+    ) as unknown as typeof fetch
+
+    await expect(
+      downloadUrl('https://example.com/export', dependencies(fetchMock))
+    ).rejects.toThrow(/^download failed \(500\)$/)
+  })
+
   it('stops a streamed file that exceeds 10 MB without a declared length', async () => {
     const oversized = new Uint8Array(DOWN_MAX_BYTES + 1)
     const fetchMock = vi.fn(async () =>
@@ -191,5 +221,17 @@ describe('down command', () => {
     const defer = getCallback(calls) as { data: { flags?: number } }
 
     expect((defer.data.flags ?? 0) & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('shows the download error message in the deferred response', async () => {
+    vi.spyOn(downRuntime, 'downloadUrl').mockRejectedValue(
+      new Error('download failed (403): access denied')
+    )
+
+    const calls = await dispatch(commandJSON('down https://example.com/private'), subs)
+    const edit = getEdit(calls)
+
+    expect(JSON.stringify(edit)).toContain('Download failed')
+    expect(JSON.stringify(edit)).toContain('download failed (403): access denied')
   })
 })
