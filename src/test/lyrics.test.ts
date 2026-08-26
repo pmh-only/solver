@@ -608,6 +608,32 @@ describe('lyrics presentation', () => {
     ])
   })
 
+  it('keeps a width-bearing invisible filler in the lyric status line', () => {
+    const lines = parseSyncedLyrics('[00:00.00] First')
+    const view: LiveLyricsView = {
+      mode: 'lyrics',
+      track: spotifyTrack(),
+      lines,
+      detail: '',
+      anchorProgressMs: 0,
+      anchorTimeMs: 0,
+      currentIndex: 0,
+      progressMs: 0,
+      spotifyProgressMs: 0,
+      discordOffsetMs: 0,
+      renderIntervalMs: 401,
+      offsetMs: 0,
+      stopped: false,
+      displayMode: 'japanese'
+    }
+    const component = formatLiveLyrics(view)[2]
+    if (!component || typeof component === 'string') throw new Error('missing lyric status')
+
+    expect((component.toJSON() as { content: string }).content).toBe(
+      `-# line 1 of 1 ${'\u2800'.repeat(32)}`
+    )
+  })
+
   it('renders only Japanese lyrics in Japanese display mode', () => {
     const view: LiveLyricsView = {
       mode: 'lyrics',

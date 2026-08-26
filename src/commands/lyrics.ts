@@ -59,6 +59,7 @@ export const LYRICS_SESSION_KEY = 'lyrics-session'
 export const PUBLIC_LYRICS_INTERACTION_MS = 10 * 60 * 1_000
 
 const EMPTY_LYRIC_LINE = `-# ${'\u200b'.repeat(100)}`
+const LYRICS_WIDTH_FILLER = '\u2800'.repeat(32)
 const LYRICS_WINDOW_RADIUS = 2
 
 interface StoredLyricsSession {
@@ -269,8 +270,8 @@ function lyricsContent(view: LiveLyricsView): TopLevelComponent[] {
     text(renderedLines.join('\n')),
     text(
       view.currentIndex >= 0
-        ? `-# line ${view.currentIndex + 1} of ${view.lines.length}`
-        : `-# ${view.lines.length} synchronized lines loaded`
+        ? `-# line ${view.currentIndex + 1} of ${view.lines.length} ${LYRICS_WIDTH_FILLER}`
+        : `-# ${view.lines.length} synchronized lines loaded ${LYRICS_WIDTH_FILLER}`
     )
   ]
 }
