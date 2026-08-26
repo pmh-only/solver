@@ -45,6 +45,34 @@ describe('down runtime', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('derives a missing extension from the response MIME type', async () => {
+    const fetchMock = vi.fn(async () =>
+      Promise.resolve(
+        new Response('<!doctype html>', {
+          headers: { 'content-type': 'text/html; charset=UTF-8' }
+        })
+      )
+    ) as unknown as typeof fetch
+
+    const result = await downloadUrl('https://example.com/', dependencies(fetchMock))
+
+    expect(result.fileName).toBe('download.html')
+  })
+
+  it('preserves an existing filename extension over the response MIME type', async () => {
+    const fetchMock = vi.fn(async () =>
+      Promise.resolve(
+        new Response('data', {
+          headers: { 'content-type': 'text/plain' }
+        })
+      )
+    ) as unknown as typeof fetch
+
+    const result = await downloadUrl('https://example.com/data.json', dependencies(fetchMock))
+
+    expect(result.fileName).toBe('data.json')
+  })
+
   it('rejects private addresses before fetching', async () => {
     const fetchMock = vi.fn() as unknown as typeof fetch
 

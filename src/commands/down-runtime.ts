@@ -1,5 +1,7 @@
 import { lookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
+import { extname } from 'node:path'
+import { extension } from 'mime-types'
 
 export const DOWN_MAX_BYTES = 10 * 1024 * 1024
 
@@ -132,18 +134,25 @@ function contentDispositionFileName(value: string | null): string | null {
   )
 }
 
-function responseFileName(response: Response, url: URL): string {
+function withMimeExtension(fileName: string, contentType: string): string {
+  const sanitized = sanitizeFileName(fileName)
+  if (extname(sanitized)) return sanitized
+  const suffix = extension(contentType) || 'bin'
+  return `${sanitized}.${suffix}`
+}
+
+function responseFileName(response: Response, url: URL, contentType: string): string {
   const disposition = contentDispositionFileName(response.headers.get('content-disposition'))
-  if (disposition) return sanitizeFileName(disposition)
+  if (disposition) return withMimeExtension(disposition, contentType)
   const segment = url.pathname.split('/').filter(Boolean).at(-1)
   if (segment) {
     try {
-      return sanitizeFileName(decodeURIComponent(segment))
+      return withMimeExtension(decodeURIComponent(segment), contentType)
     } catch {
-      return sanitizeFileName(segment)
+      return withMimeExtension(segment, contentType)
     }
   }
-  return 'download.bin'
+  return withMimeExtension('download', contentType)
 }
 
 async function readBoundedBody(response: Response): Promise<Buffer> {
@@ -200,11 +209,12 @@ export async function downloadUrl(
         throw new Error(`download failed (${response.status})`)
       }
 
+      const contentType = response.headers.get('content-type') ?? 'application/octet-stream'
       return {
         data: await readBoundedBody(response),
-        fileName: responseFileName(response, current),
+        fileName: responseFileName(response, current, contentType),
         finalUrl: current.toString(),
-        contentType: response.headers.get('content-type') ?? 'application/octet-stream'
+        contentType
       }
     }
     throw new Error('too many redirects')
