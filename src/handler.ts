@@ -104,6 +104,7 @@ import {
 } from './commands/chess.js'
 import { handleLyricsControlButton, isLyricsControlButtonId } from './commands/lyrics.js'
 import { isAdminUser } from './authorization.js'
+import { handleFileconvModal, isFileconvModalId } from './commands/fileconv.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -300,6 +301,11 @@ export function createHandler(
 
       if (interaction.isModalSubmit() && isGptModalId(interaction.customId)) {
         await handleGptModalSubmit(interaction)
+        return
+      }
+
+      if (interaction.isModalSubmit() && isFileconvModalId(interaction.customId)) {
+        await handleFileconvModal(interaction)
         return
       }
 
