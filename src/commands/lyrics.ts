@@ -67,6 +67,7 @@ interface StoredLyricsSession {
   ownerId: string
   channelId: string
   messageId?: string
+  metrics?: boolean
   startedAt: number
 }
 
@@ -96,7 +97,10 @@ function readStoredLyricsSession(): StoredLyricsSession | null {
       !/^[a-f0-9]{16}$/.test(value.token) ||
       !safeId(value.ownerId) ||
       !safeId(value.channelId) ||
-      (value.version === 1 ? !safeId(value.messageId) : value.messageId !== undefined && !safeId(value.messageId)) ||
+      (value.version === 1
+        ? !safeId(value.messageId)
+        : value.messageId !== undefined && !safeId(value.messageId)) ||
+      (value.metrics !== undefined && typeof value.metrics !== 'boolean') ||
       typeof value.startedAt !== 'number' ||
       !Number.isFinite(value.startedAt)
     ) {
@@ -178,12 +182,12 @@ function trackMetadata(view: LiveLyricsView): TopLevelComponent {
     url: `https://open.spotify.com/track/${view.track.id}`
   }
   if (!view.track.imageUrl) {
-    return summarySection(`Live lyrics: ${inlineText(view.track.name)}`, lines, spotifyLink)
+    return summarySection(inlineText(view.track.name), lines, spotifyLink)
   }
 
   return new SectionBuilder()
     .addTextDisplayComponents(
-      text(`## Live lyrics: ${inlineText(view.track.name)}`),
+      text(`## ${inlineText(view.track.name)}`),
       text([...lines, `-# [Open in Spotify](${spotifyLink.url})`].join('\n'))
     )
     .setThumbnailAccessory(
@@ -216,7 +220,7 @@ function lyricsContent(view: LiveLyricsView): TopLevelComponent[] {
           : view.mode === 'error'
             ? 'Temporary error'
             : 'Synchronized lyrics unavailable'
-    return [text(`## Lyrics\n**${title}**\n-# ${inlineText(view.detail)}`)]
+    return [text(`**${title}**\n-# ${inlineText(view.detail)}`)]
   }
 
   const window = syncedLyricsWindow(view.lines, view.currentIndex, LYRICS_WINDOW_RADIUS)
@@ -262,7 +266,7 @@ function lyricsContent(view: LiveLyricsView): TopLevelComponent[] {
   }
 
   return [
-    text(`## Lyrics\n${renderedLines.join('\n')}`),
+    text(renderedLines.join('\n')),
     text(
       view.currentIndex >= 0
         ? `-# line ${view.currentIndex + 1} of ${view.lines.length}`
@@ -271,8 +275,15 @@ function lyricsContent(view: LiveLyricsView): TopLevelComponent[] {
   ]
 }
 
-export function formatLiveLyrics(view: LiveLyricsView): TopLevelComponent[] {
-  return [trackMetadata(view), timingMetrics(view), ...lyricsContent(view)]
+export function formatLiveLyrics(
+  view: LiveLyricsView,
+  includeMetrics = false
+): TopLevelComponent[] {
+  return [
+    trackMetadata(view),
+    ...(includeMetrics ? [timingMetrics(view)] : []),
+    ...lyricsContent(view)
+  ]
 }
 
 function componentCard(component: TopLevelComponent): ContainerBuilder {
@@ -326,15 +337,15 @@ function displayModeButtons(view: LiveLyricsView, token: string) {
 }
 
 function liveLyricsReply(view: LiveLyricsView, token: string, args: string, flags: Flags) {
-  const formatted = formatLiveLyrics(view)
-  const base = commandContainer(subcommand, args, flags, ...formatted.slice(2))
+  const metadata = trackMetadata(view)
+  const base = commandContainer(subcommand, args, flags, ...lyricsContent(view))
   const displayModes = view.lines.some((line) => line.pronunciation)
     ? [displayModeButtons(view, token)]
     : []
   return {
     components: [
-      componentCard(formatted[0]!),
-      componentCard(formatted[1]!),
+      componentCard(metadata),
+      ...(flags.has('metrics') ? [componentCard(timingMetrics(view))] : []),
       base.components[0]!,
       ...displayModes,
       controlButtons(view, token)
@@ -360,6 +371,7 @@ export async function restoreLyricsSession(client: Client): Promise<boolean> {
   const initialView = liveLyricsView(initialState, Date.now(), false, initialOffsetMs)
   initialView.renderIntervalMs = MESSAGE_LYRICS_EDIT_INTERVAL_MS
   const flags: Flags = new Map([['pub', true]])
+  if (stored.metrics) flags.set('metrics', true)
   let messageId = stored.messageId
   let initialRenderLatencyMs = 0
 
@@ -525,8 +537,11 @@ export async function handleLyricsControlButton(interaction: ButtonInteraction):
 export const subcommand: Subcommand = {
   name: 'lyrics',
   description: 'live synchronized lyrics for Spotify playback',
-  usage: 'lyrics [--pub]',
-  examples: ['lyrics', 'lyrics --pub'],
+  usage: 'lyrics [--metrics] [--pub]',
+  examples: ['lyrics', 'lyrics --metrics', 'lyrics --pub'],
+  flags: {
+    metrics: { description: 'show playback and synchronization metrics' }
+  },
 
   async execute(interaction, args, flags) {
     const restArgs = args.replace(/^\S+\s*/, '').trim()
@@ -612,6 +627,7 @@ export const subcommand: Subcommand = {
         token,
         ownerId: interaction.user.id,
         channelId: publicChannelId,
+        metrics: flags.has('metrics'),
         startedAt: session.startedAt
       })
       migrationTimer = setTimeout(() => {
@@ -678,6 +694,7 @@ export const subcommand: Subcommand = {
             ownerId: interaction.user.id,
             channelId: publicChannelId,
             messageId,
+            metrics: flags.has('metrics'),
             startedAt: session.startedAt
           })
 

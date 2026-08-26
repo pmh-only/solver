@@ -149,7 +149,10 @@ describe('lyrics command', () => {
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeTruthy()
-    expect(rendered).toContain('Live lyrics: Test Song')
+    expect(rendered).toContain('## Test Song')
+    expect(rendered).not.toContain('Live lyrics:')
+    expect(rendered).not.toContain('## Lyrics')
+    expect(rendered).not.toContain('## Metrics')
     expect(rendered).toContain('Before two')
     expect(rendered).toContain('Before one')
     expect(rendered).toContain('## __Current line__')
@@ -163,9 +166,9 @@ describe('lyrics command', () => {
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-half$`)),
       expect.stringMatching(new RegExp(`^${LYRICS_OFFSET_BUTTON_ID}:[a-f0-9]{16}:plus-one$`))
     ])
-    expect(
-      edit.components.map((component) => (component as { type?: number }).type)
-    ).toEqual([17, 17, 17, 1])
+    expect(edit.components.map((component) => (component as { type?: number }).type)).toEqual([
+      17, 17, 1
+    ])
     expect(rendered).toContain('"label":"-1s"')
     expect(rendered).toContain('"label":"-0.5s"')
     expect(rendered).toContain('"label":"+0.5s"')
@@ -173,7 +176,18 @@ describe('lyrics command', () => {
     expect(rendered).not.toContain('"label":"Japanese"')
     expect(rendered).not.toContain('"label":"Korean pronunciation"')
     expect(rendered).not.toContain('"label":"Stop"')
+  })
+
+  it('shows timing metrics only with --metrics', async () => {
+    const calls = await startCommand('lyrics --metrics')
+    const edit = getEdit(calls) as { components: unknown[] }
+    const rendered = JSON.stringify(edit)
+
+    expect(rendered).toContain('## Metrics')
     expect(rendered).toContain('render interval: 0.401s')
+    expect(edit.components.map((component) => (component as { type?: number }).type)).toEqual([
+      17, 17, 17, 1
+    ])
   })
 
   it('switches between Japanese and Korean pronunciation display modes', async () => {
@@ -242,7 +256,8 @@ describe('lyrics command', () => {
 
     expect(defer.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
     expect(defer.data.flags & MessageFlags.Ephemeral).toBeFalsy()
-    expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
+    expect(JSON.stringify(published)).toContain('## Test Song')
+    expect(JSON.stringify(published)).not.toContain('## Metrics')
     expect(publicMessageBody(calls)).toBeUndefined()
     expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
       version: 2,
@@ -280,8 +295,8 @@ describe('lyrics command', () => {
         body: expect.objectContaining({ flags: MessageFlags.IsComponentsV2 })
       })
     )
-    expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('Live lyrics: Test Song')
-    expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('render interval: 1s')
+    expect(JSON.stringify(patch.mock.calls[0]![1])).toContain('## Test Song')
+    expect(JSON.stringify(patch.mock.calls[0]![1])).not.toContain('## Metrics')
     client.destroy()
   })
 
@@ -297,6 +312,7 @@ describe('lyrics command', () => {
         token: '0123456789abcdef',
         ownerId: '111111111111111111',
         channelId: '777777777777777777',
+        metrics: true,
         startedAt: 1_000
       })
     )
@@ -314,7 +330,9 @@ describe('lyrics command', () => {
         body: expect.objectContaining({ flags: MessageFlags.IsComponentsV2 })
       })
     )
-    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('Live lyrics: Test Song')
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('## Test Song')
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('## Metrics')
+    expect(JSON.stringify(post.mock.calls[0]![1])).toContain('render interval: 1s')
     expect(JSON.parse(getStoredValue(LYRICS_SESSION_KEY)!)).toMatchObject({
       version: 2,
       messageId: 'restored-message'
@@ -333,8 +351,8 @@ describe('lyrics command', () => {
     await vi.advanceTimersByTimeAsync(1)
 
     const published = publicMessageBody(calls)
-    expect(JSON.stringify(published)).toContain('Live lyrics: Test Song')
-    expect(JSON.stringify(published)).toContain('render interval: 1s')
+    expect(JSON.stringify(published)).toContain('## Test Song')
+    expect(JSON.stringify(published)).not.toContain('## Metrics')
     expect(JSON.stringify(calls.filter(({ method }) => method === 'PATCH').at(-1)?.body)).toContain(
       'Continued in a bot message after 10 minutes.'
     )
@@ -391,7 +409,6 @@ describe('lyrics command', () => {
     const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(JSON.stringify(updated)).toContain('Spotify +1s')
     expect(JSON.stringify(updated)).toContain('## __After one__')
   })
 
@@ -407,7 +424,6 @@ describe('lyrics command', () => {
     )
     const positive = positiveCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
-    expect(JSON.stringify(positive)).toContain('Spotify +0.5s')
     expect(JSON.stringify(positive)).toContain('## __After__ one')
 
     await clearLyricsSessions()
@@ -424,7 +440,6 @@ describe('lyrics command', () => {
     )
     const negative = negativeCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
-    expect(JSON.stringify(negative)).toContain('Spotify -0.5s')
     expect(JSON.stringify(negative)).toContain('## __Current__ line')
   })
 
@@ -456,7 +471,7 @@ describe('lyrics command', () => {
     const updated = startCalls.filter(({ method }) => method === 'PATCH').at(-1)?.body
 
     expect(callback.type).toBe(InteractionResponseType.DeferredMessageUpdate)
-    expect(JSON.stringify(updated)).toContain('Spotify +0.5s')
+    expect(JSON.stringify(updated)).toContain('## __After__ one')
   })
 
   it('restores a song timing adjustment in a later live session', async () => {
@@ -475,7 +490,6 @@ describe('lyrics command', () => {
     const laterCalls = await startCommand()
     const later = JSON.stringify(getEdit(laterCalls))
 
-    expect(later).toContain('Spotify +0.5s')
     expect(later).toContain('## __After__ one')
   })
 
@@ -505,9 +519,9 @@ describe('lyrics command', () => {
 
 describe('lyrics presentation', () => {
   function lyricWindowContent(view: LiveLyricsView): string {
-    const component = formatLiveLyrics(view)[2]
+    const component = formatLiveLyrics(view)[1]
     if (!component || typeof component === 'string') throw new Error('missing lyric window')
-    return (component.toJSON() as { content: string }).content.replace(/^## Lyrics\n/, '')
+    return (component.toJSON() as { content: string }).content
   }
 
   it('renders a five-line synchronized window around the current line', () => {
@@ -530,7 +544,7 @@ describe('lyrics presentation', () => {
       displayMode: 'japanese'
     }
     const rendered = JSON.stringify(
-      formatLiveLyrics(view).map((component) =>
+      formatLiveLyrics(view, true).map((component) =>
         typeof component === 'string' ? component : component.toJSON()
       )
     )
