@@ -1249,10 +1249,12 @@ describe('/a', () => {
 
     const calls = await dispatch(agentCommandJSON('inspect the system'), subs)
 
+    expect(agentMock).toHaveBeenCalledTimes(2)
     expect(streamMock).toHaveBeenCalledTimes(2)
     expect(streamMock.mock.calls[1]?.[0]).toContain(
       '502 Upstream websocket closed before response.completed'
     )
+    expect(agentMock.mock.calls[1]?.[0]).not.toHaveProperty('modelState')
     expect(JSON.stringify(calls)).toContain('hello world')
   })
 

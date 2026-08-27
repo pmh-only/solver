@@ -448,6 +448,14 @@ export async function runGptStream(
       }
       activity.responseStarted = false
       timing?.mark('agent recovery started')
+      if (isIncompleteStreamError(error)) {
+        responseState = undefined
+        ctx.responseState = undefined
+        ctx.modelHistory = modelMessages.length > 0 ? modelMessages : fallbackHistoryMessages(ctx)
+        currentAgent = undefined
+        await streamAgent(agentRecoveryPrompt(ctx.prompt, detail))
+        return
+      }
       await streamAgent(agentRecoveryPrompt(ctx.prompt, detail), false, true)
     }
 
