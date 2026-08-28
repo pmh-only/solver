@@ -1,7 +1,24 @@
 import { spawn } from 'node:child_process'
+import { MessageFlags, type APIMessageTopLevelComponent } from 'discord.js'
+import { z } from 'zod'
 
 const EXECUTION_TIMEOUT_MS = 1_000
 const MAX_OUTPUT_BYTES = 16 * 1024
+
+export interface DynamicComponentsV2Response {
+  flags: MessageFlags.IsComponentsV2
+  components: APIMessageTopLevelComponent[]
+}
+
+const dynamicComponentsV2ResponseSchema = z
+  .object({
+    flags: z.literal(MessageFlags.IsComponentsV2),
+    components: z
+      .array(z.object({ type: z.number().int().positive() }).loose())
+      .min(1)
+      .max(10)
+  })
+  .strict()
 
 const RUNNER = String.raw`
 import vm from 'node:vm'
@@ -25,13 +42,7 @@ export async function executeDynamicJavascript(
   return await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [
-        '--permission',
-        '--max-old-space-size=32',
-        '--input-type=module',
-        '--eval',
-        RUNNER
-      ],
+      ['--permission', '--max-old-space-size=32', '--input-type=module', '--eval', RUNNER],
       { env: {}, stdio: ['pipe', 'pipe', 'pipe'] }
     )
     let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0)
@@ -90,4 +101,13 @@ export function formatDynamicJavascriptResult(result: unknown): string {
   if (result === undefined) return '(no output)'
   const serialized = JSON.stringify(result, null, 2)
   return (serialized ?? String(result)).slice(0, 3_900)
+}
+
+export function parseDynamicComponentsV2Response(
+  result: unknown
+): DynamicComponentsV2Response | null {
+  const parsed = dynamicComponentsV2ResponseSchema.safeParse(result)
+  if (!parsed.success) return null
+
+  return parsed.data as DynamicComponentsV2Response
 }

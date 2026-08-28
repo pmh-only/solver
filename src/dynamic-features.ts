@@ -13,6 +13,7 @@ import {
   commandContainer,
   deferCommandResponse,
   errorContainer,
+  scheduleEphemeralReplyDelete,
   sendCommandReply,
   text
 } from './components.js'
@@ -30,7 +31,8 @@ import {
 import type { CommandInteraction, Subcommand } from './types.js'
 import {
   executeDynamicJavascript,
-  formatDynamicJavascriptResult
+  formatDynamicJavascriptResult,
+  parseDynamicComponentsV2Response
 } from './helpers/dynamic-javascript.js'
 
 const DYNAMIC_FEATURE_REGISTRY_ID = 'dynamic-discord-features'
@@ -280,6 +282,18 @@ export class DynamicDiscordFeatureManager {
                 args.replace(/^\S+\s*/, '').trim(),
                 Object.fromEntries(flags)
               )
+              const rawResponse = parseDynamicComponentsV2Response(result)
+              if (rawResponse) {
+                const message = await interaction.editReply({
+                  components: rawResponse.components,
+                  attachments: [],
+                  flags: rawResponse.flags
+                })
+                if (!flags.has('pub')) {
+                  scheduleEphemeralReplyDelete(interaction, message.id, MessageFlags.Ephemeral)
+                }
+                return
+              }
               await sendCommandReply(
                 interaction,
                 commandContainer(

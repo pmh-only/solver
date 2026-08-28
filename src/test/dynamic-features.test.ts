@@ -141,6 +141,78 @@ describe('dynamic Discord features', () => {
     ])
   })
 
+  it('sends a returned raw Components V2 object without serializing it as text', async () => {
+    const { manager, subcommands } = runtime()
+    await manager.manage({
+      action: 'upsert',
+      id: 'card',
+      kind: 'command',
+      name: 'card',
+      description: 'show a component card',
+      code: 'return { flags: 32768, components: [{ type: 10, content: `Hello ${args}` }] }'
+    })
+    const editReply = vi.fn(async () => ({ id: 'raw-components-response' }))
+    const commandInteraction = {
+      user: { id: '666666666666666666' },
+      deferred: false,
+      replied: false,
+      isButton: () => false,
+      isStringSelectMenu: () => false,
+      isModalSubmit: () => false,
+      deferReply: vi.fn(async () => {
+        commandInteraction.deferred = true
+      }),
+      editReply,
+      deleteReply: vi.fn(async () => {})
+    } as unknown as CommandInteraction
+
+    await subcommands.get('card')!.execute(commandInteraction, 'card 민수', new Map())
+
+    expect(editReply).toHaveBeenCalledWith({
+      flags: MessageFlags.IsComponentsV2,
+      components: [{ type: 10, content: 'Hello 민수' }],
+      attachments: []
+    })
+    expect(JSON.stringify(editReply.mock.calls)).not.toContain('```json')
+  })
+
+  it('keeps non-Components V2 object returns on the legacy text path', async () => {
+    const { manager, subcommands } = runtime()
+    await manager.manage({
+      action: 'upsert',
+      id: 'data',
+      kind: 'command',
+      name: 'data',
+      description: 'show structured data',
+      code: 'return { ok: true }'
+    })
+    const editReply = vi.fn(async (_payload: unknown) => ({ id: 'legacy-object-response' }))
+    const commandInteraction = {
+      user: { id: '666666666666666666' },
+      deferred: false,
+      replied: false,
+      isButton: () => false,
+      isStringSelectMenu: () => false,
+      isModalSubmit: () => false,
+      deferReply: vi.fn(async () => {
+        commandInteraction.deferred = true
+      }),
+      editReply,
+      deleteReply: vi.fn(async () => {})
+    } as unknown as CommandInteraction
+
+    await subcommands.get('data')!.execute(commandInteraction, 'data', new Map())
+
+    const payload = editReply.mock.calls[0]?.[0] as {
+      components: unknown[]
+      flags: number
+    }
+    expect(JSON.stringify(payload.components)).toContain('ok')
+    expect(payload).toMatchObject({
+      flags: MessageFlags.IsComponentsV2
+    })
+  })
+
   it('registers, routes, persists, and removes a user context feature', async () => {
     const { manager, registry, run, syncCommands, cleanup } = runtime()
     await manager.manage({
