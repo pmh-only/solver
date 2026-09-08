@@ -555,6 +555,17 @@ describe('/a', () => {
   })
 
   it('runs dynamic feature instructions as ephemeral agent requests', async () => {
+    await dispatch(
+      agentCommandJSON('configure dynamic features', {}, 'supported', {
+        model: 'provider/supported-model',
+        effort: 'low',
+        tokens: 2048
+      }),
+      subs
+    )
+    modelMock.mockClear()
+    streamMock.mockClear()
+    agentMock.mockClear()
     const deferReply = vi.fn(async () => {})
     const editReply = vi.fn(async () => ({ id: 'dynamic-response' }))
     const followUp = vi.fn(async () => ({}))
@@ -582,6 +593,17 @@ describe('/a', () => {
     expect(streamMock).toHaveBeenCalledWith(
       '{"type":"command","arguments":"report"}',
       expect.objectContaining({ cancelSignal: expect.any(AbortSignal) })
+    )
+    expect(modelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'provider/supported-model',
+        maxTokens: 2048,
+        params: {
+          parallel_tool_calls: true,
+          reasoning: { effort: 'low', summary: 'auto' },
+          tools: [{ type: 'web_search' }]
+        }
+      })
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({

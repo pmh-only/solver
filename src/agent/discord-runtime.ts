@@ -413,7 +413,7 @@ export async function runDynamicAgentFeature(
   pub: boolean
 ): Promise<void> {
   const sessionName = `__feature:${feature.id}:${interaction.user.id}`
-  const settings = loadSessionSettings(interaction.user.id, sessionName)
+  const settings = loadSessionSettings(interaction.user.id, loadSelectedSession())
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt: input,
