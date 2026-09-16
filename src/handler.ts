@@ -105,6 +105,7 @@ import {
 import { handleLyricsControlButton, isLyricsControlButtonId } from './commands/lyrics.js'
 import { isAdminUser } from './authorization.js'
 import { handleFileconvModal, isFileconvModalId } from './commands/fileconv.js'
+import { handleSeotdaButton, isSeotdaButtonId } from './commands/seotda.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -317,6 +318,11 @@ export function createHandler(
       }
 
       if (interaction.isButton()) {
+        if (isSeotdaButtonId(interaction.customId)) {
+          await handleSeotdaButton(interaction)
+          return
+        }
+
         if (isLyricsControlButtonId(interaction.customId)) {
           await handleLyricsControlButton(interaction)
           return

@@ -9,6 +9,8 @@ let database: DatabaseSync | null = null
 
 const INTERNAL_KEY_PREFIXES = [
   '__chess-state:',
+  '__seotda-lock:',
+  '__seotda-state:',
   '__quiz-generation:',
   '__quiz-state:',
   'command-input:',
