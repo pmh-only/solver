@@ -63,11 +63,6 @@ export function requireCommunityGuild(
   return interaction.guild
 }
 
-export function requireCommunityPermission(interaction: CommandInteraction, permission: bigint) {
-  if (!interaction.memberPermissions?.has(permission))
-    throw new Error('이 작업에 필요한 서버 권한이 없습니다.')
-}
-
 export function parseMemberId(input: string): string {
   const match = /^(?:<@!?(\d{17,20})>|(\d{17,20}))$/.exec(input)
   if (!match) throw new Error('사용자 멘션 또는 ID를 입력하세요.')
@@ -191,7 +186,6 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
       // Invites are always private, even if the source message was copied publicly.
       if (!interaction.message.flags.has(MessageFlags.Ephemeral))
         throw new Error('비공개 요청으로 초대 링크를 생성하세요.')
-      requireCommunityPermission(interaction, PermissionFlagsBits.CreateInstantInvite)
       const settings = loadCommunitySettings(guild.id)
       const cooldownKey = `invite:${guild.id}:${state.userId}`
       if (loadCommunityState(cooldownKey, cooldownSchema))
@@ -232,8 +226,8 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
 const date: Subcommand = {
   name: 'date',
   description: '서버 가입일 조회',
-  usage: 'date [@사용자 또는 ID] [--pub]',
-  examples: ['date', 'date @사용자'],
+  usage: '/date [member:@사용자] [public:true]',
+  examples: ['/date', '/date member:@사용자'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'date')
     const id = rest(args) ? parseMemberId(rest(args)) : interaction.user.id
@@ -256,8 +250,8 @@ const date: Subcommand = {
 const color: Subcommand = {
   name: 'color',
   description: '본인 역할 색상 변경',
-  usage: 'color <#rgb 또는 #rrggbb> [보조 색상] [--pub]',
-  examples: ['color #abcdef', 'color #abc #def'],
+  usage: '/color hex:<#rgb 또는 #rrggbb> [secondary:<보조 색상>] [public:true]',
+  examples: ['/color hex:#abcdef', '/color hex:#abc secondary:#def'],
   async execute(interaction, args, flags) {
     requireCommunityGuild(interaction, 'color')
     const parts = rest(args).split(/\s+/)
@@ -282,11 +276,10 @@ const color: Subcommand = {
 const invite: Subcommand = {
   name: 'invite',
   description: '일회용 초대 링크 생성',
-  usage: 'invite',
-  examples: ['invite'],
+  usage: '/invite',
+  examples: ['/invite'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'invite')
-    requireCommunityPermission(interaction, PermissionFlagsBits.CreateInstantInvite)
     if (flags.has('pub') || rest(args))
       throw new Error('초대 링크는 invite 명령으로 비공개 생성만 가능합니다.')
     const settings = loadCommunitySettings(guild.id)
@@ -302,14 +295,13 @@ const invite: Subcommand = {
 const anon: Subcommand = {
   name: 'anon',
   description: '현재 채널에 익명 메시지 전송',
-  usage: 'anon <메시지>',
-  examples: ['anon 안녕하세요'],
+  usage: '/anon message:<메시지>',
+  examples: ['/anon message:안녕하세요'],
   async execute(interaction, args, flags) {
     // Handle errors locally: the generic router's usage footer includes the raw
     // arguments and --pub flag, which must never disclose anonymous message text.
     try {
       const guild = requireCommunityGuild(interaction, 'anon')
-      requireCommunityPermission(interaction, PermissionFlagsBits.ManageMessages)
       const message = rest(args)
       if (!message || message.length > 2000 || flags.has('pub'))
         throw new Error('비공개 명령으로 1~2000자의 메시지를 입력하세요.')
@@ -350,11 +342,10 @@ const anon: Subcommand = {
 const emoji: Subcommand = {
   name: 'emoji',
   description: '이미지를 128px 이모지로 등록',
-  usage: 'emoji <이름> <Discord 첨부 URL> [--pub]',
-  examples: ['emoji smile https://cdn.discordapp.com/attachments/123/456/smile.png'],
+  usage: '/emoji name:<이름> image:<첨부 이미지> [public:true]',
+  examples: ['/emoji name:smile image:smile.png'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'emoji')
-    requireCommunityPermission(interaction, PermissionFlagsBits.ManageGuildExpressions)
     const parts = rest(args).split(/\s+/)
     const [name, url] = parts
     if (parts.length !== 2 || !name || !/^[a-zA-Z0-9_]{2,32}$/.test(name) || !url)

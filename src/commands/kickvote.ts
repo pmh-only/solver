@@ -25,12 +25,7 @@ import {
   pruneCommunityState,
   saveCommunityState
 } from './community-state.js'
-import {
-  parseMemberId,
-  requireCommunityGuild,
-  requireCommunityPermission,
-  sendCommunityNotice
-} from './community-guild.js'
+import { parseMemberId, requireCommunityGuild, sendCommunityNotice } from './community-guild.js'
 
 export const KICKVOTE_BUTTON_ID = 'community-kickvote'
 const voteSchema = z
@@ -208,12 +203,11 @@ export async function handleKickvoteButton(interaction: ButtonInteraction) {
 
 export const subcommand: Subcommand = {
   name: 'kickvote',
-  description: '공개 추방 투표 시작 (추방 권한 필요)',
-  usage: 'kickvote <@사용자 또는 ID> <사유> --pub',
-  examples: ['kickvote @사용자 반복적인 스팸 --pub'],
+  description: '공개 추방 투표 시작',
+  usage: '/kickvote user:@사용자 reason:<사유>',
+  examples: ['/kickvote user:@사용자 reason:반복적인 스팸'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'kickvote')
-    requireCommunityPermission(interaction, PermissionFlagsBits.KickMembers)
     const input = args.replace(/^\S+\s*/, '').trim()
     const [rawId, ...reasonParts] = input.split(/\s+/)
     const reason = reasonParts.join(' ')

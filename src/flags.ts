@@ -1,6 +1,14 @@
 export type Flags = Map<string, string | true>
 
 const pubtabContexts = new WeakSet<Flags>()
+const standaloneContexts = new WeakSet<Flags>()
+
+export function markStandaloneContext(flags: Flags): void {
+  standaloneContexts.add(flags)
+}
+export function isStandaloneContext(flags: Flags): boolean {
+  return standaloneContexts.has(flags)
+}
 
 export function markPubtabContext(flags: Flags): void {
   pubtabContexts.add(flags)

@@ -469,9 +469,8 @@ describe('guild commands and confirmations', () => {
     expect(JSON.stringify(getCallback(await clickConfirm(source)))).toContain('비활성화')
     expect(createRole).not.toHaveBeenCalled()
   })
-  it('keeps invites private, enforces permissions, and persists a per-user cooldown', async () => {
+  it('keeps invites private and persists a per-user cooldown', async () => {
     expect(JSON.stringify(getCallback(await guildCommand('invite --pub')))).toContain('비공개')
-    expect(JSON.stringify(getCallback(await guildCommand('invite', '0')))).toContain('권한')
     const source = await confirmation('invite')
     await clickConfirm(source)
     expect(createInvite).toHaveBeenCalledWith(
@@ -486,12 +485,12 @@ describe('guild commands and confirmations', () => {
     await clickConfirm(await confirmation('invite'))
     expect(createInvite).toHaveBeenCalledTimes(2)
   })
-  it('blocks public copies of an invite confirmation and permission loss', async () => {
+  it('blocks public copies of an invite confirmation and allows members without invite permission', async () => {
     const source = await confirmation('invite')
     await clickConfirm({ ...source, flags: MessageFlags.IsComponentsV2 })
     expect(createInvite).not.toHaveBeenCalled()
     await clickConfirm(await confirmation('invite'), USER, COMMUNITY_CONFIRM_ID, '0')
-    expect(createInvite).not.toHaveBeenCalled()
+    expect(createInvite).toHaveBeenCalledTimes(1)
   })
   it('sends anonymous text without mentions and deletes the temporary webhook', async () => {
     const calls = await guildCommand('anon @everyone 안녕')
@@ -513,7 +512,7 @@ describe('guild commands and confirmations', () => {
       '웹훅 삭제에 실패'
     )
   })
-  it('requires moderation permissions and private anonymous invocation', async () => {
+  it('requires private anonymous invocation regardless of member permissions', async () => {
     const deniedPublic = await guildCommand('anon secret --pub')
     expect(callbackData(deniedPublic).flags & MessageFlags.Ephemeral).toBeTruthy()
     expect(JSON.stringify(deniedPublic)).not.toContain('secret')
@@ -535,18 +534,16 @@ describe('guild commands and confirmations', () => {
   it('rejects invalid emoji names and untrusted URLs without creating emojis', async () => {
     await guildCommand('emoji x https://cdn.discordapp.com/a')
     await guildCommand('emoji smile https://localhost/a')
-    await guildCommand('emoji smile https://cdn.discordapp.com/a', '0')
     expect(createEmoji).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
 describe('persisted kick votes', () => {
-  it('requires explicit public launch, kick permission, configured channel, and kickable target', async () => {
+  it('requires explicit public launch, configured channel, and kickable target', async () => {
     expect(JSON.stringify(getCallback(await guildCommand(`kickvote ${TARGET} spam`)))).toContain(
       '--pub'
     )
-    await guildCommand(`kickvote ${TARGET} spam --pub`, '0')
     manageCommunitySettings({
       action: 'update',
       guildId: GUILD,

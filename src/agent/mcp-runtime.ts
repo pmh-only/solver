@@ -234,7 +234,7 @@ const discordFeatureManagementTool = tool({
 const communitySettingsTool = tool({
   name: 'manage_community_settings',
   description:
-    'Get, update, or reset the imported mntserver/bot features for a Discord server. Configure disabledCommands, kickvoteChannelId (null allows any channel), kickvoteThreshold, kickvoteIdleMinutes, inviteMaxAgeHours, inviteCooldownHours, anonymousName, or foods (null restores the default menu). Changes are persistent and apply immediately. No environment variables or terminal commands are needed. Use the current guild ID, or the user ID in DMs.',
+    'Get, update, or reset the standalone, guild-installed mntserver/bot commands for a Discord server. Every server member may invoke them; they are not /c subcommands and are unavailable in DMs. Configure disabledCommands, kickvoteChannelId (null allows any channel), kickvoteThreshold, kickvoteIdleMinutes, inviteMaxAgeHours, inviteCooldownHours, anonymousName, or foods (null restores the default menu). Changes are persistent and apply immediately. No environment variables or terminal commands are needed. Use the current guild ID.',
   inputSchema: manageCommunitySettingsSchema,
   callback: (input) => JSON.stringify(manageCommunitySettings(input))
 })

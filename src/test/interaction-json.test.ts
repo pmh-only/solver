@@ -31,9 +31,15 @@ describe('interaction json commands', () => {
       )
     ).toBe(true)
 
-    expect(applicationCommands.every((command) => command.default_member_permissions === '0')).toBe(
-      true
-    )
+    expect(
+      applicationCommands
+        .filter(
+          (command) =>
+            command.type === ApplicationCommandType.User ||
+            command.type === ApplicationCommandType.Message
+        )
+        .every((command) => command.default_member_permissions === '0')
+    ).toBe(true)
   })
 
   it('redeploys when stale application commands need to be removed', () => {

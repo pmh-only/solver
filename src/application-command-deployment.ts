@@ -10,6 +10,8 @@ export interface RegisteredApplicationCommand {
   type: number
   description?: string
   default_member_permissions?: string | null
+  integration_types?: number[]
+  contexts?: number[]
   options?: Array<{
     name: string
     type: number
@@ -17,6 +19,7 @@ export interface RegisteredApplicationCommand {
     required?: boolean
     autocomplete?: boolean
     max_length?: number
+    min_length?: number
   }>
 }
 

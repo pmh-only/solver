@@ -86,11 +86,17 @@ describe('Discord feature registry', () => {
     ).toThrow('application command already registered: 1:one')
   })
 
-  it('composes the agent command before additional commands', () => {
+  it('composes public community commands between the agent and additional commands', () => {
     const registry = createFeatureRegistry(new Collection<string, Subcommand>())
 
     expect(registry.commands[0]?.name).toBe('a')
-    expect(registry.commands[1]?.name).toBe('c')
+    expect(registry.commands[1]?.name).toBe('food')
+    expect(
+      registry.commands.find((command) => command.name === 'food')?.default_member_permissions
+    ).toBeNull()
+    expect(
+      registry.commands.find((command) => command.name === 'c')?.default_member_permissions
+    ).toBe('0')
   })
 
   it('detects stale definitions for dynamically registered slash commands', () => {

@@ -12,6 +12,7 @@ export interface ApplicationCommandDefinition {
     required?: boolean
     autocomplete?: boolean
     max_length?: number
+    min_length?: number
   }[]
   [key: string]: unknown
 }
@@ -27,7 +28,11 @@ export interface DiscordFeature {
 export function restrictApplicationCommands(
   commands: readonly ApplicationCommandDefinition[]
 ): ApplicationCommandDefinition[] {
-  return commands.map((command) => ({ ...command, default_member_permissions: '0' }))
+  return commands.map((command) => ({
+    ...command,
+    default_member_permissions:
+      command.default_member_permissions === undefined ? '0' : command.default_member_permissions
+  }))
 }
 
 export class DiscordFeatureRegistry {

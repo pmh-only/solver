@@ -51,7 +51,7 @@ export const manageCommunitySettingsSchema = z.object({
   guildId: z
     .string()
     .regex(/^\d{17,20}$/)
-    .describe('Discord server ID, or the user ID for food/pizza/now in DMs'),
+    .describe('Discord server ID for the guild-installed community commands'),
   // A PATCH must not inject defaults for omitted fields (Zod 4 also applies defaults
   // inside optional fields). Keep the update schema free of defaults.
   settings: z.object(communitySettingsFields).strict().partial().optional()

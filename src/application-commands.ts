@@ -15,6 +15,7 @@ import {
 } from './commands/message-render.js'
 import { MESSAGE_STORE_COMMAND_NAME } from './commands/message-store.js'
 import { agentCommand } from './agent/command.js'
+import { communityApplicationCommands } from './community-application-commands.js'
 
 export { agentCommand } from './agent/command.js'
 
@@ -85,6 +86,7 @@ export const additionalApplicationCommands = [
 
 export const applicationCommands = restrictApplicationCommands([
   ...agentApplicationCommands,
+  ...communityApplicationCommands,
   ...additionalApplicationCommands
 ])
 
@@ -94,6 +96,8 @@ export function areApplicationCommandsCurrent(
     type: number
     description?: string
     default_member_permissions?: string | null
+    integration_types?: readonly number[]
+    contexts?: readonly number[]
     options?: readonly {
       name: string
       type: number
@@ -101,6 +105,7 @@ export function areApplicationCommandsCurrent(
       required?: boolean
       autocomplete?: boolean
       max_length?: number
+      min_length?: number
     }[]
   }[],
   desiredCommands: readonly ApplicationCommandDefinition[] = applicationCommands
@@ -116,6 +121,14 @@ export function areApplicationCommandsCurrent(
 
     const desired = command as typeof registered
     if (registered.default_member_permissions !== desired.default_member_permissions) return false
+    for (const field of ['integration_types', 'contexts'] as const) {
+      if (
+        desired[field] &&
+        JSON.stringify([...(registered[field] ?? [])].sort()) !==
+          JSON.stringify([...desired[field]].sort())
+      )
+        return false
+    }
     if (desired.description === undefined && desired.options === undefined) return true
 
     const registeredOptions = registered.options ?? []
@@ -131,7 +144,8 @@ export function areApplicationCommandsCurrent(
           current.description === option.description &&
           Boolean(current.required) === Boolean(option.required) &&
           Boolean(current.autocomplete) === Boolean(option.autocomplete) &&
-          current.max_length === option.max_length
+          current.max_length === option.max_length &&
+          current.min_length === option.min_length
         )
       })
     )

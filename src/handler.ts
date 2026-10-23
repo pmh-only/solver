@@ -106,8 +106,6 @@ import { handleLyricsControlButton, isLyricsControlButtonId } from './commands/l
 import { isAdminUser } from './authorization.js'
 import { handleFileconvModal, isFileconvModalId } from './commands/fileconv.js'
 import { handleSeotdaButton, isSeotdaButtonId } from './commands/seotda.js'
-import { handleCommunityConfirm, isCommunityConfirmId } from './commands/community-guild.js'
-import { handleKickvoteButton, isKickvoteButtonId } from './commands/kickvote.js'
 
 function looksLikeMath(input: string): boolean {
   return /[+\-*/%^()]/.test(input)
@@ -320,14 +318,6 @@ export function createHandler(
       }
 
       if (interaction.isButton()) {
-        if (isCommunityConfirmId(interaction.customId)) {
-          await handleCommunityConfirm(interaction)
-          return
-        }
-        if (isKickvoteButtonId(interaction.customId)) {
-          await handleKickvoteButton(interaction)
-          return
-        }
         if (isSeotdaButtonId(interaction.customId)) {
           await handleSeotdaButton(interaction)
           return

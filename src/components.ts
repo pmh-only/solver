@@ -23,7 +23,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, CommandRunResult, Subcommand } from './types.js'
 import type { Flags } from './flags.js'
-import { isPubtabContext } from './flags.js'
+import { isPubtabContext, isStandaloneContext } from './flags.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 export const PUB_BUTTON_ID = 'pub'
@@ -349,7 +349,10 @@ function buildContainer(
 ) {
   const pub = flags.has('pub')
   const resolved = components.map(resolve)
-  const commandInput = options.subcommand ? serializeCommandInput(args, flags) : undefined
+  const commandInput =
+    options.subcommand && !isStandaloneContext(flags)
+      ? serializeCommandInput(args, flags)
+      : undefined
   const footer = footerText(args, flags)
   const last = resolved.at(-1)
 
@@ -366,7 +369,7 @@ function buildContainer(
 
   const responseComponents = options.private
     ? [body, pinButtonRow()]
-    : options.controls === false
+    : options.controls === false || isStandaloneContext(flags)
       ? [body]
       : pub
         ? withPubtabButton([body], isPubtabContext(flags))
@@ -788,7 +791,8 @@ export async function runRerunnableCommand(
 
   if (typeof message.id === 'string') {
     scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
-    rememberCommandInputForMessage(message.id, serializeCommandInput(args, flags))
+    if (!isStandaloneContext(flags))
+      rememberCommandInputForMessage(message.id, serializeCommandInput(args, flags))
   }
 }
 

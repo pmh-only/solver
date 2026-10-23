@@ -12,6 +12,7 @@ import {
 import { DiscordFeatureRegistry, type DiscordFeature } from './feature-registry.js'
 import { createHandler } from './handler.js'
 import type { InteractionRecovery, Subcommand } from './types.js'
+import { createCommunityFeature } from './community-feature.js'
 
 const CORE_FEATURE_PRIORITY = 100
 const ADDITIONAL_FEATURE_PRIORITY = -100
@@ -65,6 +66,7 @@ export function createFeatureRegistry(
   const registry = new DiscordFeatureRegistry()
   const handler = createHandler(subcommands, recover)
   registry.register(createAgentFeature(handler))
+  registry.register(createCommunityFeature())
   registry.register(createAdditionalFeature(handler))
   return registry
 }

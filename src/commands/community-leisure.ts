@@ -20,8 +20,8 @@ export function createLeisureCommands(): Subcommand[] {
   const food: Subcommand = {
     name: 'food',
     description: '음식 추천',
-    usage: 'food [이름 또는 태그] [--pub]',
-    examples: ['food', 'food 한식 혼밥'],
+    usage: '/food [filter:<이름 또는 태그>] [public:true]',
+    examples: ['/food', '/food filter:한식 혼밥'],
     async execute(interaction, args, flags) {
       const settings = loadCommunitySettings(interaction.guildId ?? interaction.user.id)
       if (settings.disabledCommands.includes('food')) throw new Error('비활성화된 기능입니다.')
@@ -44,8 +44,8 @@ export function createLeisureCommands(): Subcommand[] {
   const pizza: Subcommand = {
     name: 'pizza',
     description: '펜타곤 피자 지수',
-    usage: 'pizza [--pub]',
-    examples: ['pizza'],
+    usage: '/pizza [public:true]',
+    examples: ['/pizza'],
     async run() {
       const bytes = await fetchCommunityBytes(
         'https://www.pizzint.watch/api/dashboard-data?nocache=1',
@@ -78,8 +78,8 @@ export function createLeisureCommands(): Subcommand[] {
   const now: Subcommand = {
     name: 'now',
     description: '현재 시각',
-    usage: 'now [--pub]',
-    examples: ['now'],
+    usage: '/now [public:true]',
+    examples: ['/now'],
     async execute(interaction, args, flags) {
       if (
         loadCommunitySettings(interaction.guildId ?? interaction.user.id).disabledCommands.includes(
