@@ -14,6 +14,7 @@ const INTERNAL_KEY_PREFIXES = [
   '__quiz-generation:',
   '__quiz-state:',
   'command-input:',
+  'community:',
   'constrained-command:',
   'env:',
   'gpt-ctx:',

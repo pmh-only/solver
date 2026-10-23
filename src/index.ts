@@ -40,6 +40,10 @@ import { subcommand as fileconv } from './commands/fileconv.js'
 import { subcommand as down } from './commands/down.js'
 import { subcommand as seotda } from './commands/seotda.js'
 import { extraSubcommands } from './commands/more.js'
+import { leisureCommands } from './commands/community-leisure.js'
+import { guildCommunityCommands } from './commands/community-guild.js'
+import { subcommand as kickvote } from './commands/kickvote.js'
+import { createHelpSubcommand } from './commands/help.js'
 import { closeWebServer, startWebServer } from './web-server.js'
 import { requireAdminUserIds } from './authorization.js'
 import { restoreStoredEnvironment } from './helpers/environment-store.js'
@@ -93,10 +97,13 @@ const commands = [
   rps,
   slots,
   ttt,
+  ...leisureCommands,
+  ...guildCommunityCommands,
+  kickvote,
   ...extraSubcommands
 ]
 
-for (const sub of [...commands, createPubtabSubcommand(commands)]) {
+for (const sub of [...commands, createHelpSubcommand(commands), createPubtabSubcommand(commands)]) {
   subcommands.set(sub.name, sub)
 }
 

@@ -36,6 +36,7 @@ import {
 import type { EffortLevel } from './config.js'
 import { manageDynamicDiscordFeatures } from '../dynamic-features.js'
 import { safeErrorMessage } from '../safe-error.js'
+import { manageCommunitySettings, manageCommunitySettingsSchema } from '../community-settings.js'
 
 const SPOTIFY_MCP_PATH = fileURLToPath(
   new URL('../../node_modules/spotify-mcp/dist/index.js', import.meta.url)
@@ -90,10 +91,7 @@ interface AgentMcpCandidate {
 
 const agentMcpConnections = new Map<string, AgentMcpConnection>()
 const agentMcpFailures = new Map<string, string>()
-const agentMcpServerReadiness = new Map<
-  string,
-  { promise: Promise<void>; resolve: () => void }
->()
+const agentMcpServerReadiness = new Map<string, { promise: Promise<void>; resolve: () => void }>()
 let agentMcpBoot: Promise<void> | undefined
 let agentMcpState: 'idle' | 'initializing' | 'ready' | 'failed' = 'idle'
 
@@ -233,6 +231,14 @@ const discordFeatureManagementTool = tool({
   }
 })
 
+const communitySettingsTool = tool({
+  name: 'manage_community_settings',
+  description:
+    'Get, update, or reset the imported mntserver/bot features for a Discord server. Configure disabledCommands, kickvoteChannelId (null allows any channel), kickvoteThreshold, kickvoteIdleMinutes, inviteMaxAgeHours, inviteCooldownHours, anonymousName, or foods (null restores the default menu). Changes are persistent and apply immediately. No environment variables or terminal commands are needed. Use the current guild ID, or the user ID in DMs.',
+  inputSchema: manageCommunitySettingsSchema,
+  callback: (input) => JSON.stringify(manageCommunitySettings(input))
+})
+
 export function createAgentUtilityTools(signal: AbortSignal): Tool[] {
   return [
     shellTool(signal),
@@ -240,7 +246,8 @@ export function createAgentUtilityTools(signal: AbortSignal): Tool[] {
     publishHtmlTool,
     spotifyAuthenticationTool,
     googleCalendarAuthenticationTool,
-    discordFeatureManagementTool
+    discordFeatureManagementTool,
+    communitySettingsTool
   ]
 }
 

@@ -44,6 +44,7 @@ export interface RestCall {
 export type RawInteraction = Record<string, unknown>
 
 export interface DispatchOptions {
+  configureClient?: (client: Client) => void
   postError?: (route: string, body: unknown, calls: RestCall[]) => Error | undefined
   postResult?: (route: string, body: unknown, calls: RestCall[]) => unknown
   patchError?: (body: unknown, calls: RestCall[]) => Error | undefined
@@ -95,6 +96,7 @@ function makeClient(options: DispatchOptions = {}): { client: Client; calls: Res
     return {}
   }
 
+  options.configureClient?.(client)
   return { client, calls }
 }
 

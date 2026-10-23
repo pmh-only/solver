@@ -661,6 +661,38 @@ describe('/a', () => {
     expect(failed).not.toContain('secret-token')
   })
 
+  it('configures imported community features through the /a utility tool', async () => {
+    await dispatch(agentCommandJSON('추방 투표 정족수를 5명으로 설정해'), subs)
+    const managementTool = registeredAgentTools.get('manage_community_settings') as {
+      callback: (input: Record<string, unknown>) => string
+    }
+    expect(managementTool).toBeDefined()
+    const result = managementTool.callback({
+      action: 'update',
+      guildId: '333333333333333333',
+      settings: {
+        kickvoteThreshold: 5,
+        kickvoteChannelId: '777777777777777777',
+        inviteCooldownHours: 12
+      }
+    })
+    expect(JSON.parse(result)).toMatchObject({ kickvoteThreshold: 5, inviteCooldownHours: 12 })
+    expect(JSON.parse(getStoredValue('community:settings:333333333333333333')!)).toMatchObject({
+      kickvoteThreshold: 5
+    })
+    expect(() =>
+      managementTool.callback({
+        action: 'update',
+        guildId: '333333333333333333',
+        settings: { kickvoteThreshold: 0 }
+      })
+    ).toThrow()
+    expect(
+      JSON.parse(managementTool.callback({ action: 'reset', guildId: '333333333333333333' }))
+        .kickvoteThreshold
+    ).toBe(7)
+  })
+
   it('tells the next agent run to repair safely redacted runtime failures', async () => {
     reportRuntimeIssue(
       'application_command_deployment',
@@ -954,6 +986,7 @@ describe('/a', () => {
           expect.objectContaining({ name: 'spotify_authenticate' }),
           expect.objectContaining({ name: 'google_calendar_authenticate' }),
           expect.objectContaining({ name: 'manage_discord_features' }),
+          expect.objectContaining({ name: 'manage_community_settings' }),
           expect.objectContaining({ name: 'manage_mcp_servers' }),
           expect.objectContaining({ name: 'load_mcp_tools' }),
           expect.objectContaining({ name: 'delegate_tasks' }),
@@ -1001,6 +1034,7 @@ describe('/a', () => {
             expect.objectContaining({ name: 'spotify_authenticate' }),
             expect.objectContaining({ name: 'google_calendar_authenticate' }),
             expect.objectContaining({ name: 'manage_discord_features' }),
+            expect.objectContaining({ name: 'manage_community_settings' }),
             expect.objectContaining({ name: 'manage_mcp_servers' }),
             expect.objectContaining({ name: 'load_mcp_tools' }),
             expect.objectContaining({ name: 'delegate_tasks' }),
@@ -1570,7 +1604,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(17).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(18).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1590,7 +1624,7 @@ describe('/a', () => {
     )
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(17).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(18).fill(expect.anything())]
       })
     )
     expect(disconnectMock).not.toHaveBeenCalled()
@@ -1604,7 +1638,7 @@ describe('/a', () => {
 
     expect(agentMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tools: [expect.anything(), ...Array(16).fill(expect.anything())]
+        tools: [expect.anything(), ...Array(17).fill(expect.anything())]
       })
     )
     expect(JSON.stringify(calls)).toContain('hello world')
@@ -1758,7 +1792,7 @@ describe('/a', () => {
       expect.objectContaining({ name: 'docker_get_current_time', source: 'replacement' })
     )
     expect(tools).not.toContainEqual(expect.objectContaining({ name: 'docker_get-current-time' }))
-    expect(tools).toHaveLength(17)
+    expect(tools).toHaveLength(18)
   })
 
   it('asks the agent to recover a closed MCP connection once', async () => {
@@ -2128,7 +2162,11 @@ describe('/a', () => {
       ])
     })
 
-    streamRelease.resolve?.()
+    // The running conversation is persisted before the stream mock reaches its
+    // pause. Wait for that pause, otherwise the optional call can miss the release
+    // and leave this request (and subsequent session requests) hanging forever.
+    await vi.waitFor(() => expect(streamRelease.resolve).toBeTypeOf('function'))
+    streamRelease.resolve!()
     await running
     expect(loadWebConversation('666666666666666666', 'default')).toEqual([
       { role: 'user', content: 'sent from Discord' },
