@@ -1,5 +1,6 @@
 import 'dotenv/config'
-import { Client, Collection, Events, GatewayIntentBits, REST, Routes } from 'discord.js'
+import { Client, Collection, Events, REST, Routes } from 'discord.js'
+import { discordClientOptions } from './discord-client-options.js'
 import type { Subcommand } from './types.js'
 import { areApplicationCommandsCurrent } from './application-commands.js'
 import {
@@ -159,9 +160,7 @@ await ensureDeployed(rest, clientId).catch((error) => {
   console.error(`application command deployment failed safely: ${safeErrorMessage(error)}`)
 })
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
-})
+const client = new Client(discordClientOptions)
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`ready: ${c.user.tag}`)

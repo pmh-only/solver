@@ -1449,6 +1449,29 @@ describe('/a', () => {
     expect(JSON.stringify(calls)).not.toContain('override-secret-token')
   })
 
+  it.each(['allowed_mentions', 'allowedMentions'])(
+    'blocks model-generated %s overrides',
+    async (field) => {
+      responsePayloads.push({
+        components: [{ type: 10, content: '<@666666666666666666> @everyone' }],
+        flags: MessageFlags.IsComponentsV2,
+        [field]: {
+          parse: ['users', 'roles', 'everyone'],
+          users: ['666666666666666666'],
+          roles: ['555555555555555555'],
+          repliedUser: true,
+          replied_user: true
+        }
+      })
+
+      const calls = await dispatch(agentCommandJSON('mention everyone'), subs)
+      const edit = calls.filter((call) => call.method === 'PATCH').at(-1)?.body
+
+      expect(edit).toMatchObject({ allowed_mentions: { parse: [], replied_user: false } })
+      expect(JSON.stringify(edit)).toContain('<@666666666666666666> @everyone')
+    }
+  )
+
   it('corrects populated content into raw Components V2 output', async () => {
     responsePayloads.push(
       '{"content":"legacy response","components":[{"type":10,"content":"status"}],"flags":32768}',
@@ -1472,7 +1495,7 @@ describe('/a', () => {
     expect(edit.flags).toBe(MessageFlags.IsComponentsV2)
     expect(JSON.stringify(edit.components)).toContain('Everything is healthy')
     expect(JSON.stringify(edit.components)).not.toContain('legacy response')
-    expect(edit.allowed_mentions).toEqual({ parse: [] })
+    expect(edit.allowed_mentions).toEqual({ parse: [], replied_user: false })
     expect(streamMock.mock.calls[1]?.[0]).toContain(
       'content field must be omitted or null for Components V2 responses'
     )

@@ -31,6 +31,7 @@ import {
   RETRY_BUTTON_ID
 } from '../components.js'
 import { createFeatureRegistry } from '../features.js'
+import { discordClientOptions } from '../discord-client-options.js'
 import type { Subcommand } from '../types.js'
 
 export interface RestCall {
@@ -51,7 +52,7 @@ export interface DispatchOptions {
 }
 
 function makeClient(options: DispatchOptions = {}): { client: Client; calls: RestCall[] } {
-  const client = new Client({ intents: [] })
+  const client = new Client({ ...discordClientOptions, intents: [] })
   ;(client as { token: string | null }).token = 'test.token.here'
 
   const calls: RestCall[] = []

@@ -144,10 +144,9 @@ export function buildAgentPayload(
   if (!Number.isInteger(payload.flags) || ((payload.flags as number) & 32768) === 0) {
     throw new Error('Components V2 responses must set the flags field to include 32768.')
   }
-  if ('allowed_mentions' in payload) {
-    payload.allowedMentions = payload.allowed_mentions
-    delete payload.allowed_mentions
-  }
+  // Model-generated options must never re-enable mentions.
+  delete payload.allowed_mentions
+  payload.allowedMentions = { parse: [], repliedUser: false }
 
   const { components, senderOnlyIds } = validateComponents(
     JSON.stringify(payload.components),
