@@ -90,8 +90,7 @@ export function createCommunityFeature(): DiscordFeature {
         if (!interaction.isChatInputCommand()) return
         const command = byName.get(interaction.commandName)!
         const flags: Flags = new Map()
-        if (interaction.commandName === 'kickvote' || interaction.options.getBoolean('public'))
-          flags.set('pub', true)
+        if (!['invite', 'anon'].includes(interaction.commandName)) flags.set('pub', true)
         markStandaloneContext(flags)
         // Typed Discord options are not shell flags. Preserve message text such as "--pub" verbatim.
         await command.execute(

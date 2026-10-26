@@ -122,7 +122,7 @@ export async function handleKickvoteButton(interaction: ButtonInteraction) {
     await reject('비활성화된 기능입니다.')
     return
   }
-  if (settings.kickvoteChannelId && interaction.channelId !== settings.kickvoteChannelId) {
+  if (!settings.kickvoteChannelId || interaction.channelId !== settings.kickvoteChannelId) {
     await reject('설정된 투표 채널이 아닙니다.')
     return
   }
@@ -228,8 +228,6 @@ export const subcommand: Subcommand = {
     if (targetId === interaction.user.id)
       throw new Error('본인에 대한 추방 투표는 시작할 수 없습니다.')
     const settings = loadCommunitySettings(guild.id)
-    if (settings.kickvoteChannelId && interaction.channelId !== settings.kickvoteChannelId)
-      throw new Error(`추방 투표는 <#${settings.kickvoteChannelId}>에서 시작하세요.`)
     const lock = `${guild.id}:${targetId}`
     if (active.has(lock)) throw new Error('이미 진행 중인 투표입니다.')
     active.add(lock)

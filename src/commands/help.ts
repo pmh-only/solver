@@ -10,7 +10,7 @@ export function createHelpSubcommand(commands: readonly Subcommand[]): Subcomman
   const help: Subcommand = {
     name: 'help',
     description: '명령 목록 및 사용법',
-    usage: '/help [command:<명령>] [public:true]',
+    usage: '/help [command:<명령>]',
     examples: ['/help', '/help command:kickvote'],
     async autocomplete(input) {
       return commands

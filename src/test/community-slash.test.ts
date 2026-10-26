@@ -41,6 +41,7 @@ const png = Buffer.from(
 const kick = vi.fn()
 const addRole = vi.fn()
 const send = vi.fn()
+const channelSend = vi.fn()
 const deleteWebhook = vi.fn()
 const createInvite = vi.fn()
 const createEmoji = vi.fn()
@@ -98,7 +99,7 @@ function configureClient(client: Client) {
   })
   const member = (id: string) => ({
     id,
-    user: { id, bot: false },
+    user: { id, bot: false, tag: 'ordinary-member' },
     joinedTimestamp: 1577836800000,
     permissions: new PermissionsBitField(),
     kickable: true,
@@ -113,6 +114,8 @@ function configureClient(client: Client) {
   vi.spyOn(guild.invites, 'create').mockImplementation(createInvite)
   vi.spyOn(guild.emojis, 'create').mockImplementation(createEmoji)
   vi.spyOn(guild.channels, 'fetch').mockResolvedValue({
+    isSendable: () => true,
+    send: channelSend,
     createWebhook: vi.fn(async () => ({ send, delete: deleteWebhook }))
   } as never)
 }
@@ -131,10 +134,16 @@ beforeEach(() => {
   vi.useFakeTimers()
   isolateStoredValues(join(process.cwd(), '.tmp', 'community-slash.test.sqlite'))
   clearStoredValues()
+  manageCommunitySettings({
+    action: 'update',
+    guildId: GUILD,
+    settings: { inviteChannelId: CHANNEL, kickvoteChannelId: CHANNEL }
+  })
   vi.clearAllMocks()
   kick.mockResolvedValue(undefined)
   addRole.mockResolvedValue(undefined)
   send.mockResolvedValue(undefined)
+  channelSend.mockResolvedValue(undefined)
   deleteWebhook.mockResolvedValue(undefined)
   createInvite.mockResolvedValue({ url: 'https://discord.gg/test' })
   createEmoji.mockResolvedValue({ id: ROLE })
@@ -191,10 +200,10 @@ describe('standalone guild command registration', () => {
       )
     ).toBe(true)
     expect(
-      communityApplicationCommands
-        .find(({ name }) => name === 'anon')
-        ?.options?.some((option) => option.name === 'public')
-    ).toBe(false)
+      communityApplicationCommands.every(
+        (command) => !command.options?.some((option) => option.name === 'public')
+      )
+    ).toBe(true)
     expect(communityApplicationCommands.find(({ name }) => name === 'invite')?.options).toEqual([])
   })
   it.each(['contexts', 'integration_types', 'default_member_permissions'])(
@@ -220,6 +229,53 @@ describe('standalone guild command registration', () => {
 })
 
 describe('standalone commands called by ordinary guild members', () => {
+  it.each(['invite', 'kickvote'] as const)(
+    'restricts /%s to its configured channel',
+    async (name) => {
+      const args = name === 'kickvote' ? [userOption('user'), stringOption('reason', '스팸')] : []
+      for (const channelId of [null, OTHER]) {
+        manageCommunitySettings({
+          action: 'update',
+          guildId: GUILD,
+          settings: { [name === 'invite' ? 'inviteChannelId' : 'kickvoteChannelId']: channelId }
+        })
+        const calls = await run(name, args)
+        expect(JSON.stringify(body(calls))).toContain(channelId ?? '/a')
+        expect(body(calls).flags & MessageFlags.Ephemeral).toBeTruthy()
+      }
+      expect(createInvite).not.toHaveBeenCalled()
+      expect(kick).not.toHaveBeenCalled()
+      expect(channelSend).not.toHaveBeenCalled()
+    }
+  )
+  it('rechecks the invite channel when confirming an existing request', async () => {
+    const source = body(await run('invite'))
+    manageCommunitySettings({
+      action: 'update',
+      guildId: GUILD,
+      settings: { inviteChannelId: OTHER }
+    })
+    const denied = await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)
+    expect(JSON.stringify(body(denied))).toContain(OTHER)
+    expect(createInvite).not.toHaveBeenCalled()
+    expect(channelSend).not.toHaveBeenCalled()
+  })
+  it.each([null, OTHER])(
+    'blocks existing kickvote buttons after changing the channel to %s',
+    async (channelId) => {
+      const source = body(
+        await run('kickvote', [userOption('user'), stringOption('reason', '스팸')])
+      )
+      manageCommunitySettings({
+        action: 'update',
+        guildId: GUILD,
+        settings: { kickvoteChannelId: channelId }
+      })
+      const denied = await click(source.components, KICKVOTE_BUTTON_ID, source.flags)
+      expect(JSON.stringify(body(denied))).toContain('설정된 투표 채널이 아닙니다.')
+      expect(kick).not.toHaveBeenCalled()
+    }
+  )
   it.each(['food', 'foods', '점메추', '저메추', 'pizza', 'now', 'date', 'help'])(
     'allows /%s with zero guild permissions',
     async (name) => {
@@ -228,20 +284,52 @@ describe('standalone commands called by ordinary guild members', () => {
       expect(JSON.stringify(body(calls))).toContain('components')
       expect(body(calls).flags & MessageFlags.IsComponentsV2).toBeTruthy()
       const callback = getCallback(calls) as { data: { flags?: number } }
-      expect((callback.data.flags ?? 0) & MessageFlags.Ephemeral).toBeTruthy()
+      expect((callback.data.flags ?? 0) & MessageFlags.Ephemeral).toBe(0)
       expect(JSON.stringify(body(calls))).not.toMatch(
         /retry:|edit-parameters|command-actions|command-presets|run-command/
       )
     }
   )
-  it('supports typed filters and public responses without persisting /c retry state', async () => {
-    const calls = await run('food', [stringOption('filter', '멕시칸 치즈'), publicOption])
+  it('returns typed filter results publicly without an option or /c retry state', async () => {
+    const calls = await run('food', [stringOption('filter', '멕시칸 치즈')])
     expect(JSON.stringify(body(calls))).toContain('퀘사디아')
     expect((getCallback(calls) as { data: { flags?: number } }).data.flags ?? 0).toBe(0)
     expect(listStoredKeys().filter((key) => /^(command-input|message-input):/.test(key))).toEqual(
       []
     )
   })
+  it('does not let stale public:false options make server responses private', async () => {
+    const calls = await run('food', [
+      stringOption('filter', '멕시칸 치즈'),
+      { ...publicOption, value: false }
+    ])
+    expect(JSON.stringify(body(calls))).toContain('퀘사디아')
+    expect(
+      ((getCallback(calls) as { data: { flags?: number } }).data.flags ?? 0) &
+        MessageFlags.Ephemeral
+    ).toBe(0)
+    expect(listStoredKeys().filter((key) => /^(command-input|message-input):/.test(key))).toEqual(
+      []
+    )
+  })
+  it('detects previously registered public options as stale', () => {
+    const stale = applicationCommands.map((command) => ({
+      ...command,
+      type: command.type ?? ApplicationCommandType.ChatInput,
+      options:
+        command.name === 'food'
+          ? [...(command.options ?? []), { name: 'public', type: 5, description: '공개 응답' }]
+          : command.options
+    }))
+    expect(areApplicationCommandsCurrent(stale)).toBe(false)
+  })
+  it.each(['food', 'pizza', 'now', 'date', 'color', 'emoji', 'help'])(
+    'does not advertise public options in /help command:%s',
+    async (name) => {
+      const calls = await run('help', [stringOption('command', name)])
+      expect(JSON.stringify(body(calls))).not.toContain('public:true')
+    }
+  )
   it('resolves user options for /date', async () => {
     const calls = await run('date', [userOption('member')])
     expect(JSON.stringify(body(calls))).toContain(TARGET)
@@ -251,9 +339,11 @@ describe('standalone commands called by ordinary guild members', () => {
     const source = body(
       await run('color', [stringOption('hex', '#abc'), stringOption('secondary', '#def')])
     )
+    expect(source.flags & MessageFlags.Ephemeral).toBe(0)
     const denied = await click(source.components, COMMUNITY_CONFIRM_ID, source.flags, OTHER)
     expect(JSON.stringify(body(denied))).toContain('요청한 사용자만')
-    await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)
+    const confirmed = body(await click(source.components, COMMUNITY_CONFIRM_ID, source.flags))
+    expect(confirmed.flags & MessageFlags.Ephemeral).toBe(0)
     expect(createRole).toHaveBeenCalledWith(
       expect.objectContaining({
         permissions: [],
@@ -266,9 +356,20 @@ describe('standalone commands called by ordinary guild members', () => {
     ).toContain('만료된 요청')
   })
   it('lets an ordinary member create a private invite after confirmation and enforces cooldown', async () => {
-    let source = body(await run('invite'))
+    let source = body(await run('invite', [publicOption]))
+    expect(source.flags & MessageFlags.Ephemeral).toBeTruthy()
     const calls = await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)
+    // A deferred update preserves the source message's ephemeral visibility.
+    expect(getCallback(calls)).toMatchObject({ type: 6 })
     expect(JSON.stringify(body(calls))).toContain('https://discord.gg/test')
+    expect(channelSend).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(channelSend.mock.calls[0])).toContain(
+      '`ordinary-member`가 1회용 초대 링크를 생성했어요!'
+    )
+    expect(JSON.stringify(channelSend.mock.calls[0])).not.toContain('https://discord.gg/')
+    expect(channelSend).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedMentions: { parse: [], repliedUser: false } })
+    )
     expect(createInvite).toHaveBeenCalledWith(
       CHANNEL,
       expect.objectContaining({ maxUses: 1, maxAge: 43200 })
@@ -278,9 +379,24 @@ describe('standalone commands called by ordinary guild members', () => {
       JSON.stringify(body(await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)))
     ).toContain('대기 시간')
     expect(createInvite).toHaveBeenCalledTimes(1)
+    expect(channelSend).toHaveBeenCalledTimes(1)
+  })
+  it('keeps a created invite private and reports a failed public notice without creating it twice', async () => {
+    channelSend.mockRejectedValueOnce(new Error('private Discord API failure'))
+    const source = body(await run('invite'))
+    const calls = await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)
+    expect(JSON.stringify(body(calls))).toContain('https://discord.gg/test')
+    expect(JSON.stringify(body(calls))).toContain('알림을 보내지 못했습니다.')
+    expect(JSON.stringify(body(calls))).not.toContain('private Discord API failure')
+    await click(source.components, COMMUNITY_CONFIRM_ID, source.flags)
+    expect(createInvite).toHaveBeenCalledTimes(1)
+    expect(channelSend).toHaveBeenCalledTimes(1)
   })
   it('lets an ordinary member send an anonymous message, preserving --flags as message text', async () => {
-    const calls = await run('anon', [stringOption('message', '안녕하세요 --pub @everyone')])
+    const calls = await run('anon', [
+      stringOption('message', '안녕하세요 --pub @everyone'),
+      publicOption
+    ])
     expect(send).toHaveBeenCalledWith({
       content: '안녕하세요 --pub @everyone',
       allowedMentions: { parse: [] }
@@ -300,6 +416,10 @@ describe('standalone commands called by ordinary guild members', () => {
       expect.objectContaining({ name: 'smile', attachment: expect.any(Buffer) })
     )
     expect(JSON.stringify(body(calls))).toContain(`<:smile:${ROLE}>`)
+    expect(
+      ((getCallback(calls) as { data: { flags?: number } }).data.flags ?? 0) &
+        MessageFlags.Ephemeral
+    ).toBe(0)
   })
   it('lets ordinary members start and participate in a public kick vote, not cancel another member’s vote', async () => {
     manageCommunitySettings({

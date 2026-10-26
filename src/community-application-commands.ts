@@ -1,9 +1,4 @@
-import {
-  ApplicationIntegrationType,
-  InteractionContextType,
-  SlashCommandBuilder,
-  type SlashCommandBooleanOption
-} from 'discord.js'
+import { ApplicationIntegrationType, InteractionContextType, SlashCommandBuilder } from 'discord.js'
 
 function guildCommand(name: string, description: string) {
   return new SlashCommandBuilder()
@@ -13,34 +8,27 @@ function guildCommand(name: string, description: string) {
     .setContexts(InteractionContextType.Guild)
     .setDefaultMemberPermissions(null)
 }
-const publicOption = (option: SlashCommandBooleanOption) =>
-  option.setName('public').setDescription('응답을 채널에 공개합니다 (기본값: 비공개)')
 
 const foodCommands = ['food', 'foods', '점메추', '저메추'].map((name) =>
-  guildCommand(name, '음식을 추천합니다')
-    .addStringOption((option) =>
-      option.setName('filter').setDescription('음식 이름 또는 태그').setMaxLength(100)
-    )
-    .addBooleanOption(publicOption)
+  guildCommand(name, '음식을 추천합니다').addStringOption((option) =>
+    option.setName('filter').setDescription('음식 이름 또는 태그').setMaxLength(100)
+  )
 )
 
 export const communityApplicationCommands = [
   ...foodCommands,
-  guildCommand('pizza', '펜타곤 피자 지수 (비공식)').addBooleanOption(publicOption),
-  guildCommand('now', '현재 시각을 확인합니다').addBooleanOption(publicOption),
-  guildCommand('date', '서버 가입일을 확인합니다')
-    .addUserOption((option) =>
-      option.setName('member').setDescription('조회할 멤버 (기본값: 본인)')
-    )
-    .addBooleanOption(publicOption),
+  guildCommand('pizza', '펜타곤 피자 지수 (비공식)'),
+  guildCommand('now', '현재 시각을 확인합니다'),
+  guildCommand('date', '서버 가입일을 확인합니다').addUserOption((option) =>
+    option.setName('member').setDescription('조회할 멤버 (기본값: 본인)')
+  ),
   guildCommand('color', '본인의 역할 색상을 변경합니다')
     .addStringOption((option) =>
       option.setName('hex').setDescription('#rgb 또는 #rrggbb').setRequired(true).setMaxLength(7)
     )
     .addStringOption((option) =>
       option.setName('secondary').setDescription('보조 색상 (#rgb 또는 #rrggbb)').setMaxLength(7)
-    )
-    .addBooleanOption(publicOption),
+    ),
   guildCommand('invite', '일회용 초대 링크를 비공개로 생성합니다'),
   guildCommand('anon', '현재 채널에 익명 메시지를 보냅니다').addStringOption((option) =>
     option
@@ -61,8 +49,7 @@ export const communityApplicationCommands = [
     )
     .addAttachmentOption((option) =>
       option.setName('image').setDescription('PNG, JPEG, BMP 이미지 (1 MiB 이하)').setRequired(true)
-    )
-    .addBooleanOption(publicOption),
+    ),
   guildCommand('kickvote', '공개 추방 투표를 시작합니다')
     .addUserOption((option) => option.setName('user').setDescription('추방 대상').setRequired(true))
     .addStringOption((option) =>
@@ -73,9 +60,7 @@ export const communityApplicationCommands = [
         .setMinLength(1)
         .setMaxLength(500)
     ),
-  guildCommand('help', '커뮤니티 명령의 사용법을 확인합니다')
-    .addStringOption((option) =>
-      option.setName('command').setDescription('확인할 명령').setAutocomplete(true)
-    )
-    .addBooleanOption(publicOption)
+  guildCommand('help', '커뮤니티 명령의 사용법을 확인합니다').addStringOption((option) =>
+    option.setName('command').setDescription('확인할 명령').setAutocomplete(true)
+  )
 ].map((command) => ({ ...command.toJSON() }))

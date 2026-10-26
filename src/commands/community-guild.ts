@@ -18,7 +18,8 @@ import {
   errorContainer,
   scheduleEphemeralReplyDelete,
   sendCommandReply,
-  summarySection
+  summarySection,
+  text
 } from '../components.js'
 import { loadCommunitySettings } from '../community-settings.js'
 import { getStoredValue, setStoredValue } from '../helpers/kv-store.js'
@@ -58,8 +59,14 @@ export function requireCommunityGuild(
   name: 'date' | 'anon' | 'color' | 'invite' | 'emoji' | 'kickvote'
 ): Guild {
   if (!interaction.guild) throw new Error('서버에서만 사용할 수 있습니다.')
-  if (loadCommunitySettings(interaction.guild.id).disabledCommands.includes(name))
-    throw new Error('비활성화된 기능입니다.')
+  const settings = loadCommunitySettings(interaction.guild.id)
+  if (settings.disabledCommands.includes(name)) throw new Error('비활성화된 기능입니다.')
+  if (name === 'invite' || name === 'kickvote') {
+    const channelId = name === 'invite' ? settings.inviteChannelId : settings.kickvoteChannelId
+    if (!channelId) throw new Error(`/a에서 ${name} 명령의 허용 채널을 먼저 설정하세요.`)
+    if (interaction.channelId !== channelId)
+      throw new Error(`/${name} 명령은 <#${channelId}>에서만 사용할 수 있습니다.`)
+  }
   return interaction.guild
 }
 
@@ -137,8 +144,8 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
   let guild: Guild
   try {
     guild = requireCommunityGuild(interaction, state.action.kind)
-  } catch {
-    await privateReply('비활성화된 기능이거나 서버 설정을 확인할 수 없습니다.')
+  } catch (error) {
+    await privateReply(safeErrorMessage(error).slice(0, 300))
     return
   }
   const lock = `${guild.id}:${state.userId}:${state.action.kind}`
@@ -201,6 +208,25 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
         expiresAt: Date.now() + settings.inviteCooldownHours * 3_600_000
       })
       result = `일회용 초대 링크 (${settings.inviteMaxAgeHours}시간 유효): ${invite.url}`
+      try {
+        const member = await guild.members.fetch(state.userId)
+        const memberName = member.nickname
+          ? `${member.nickname} (${member.user.tag})`
+          : member.user.tag
+        const channel = await guild.channels.fetch(state.channelId)
+        if (!channel?.isSendable()) throw new Error('알림을 전송할 수 없는 채널입니다.')
+        await channel.send({
+          components: [
+            text(
+              `\`${memberName.replace(/[`\r\n]/g, '').slice(0, 150)}\`가 1회용 초대 링크를 생성했어요!`
+            )
+          ],
+          flags: MessageFlags.IsComponentsV2,
+          allowedMentions: { parse: [], repliedUser: false }
+        })
+      } catch {
+        result += '\n채널에 초대 생성 알림을 보내지 못했습니다.'
+      }
     }
     await sendCommandReply(
       interaction,
@@ -226,7 +252,7 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
 const date: Subcommand = {
   name: 'date',
   description: '서버 가입일 조회',
-  usage: '/date [member:@사용자] [public:true]',
+  usage: '/date [member:@사용자]',
   examples: ['/date', '/date member:@사용자'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'date')
@@ -250,7 +276,7 @@ const date: Subcommand = {
 const color: Subcommand = {
   name: 'color',
   description: '본인 역할 색상 변경',
-  usage: '/color hex:<#rgb 또는 #rrggbb> [secondary:<보조 색상>] [public:true]',
+  usage: '/color hex:<#rgb 또는 #rrggbb> [secondary:<보조 색상>]',
   examples: ['/color hex:#abcdef', '/color hex:#abc secondary:#def'],
   async execute(interaction, args, flags) {
     requireCommunityGuild(interaction, 'color')
@@ -342,7 +368,7 @@ const anon: Subcommand = {
 const emoji: Subcommand = {
   name: 'emoji',
   description: '이미지를 128px 이모지로 등록',
-  usage: '/emoji name:<이름> image:<첨부 이미지> [public:true]',
+  usage: '/emoji name:<이름> image:<첨부 이미지>',
   examples: ['/emoji name:smile image:smile.png'],
   async execute(interaction, args, flags) {
     const guild = requireCommunityGuild(interaction, 'emoji')

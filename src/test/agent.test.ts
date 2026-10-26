@@ -673,10 +673,15 @@ describe('/a', () => {
       settings: {
         kickvoteThreshold: 5,
         kickvoteChannelId: '777777777777777777',
+        inviteChannelId: '777777777777777777',
         inviteCooldownHours: 12
       }
     })
-    expect(JSON.parse(result)).toMatchObject({ kickvoteThreshold: 5, inviteCooldownHours: 12 })
+    expect(JSON.parse(result)).toMatchObject({
+      kickvoteThreshold: 5,
+      inviteCooldownHours: 12,
+      inviteChannelId: '777777777777777777'
+    })
     expect(JSON.parse(getStoredValue('community:settings:333333333333333333')!)).toMatchObject({
       kickvoteThreshold: 5
     })

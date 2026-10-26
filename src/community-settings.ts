@@ -21,6 +21,10 @@ export const foodSchema = z
 
 const communitySettingsFields = {
   disabledCommands: z.array(z.enum(communityCommandNames)).max(communityCommandNames.length),
+  inviteChannelId: z
+    .string()
+    .regex(/^\d{17,20}$/)
+    .nullable(),
   kickvoteChannelId: z
     .string()
     .regex(/^\d{17,20}$/)
@@ -36,6 +40,7 @@ const communitySettingsFields = {
 export const communitySettingsSchema = z
   .object({
     disabledCommands: communitySettingsFields.disabledCommands.default([]),
+    inviteChannelId: communitySettingsFields.inviteChannelId.default(null),
     kickvoteChannelId: communitySettingsFields.kickvoteChannelId.default(null),
     kickvoteThreshold: communitySettingsFields.kickvoteThreshold.default(7),
     kickvoteIdleMinutes: communitySettingsFields.kickvoteIdleMinutes.default(30),

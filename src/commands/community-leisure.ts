@@ -20,7 +20,7 @@ export function createLeisureCommands(): Subcommand[] {
   const food: Subcommand = {
     name: 'food',
     description: '음식 추천',
-    usage: '/food [filter:<이름 또는 태그>] [public:true]',
+    usage: '/food [filter:<이름 또는 태그>]',
     examples: ['/food', '/food filter:한식 혼밥'],
     async execute(interaction, args, flags) {
       const settings = loadCommunitySettings(interaction.guildId ?? interaction.user.id)
@@ -44,7 +44,7 @@ export function createLeisureCommands(): Subcommand[] {
   const pizza: Subcommand = {
     name: 'pizza',
     description: '펜타곤 피자 지수',
-    usage: '/pizza [public:true]',
+    usage: '/pizza',
     examples: ['/pizza'],
     async run() {
       const bytes = await fetchCommunityBytes(
@@ -78,7 +78,7 @@ export function createLeisureCommands(): Subcommand[] {
   const now: Subcommand = {
     name: 'now',
     description: '현재 시각',
-    usage: '/now [public:true]',
+    usage: '/now',
     examples: ['/now'],
     async execute(interaction, args, flags) {
       if (

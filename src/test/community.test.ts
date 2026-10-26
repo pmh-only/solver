@@ -61,6 +61,7 @@ const createEmoji = vi.fn()
 const webhookSend = vi.fn()
 const webhookDelete = vi.fn()
 const createWebhook = vi.fn()
+const channelSend = vi.fn()
 let targetProtected = false
 let voterBot = false
 let unsafeStoredRole = false
@@ -97,7 +98,7 @@ function configureClient(client: Client) {
   createRole.mockResolvedValue(role)
   const member = (id: string) => ({
     id,
-    user: { id, bot: id === TARGET ? false : voterBot },
+    user: { id, bot: id === TARGET ? false : voterBot, tag: 'member' },
     joinedTimestamp: new Date('2020-01-01T00:00:00Z').getTime(),
     permissions: new PermissionsBitField(
       id === TARGET && !targetProtected ? [] : ['Administrator']
@@ -112,7 +113,11 @@ function configureClient(client: Client) {
   vi.spyOn(guild.roles, 'fetch').mockResolvedValue(role as never)
   vi.spyOn(guild.invites, 'create').mockImplementation(createInvite)
   vi.spyOn(guild.emojis, 'create').mockImplementation(createEmoji)
-  vi.spyOn(guild.channels, 'fetch').mockResolvedValue({ createWebhook } as never)
+  vi.spyOn(guild.channels, 'fetch').mockResolvedValue({
+    createWebhook,
+    isSendable: () => true,
+    send: channelSend
+  } as never)
 }
 const options = { configureClient }
 const guildCommand = (input: string, permissions = '8') =>
@@ -156,6 +161,11 @@ beforeEach(() => {
   vi.useFakeTimers()
   isolateStoredValues(join(process.cwd(), '.tmp', 'community.test.sqlite'))
   clearStoredValues()
+  manageCommunitySettings({
+    action: 'update',
+    guildId: GUILD,
+    settings: { inviteChannelId: CHANNEL, kickvoteChannelId: CHANNEL }
+  })
   vi.clearAllMocks()
   targetProtected = false
   voterBot = false
@@ -163,6 +173,7 @@ beforeEach(() => {
   fetchMock.mockReset().mockRejectedValue(new Error('unmocked network request'))
   vi.stubGlobal('fetch', fetchMock)
   createInvite.mockResolvedValue({ url: 'https://discord.gg/test' })
+  channelSend.mockReset().mockResolvedValue(undefined)
   createEmoji.mockResolvedValue({ id: ROLE })
   webhookSend.mockResolvedValue(undefined)
   webhookDelete.mockResolvedValue(undefined)
@@ -278,6 +289,7 @@ describe('community settings and resource limits', () => {
     { inviteMaxAgeHours: 999 },
     { foods: [] },
     { kickvoteChannelId: 'bad' },
+    { inviteChannelId: 'bad' },
     { disabledCommands: ['unknown'] }
   ])('rejects unsafe configuration %j', (settings) => {
     expect(() => manageCommunitySettings({ action: 'update', guildId: GUILD, settings })).toThrow()
@@ -552,7 +564,11 @@ describe('persisted kick votes', () => {
     expect(
       JSON.stringify(getCallback(await guildCommand(`kickvote ${TARGET} spam --pub`)))
     ).toContain(OTHER)
-    manageCommunitySettings({ action: 'reset', guildId: GUILD })
+    manageCommunitySettings({
+      action: 'update',
+      guildId: GUILD,
+      settings: { kickvoteChannelId: CHANNEL }
+    })
     targetProtected = true
     expect(JSON.stringify(getEdit(await guildCommand(`kickvote ${TARGET} spam --pub`)))).toContain(
       '추방할 수 없는'
