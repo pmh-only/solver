@@ -1,5 +1,13 @@
 import { join } from 'node:path'
-import { Collection, GatewayIntentBits, IntentsBitField, type Message } from 'discord.js'
+import {
+  Client,
+  Collection,
+  GatewayIntentBits,
+  IntentsBitField,
+  Message,
+  MessageReferenceType,
+  type ClientUser
+} from 'discord.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoleChatHandler, generateRoleChatReply } from '../role-chat.js'
 import { loadCommunitySettings, manageCommunitySettings } from '../community-settings.js'
@@ -29,6 +37,7 @@ vi.mock('../openai-config.js', () => ({
 const GUILD = '333333333333333333'
 const ROLE = '444444444444444444'
 const USER = '555555555555555555'
+const BOT = '999999999999999999'
 const generate = vi.fn<(prompt: string, settings: unknown) => Promise<string>>()
 const sendTyping = vi.fn<() => Promise<void>>()
 const fetchHistory = vi.fn()
@@ -40,6 +49,9 @@ function message(overrides: Record<string, unknown> = {}) {
     channelId: '777777777777777777',
     attachments: new Collection(),
     webhookId: null,
+    client: { user: { id: BOT } },
+    reference: null,
+    mentions: { repliedUser: null },
     system: false,
     content: `<@&${ROLE}> 안녕`,
     reply: vi.fn().mockResolvedValue(undefined),
@@ -252,6 +264,144 @@ describe('role mention chat', () => {
     await createRoleChatHandler(generate)(message())
     const calls = await dispatch(commandJSON('list community'), makeSubcommands(list))
     expect(JSON.stringify(getCallback(calls))).not.toContain('role-chat-rate')
+  })
+})
+
+describe('replies to the bot', () => {
+  const reference = {
+    messageId: '1000000000000000050',
+    channelId: '777777777777777777',
+    guildId: GUILD,
+    type: MessageReferenceType.Default
+  }
+
+  it('answers follow-up replies from any user with random replies disabled', async () => {
+    configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+    const random = vi.fn(() => 0.99)
+    const handler = createRoleChatHandler(generate, random)
+    const input = message({
+      content: '그건 왜 그래?',
+      reference,
+      mentions: { repliedUser: { id: BOT } },
+      author: { id: ROLE }
+    })
+    await handler(input)
+    expect(generate).toHaveBeenCalledWith(
+      expect.stringContaining('"content":"그건 왜 그래?"'),
+      expect.any(Object)
+    )
+    expect(generate.mock.calls[0]?.[0]).toContain(`"replyToMessageId":"${reference.messageId}"`)
+    expect(random).not.toHaveBeenCalled()
+    expect(fetchHistory).toHaveBeenCalledWith({ limit: 50, before: input.id, cache: false })
+    expect(input.react).toHaveBeenCalledWith('✅')
+    expect(input.reply).toHaveBeenCalledWith({
+      content: '**안녕하세요!**',
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(sendTyping).toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('recognizes a real Discord reply with no bot mention or reply notification', async () => {
+    configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+    const client = new Client({ intents: [] })
+    client.user = { id: BOT } as ClientUser
+    const MessageCtor = Message as unknown as new (client: Client, data: unknown) => Message
+    const input = new MessageCtor(client, {
+      id: '1000000000000000100',
+      guild_id: GUILD,
+      channel_id: reference.channelId,
+      type: 19,
+      content: '이어 설명해줘',
+      author: { id: USER, username: 'member', discriminator: '0', avatar: null, bot: false },
+      mentions: [],
+      mention_roles: [],
+      attachments: [],
+      embeds: [],
+      components: [],
+      timestamp: '2026-10-27T00:00:00.000Z',
+      flags: 0,
+      message_reference: {
+        message_id: reference.messageId,
+        guild_id: GUILD,
+        channel_id: reference.channelId
+      },
+      referenced_message: {
+        id: reference.messageId,
+        type: 19,
+        channel_id: reference.channelId,
+        author: { id: BOT, username: 'solver', discriminator: '0', avatar: null, bot: true },
+        content: '이전 답변',
+        mentions: [],
+        mention_roles: [],
+        attachments: [],
+        embeds: [],
+        components: [],
+        timestamp: '2026-10-27T00:00:00.000Z',
+        flags: 0
+      }
+    })
+    Object.defineProperty(input, 'channel', {
+      value: { messages: { fetch: fetchHistory }, sendTyping }
+    })
+    input.reply = vi.fn().mockResolvedValue(undefined)
+    input.react = vi.fn().mockResolvedValue(undefined)
+    expect(input.mentions.users.has(BOT)).toBe(false)
+    expect(input.mentions.repliedUser?.id).toBe(BOT)
+    await createRoleChatHandler(generate)(input)
+    expect(generate).toHaveBeenCalledTimes(1)
+    expect(input.reply).toHaveBeenCalledTimes(1)
+    await client.destroy()
+  })
+
+  it.each([
+    { mentions: { repliedUser: { id: USER } } },
+    { mentions: { repliedUser: { id: ROLE, bot: true } } },
+    { mentions: { repliedUser: null } },
+    { reference: null },
+    { reference: { ...reference, channelId: USER } },
+    { reference: { ...reference, guildId: USER } },
+    { reference: { ...reference, type: MessageReferenceType.Forward } },
+    { author: { bot: true } },
+    { webhookId: USER },
+    { guildId: USER }
+  ])('does not treat unrelated or invalid references as bot follow-ups: %j', async (overrides) => {
+    configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+    const input = message({
+      content: '이어 설명해줘',
+      reference,
+      mentions: { repliedUser: { id: BOT } },
+      ...overrides
+    })
+    await createRoleChatHandler(generate)(input)
+    expect(generate).not.toHaveBeenCalled()
+    expect(fetchHistory).not.toHaveBeenCalled()
+    expect(input.react).not.toHaveBeenCalled()
+  })
+
+  it('still respects role chat disablement for bot replies', async () => {
+    configure(GUILD, null)
+    await createRoleChatHandler(generate)(
+      message({ content: '이어서', reference, mentions: { repliedUser: { id: BOT } } })
+    )
+    expect(generate).not.toHaveBeenCalled()
+  })
+
+  it('allows concurrent follow-ups to the same response without suppressing requests', async () => {
+    configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+    const handler = createRoleChatHandler(generate)
+    const inputs = [USER, ROLE, GUILD].map((id) =>
+      message({
+        content: '이어서',
+        author: { id },
+        reference,
+        mentions: { repliedUser: { id: BOT } }
+      })
+    )
+    await Promise.all(inputs.map(handler))
+    expect(generate).toHaveBeenCalledTimes(3)
+    for (const input of inputs) expect(input.reply).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

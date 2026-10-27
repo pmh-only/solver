@@ -1,4 +1,4 @@
-import type { Message } from 'discord.js'
+import { MessageReferenceType, type Message } from 'discord.js'
 import OpenAI from 'openai'
 import { loadCommunitySettings, type CommunitySettings } from './community-settings.js'
 import { loadOpenAIApiKey, loadOpenAIEndpoint } from './openai-config.js'
@@ -17,6 +17,7 @@ function messageContext(message: Message, content = message.content) {
     authorName: (message.member?.displayName ?? message.author.username).slice(0, 100),
     bot: message.author.bot,
     content: content.slice(0, 4000),
+    replyToMessageId: message.reference?.messageId ?? null,
     attachments: [...message.attachments.values()]
       .slice(0, 10)
       .map((file) => file.name.slice(0, 100))
@@ -152,7 +153,18 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
     mention.lastIndex = 0
     const prompt = message.content.replace(mention, '').trim()
     if (!prompt || prompt.length > 4000) return
-    if (!mentioned && random() >= settings.randomReplyChance) return
+    const reference = message.reference
+    // Discord supplies the referenced author even when reply notifications are disabled.
+    // No message fetch or in-memory tracking is needed, so this also works after a restart.
+    const replyingToBot = Boolean(
+      reference?.messageId &&
+      (reference.type ?? MessageReferenceType.Default) === MessageReferenceType.Default &&
+      reference.channelId === message.channelId &&
+      (!reference.guildId || reference.guildId === message.guildId) &&
+      message.client.user?.id &&
+      message.mentions.repliedUser?.id === message.client.user.id
+    )
+    if (!mentioned && !replyingToBot && random() >= settings.randomReplyChance) return
 
     const stopTyping = startTyping(message)
     try {
