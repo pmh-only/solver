@@ -18,8 +18,9 @@ The destination must be a sendable channel in the same server.
   then a separate embed immediately below it with the original author's name,
   avatar/profile link, original-message link, and each emoji's current count.
 - Subsequent events edit the existing embed only while the total is greater
-  than 3. At 3, 2, 1, or 0, leave the last display and forwarded message intact.
-  Updating resumes once the total exceeds 3 again.
+  than 3. At exactly 3, leave the last display intact. At 2, 1, or 0, delete both
+  the forwarded message and the author/count embed, never the original source.
+  If the total later reaches 3 again, create a new forward and embed.
 - Handle reaction additions, removals, individual-emoji removal, and removal of
   all reactions. Fetch fresh aggregate counts for each synchronization, including
   old/uncached source messages. Users, bots, and webhooks can all be sources.
@@ -37,7 +38,10 @@ and partial messages/channels/reactions.
 Coalesce overlapping events per source message, re-read fresh counts after an
 in-flight update, and use enforced deterministic nonces when creating both posts.
 Persist the forward ID before creating the embed, so an embed failure does not
-forward the source again. Ordinary updates edit only the metadata embed.
+forward the source again. Ordinary updates edit only the metadata embed. Deletion
+attempts both tracked posts, treats already-deleted messages as success, and keeps
+tracking on other failures so a later event can retry. Bounded tombstones carry a
+new nonce generation so immediate re-forwarding does not reuse deleted posts.
 
 Tracking is stored under the hidden, guild-scoped `community:reaction-forward:`
 namespace and survives restarts. Store only channel/message IDs, render hashes,

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { EmbedBuilder, type Message, type PartialMessage } from 'discord.js'
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
@@ -16,7 +16,9 @@ const recordSchema = z
     forwardedMessageId: discordId,
     embedMessageId: discordId.nullable(),
     signature: z.string().max(64),
-    updatedAt: z.number().int().positive()
+    updatedAt: z.number().int().positive(),
+    deleted: z.boolean().optional(),
+    generation: z.string().uuid().optional()
   })
   .strict()
 type ForwardRecord = z.infer<typeof recordSchema>
@@ -106,7 +108,9 @@ async function syncReactionForward(partial: Message | PartialMessage) {
   const key = `${source.channelId}:${source.id}`
   let state: ForwardRecord | undefined = readRecords(partial.guildId)[key]
   if (state?.channelId !== settings.channelId) state = undefined
-  if (total < THRESHOLD || (state?.embedMessageId && total <= THRESHOLD)) return
+  const generation = state?.generation
+  if (state?.deleted) state = undefined
+  if ((total < THRESHOLD && !state) || (total === THRESHOLD && state?.embedMessageId)) return
   if (state?.embedMessageId && state.signature === signature) return
 
   const channel = await withTimeout(source.client.channels.fetch(settings.channelId))
@@ -114,8 +118,38 @@ async function syncReactionForward(partial: Message | PartialMessage) {
     throw new Error('Reaction-forward destination must be a sendable channel in the same guild')
   }
   if (loadCommunitySettings().reactionForward?.channelId !== settings.channelId) return
+  if (total < THRESHOLD && state) {
+    const ids = [state.forwardedMessageId, state.embedMessageId].filter((id): id is string =>
+      Boolean(id)
+    )
+    const results = await Promise.allSettled(
+      ids.map(async (id) => {
+        try {
+          await withTimeout(channel.messages.delete(id))
+        } catch (error) {
+          if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 10008)
+            throw error
+        }
+      })
+    )
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    // Keep a bounded tombstone with a fresh nonce generation: immediately crossing
+    // back to 3 must create new posts, not deduplicate against the deleted pair.
+    saveRecord(partial.guildId, key, {
+      ...state,
+      embedMessageId: null,
+      signature: '',
+      deleted: true,
+      generation: randomUUID(),
+      updatedAt: Date.now()
+    })
+    return
+  }
   const nonce = (kind: string) =>
-    hash(`${kind}:${source.guildId}:${source.id}:${channel.id}`).slice(0, 24)
+    hash(
+      `${kind}:${source.guildId}:${source.id}:${channel.id}${generation ? ':' + generation : ''}`
+    ).slice(0, 24)
   if (!state) {
     // Native Discord forwarding: creates a message snapshot instead of copying text/files.
     const forwarded = await withTimeout(
@@ -131,7 +165,8 @@ async function syncReactionForward(partial: Message | PartialMessage) {
       forwardedMessageId: forwarded.id,
       embedMessageId: null,
       signature: '',
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      ...(generation ? { generation } : {})
     }
     // Persist before sending the separate author/count embed; retries must not forward again.
     saveRecord(partial.guildId, key, state)

@@ -29,6 +29,7 @@ const AUTHOR = '555555555555555555'
 const stateKey = `community:reaction-forward:${GUILD}`
 const send = vi.fn()
 const edit = vi.fn()
+const deleteMessage = vi.fn()
 const fetchChannel = vi.fn()
 
 function reactions(counts: Array<[string, number]>) {
@@ -81,12 +82,13 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (payload) => ({ id: payload.forward ? FORWARDED : SUMMARY }))
   edit.mockReset().mockResolvedValue({ id: SUMMARY })
+  deleteMessage.mockReset().mockResolvedValue(undefined)
   fetchChannel.mockReset().mockResolvedValue({
     id: DESTINATION,
     guildId: GUILD,
     isSendable: () => true,
     send,
-    messages: { edit }
+    messages: { edit, delete: deleteMessage }
   })
 })
 afterEach(() => {
@@ -139,7 +141,7 @@ describe('reaction forwarding', () => {
       embedMessageId: SUMMARY
     })
   })
-  it('updates emoji additions/removals in place above 3, freezes at 3 or fewer, and resumes above 3', async () => {
+  it('updates above 3, freezes at 3, deletes at 2 or below, and forwards again when reactions recover', async () => {
     const handler = createReactionForwardHandler()
     const source = sourceMessage()
     await handler(source)
@@ -161,11 +163,13 @@ describe('reaction forwarding', () => {
       await handler(source)
     }
     expect(edit).toHaveBeenCalledTimes(1)
+    expect(deleteMessage.mock.calls.map(([id]) => id).sort()).toEqual([FORWARDED, SUMMARY].sort())
     source.reactions = reactions([['🔥', 4]]) as never
     await handler(source)
-    expect(edit).toHaveBeenCalledTimes(2)
-    expect(embedFrom(edit.mock.calls[1]![1]).description).toBe('🔥 **4**')
-    expect(send).toHaveBeenCalledTimes(2)
+    expect(edit).toHaveBeenCalledTimes(1)
+    expect(embedFrom(send.mock.calls[3]![0]).description).toBe('🔥 **4**')
+    expect(send).toHaveBeenCalledTimes(4)
+    expect(send.mock.calls[0]![0].nonce).not.toBe(send.mock.calls[2]![0].nonce)
   })
   it('does not edit for duplicate unchanged events and persists tracking across restarts', async () => {
     const source = sourceMessage([['⭐', 4]])
@@ -177,6 +181,90 @@ describe('reaction forwarding', () => {
     await createReactionForwardHandler()(source)
     expect(send).toHaveBeenCalledTimes(2)
     expect(edit).toHaveBeenCalledTimes(1)
+  })
+  it.each([2, 1, 0])(
+    'deletes both tracked posts at %s reactions, including after a restart',
+    async (count) => {
+      const source = sourceMessage()
+      await createReactionForwardHandler()(source)
+      source.reactions = reactions(count ? [['⭐', count]] : []) as never
+      await createReactionForwardHandler()(source)
+      expect(deleteMessage).toHaveBeenCalledTimes(2)
+      expect(deleteMessage).toHaveBeenCalledWith(FORWARDED)
+      expect(deleteMessage).toHaveBeenCalledWith(SUMMARY)
+      expect(deleteMessage).not.toHaveBeenCalledWith(ID)
+      expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`]).toMatchObject({
+        deleted: true,
+        embedMessageId: null
+      })
+      await createReactionForwardHandler()(source)
+      expect(deleteMessage).toHaveBeenCalledTimes(2)
+      source.reactions = reactions([['⭐', 3]]) as never
+      await createReactionForwardHandler()(source)
+      expect(send).toHaveBeenCalledTimes(4)
+      expect(send.mock.calls[0]![0].nonce).not.toBe(send.mock.calls[2]![0].nonce)
+      expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`]).not.toHaveProperty(
+        'deleted',
+        true
+      )
+    }
+  )
+  it('keeps both posts without editing or deleting at exactly 3 reactions', async () => {
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage([['⭐', 5]])
+    await handler(source)
+    source.reactions = reactions([['🔥', 3]]) as never
+    await handler(source)
+    expect(edit).not.toHaveBeenCalled()
+    expect(deleteMessage).not.toHaveBeenCalled()
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  it('treats already-deleted forwarded posts as success while still deleting the other post', async () => {
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage()
+    await handler(source)
+    source.reactions = reactions([['⭐', 2]]) as never
+    deleteMessage.mockRejectedValueOnce({ code: 10008 })
+    await handler(source)
+    expect(deleteMessage).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`].deleted).toBe(true)
+  })
+  it('attempts both deletions and retains active tracking when one fails, then retries safely', async () => {
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage()
+    await handler(source)
+    source.reactions = reactions([['⭐', 2]]) as never
+    deleteMessage.mockRejectedValueOnce(new Error('missing permissions'))
+    await expect(handler(source)).rejects.toThrow('missing permissions')
+    expect(deleteMessage).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`]).not.toHaveProperty(
+      'deleted',
+      true
+    )
+    deleteMessage.mockResolvedValueOnce(undefined).mockRejectedValueOnce({ code: 10008 })
+    await handler(source)
+    expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`].deleted).toBe(true)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  it('deletes an incomplete forward if its author embed failed and reactions fall below 3', async () => {
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage()
+    send
+      .mockImplementationOnce(async () => ({ id: FORWARDED }))
+      .mockRejectedValueOnce(new Error('embed failed'))
+    await expect(handler(source)).rejects.toThrow('embed failed')
+    source.reactions = reactions([]) as never
+    await handler(source)
+    expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(FORWARDED)
+  })
+  it('coalesces concurrent removals so each tracked post is deleted only once', async () => {
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage()
+    await handler(source)
+    source.reactions = reactions([['⭐', 2]]) as never
+    await Promise.all([handler(source), handler(source), handler(source)])
+    expect(deleteMessage).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
   })
   it('coalesces overlapping events and refreshes the newest counts without duplicate forwards', async () => {
     let complete!: (value: { id: string }) => void
@@ -443,6 +531,8 @@ describe('native Discord forwarding REST payload', () => {
           message as Awaited<ReturnType<Message['fetch']>>
         )
         await handler(message)
+        Object.assign(message.reactions.cache.first()!, { count: 2 })
+        await handler(message)
       }
     )
     const posts = calls.filter((call) => call.method === 'POST')
@@ -468,5 +558,16 @@ describe('native Discord forwarding REST payload', () => {
       allowed_mentions: { parse: [], replied_user: false }
     })
     expect(JSON.stringify(posts[0]!.body)).not.toContain('"content":"original"')
+    const deletedRoutes = calls
+      .filter((call) => call.method === 'DELETE')
+      .map((call) => call.route)
+      .sort()
+    expect(deletedRoutes).toEqual(
+      [
+        `/channels/${DESTINATION}/messages/${FORWARDED}`,
+        `/channels/${DESTINATION}/messages/${SUMMARY}`
+      ].sort()
+    )
+    expect(deletedRoutes).not.toContain(`/channels/${SOURCE}/messages/${ID}`)
   })
 })
