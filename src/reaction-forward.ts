@@ -91,12 +91,11 @@ function reactionSummary(message: Message) {
 
 async function syncReactionForward(partial: Message | PartialMessage) {
   if (!partial.guildId) return
-  const settings = loadCommunitySettings(partial.guildId).reactionForward
+  const settings = loadCommunitySettings().reactionForward
   if (!settings || partial.channelId === settings.channelId) return
   // Always fetch fresh aggregate counts, including for old/uncached messages and removals.
   const source = await withTimeout(partial.fetch(true))
-  if (loadCommunitySettings(partial.guildId).reactionForward?.channelId !== settings.channelId)
-    return
+  if (loadCommunitySettings().reactionForward?.channelId !== settings.channelId) return
   if (
     source.guildId !== partial.guildId ||
     source.channelId !== partial.channelId ||
@@ -114,8 +113,7 @@ async function syncReactionForward(partial: Message | PartialMessage) {
   if (!channel?.isSendable() || !('guildId' in channel) || channel.guildId !== source.guildId) {
     throw new Error('Reaction-forward destination must be a sendable channel in the same guild')
   }
-  if (loadCommunitySettings(partial.guildId).reactionForward?.channelId !== settings.channelId)
-    return
+  if (loadCommunitySettings().reactionForward?.channelId !== settings.channelId) return
   const nonce = (kind: string) =>
     hash(`${kind}:${source.guildId}:${source.id}:${channel.id}`).slice(0, 24)
   if (!state) {

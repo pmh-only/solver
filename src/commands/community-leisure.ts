@@ -23,7 +23,7 @@ export function createLeisureCommands(): Subcommand[] {
     usage: '/food [filter:<이름 또는 태그>]',
     examples: ['/food', '/food filter:한식 혼밥'],
     async execute(interaction, args, flags) {
-      const settings = loadCommunitySettings(interaction.guildId ?? interaction.user.id)
+      const settings = loadCommunitySettings()
       if (settings.disabledCommands.includes('food')) throw new Error('비활성화된 기능입니다.')
       await runRerunnableCommand(interaction, food, args, flags, async () => {
         const terms = rest(args).split(/\s+/).filter(Boolean)
@@ -59,11 +59,7 @@ export function createLeisureCommands(): Subcommand[] {
       ])
     },
     async execute(interaction, args, flags) {
-      if (
-        loadCommunitySettings(interaction.guildId ?? interaction.user.id).disabledCommands.includes(
-          'pizza'
-        )
-      )
+      if (loadCommunitySettings().disabledCommands.includes('pizza'))
         throw new Error('비활성화된 기능입니다.')
       if (rest(args)) {
         await sendCommandReply(
@@ -81,11 +77,7 @@ export function createLeisureCommands(): Subcommand[] {
     usage: '/now',
     examples: ['/now'],
     async execute(interaction, args, flags) {
-      if (
-        loadCommunitySettings(interaction.guildId ?? interaction.user.id).disabledCommands.includes(
-          'now'
-        )
-      )
+      if (loadCommunitySettings().disabledCommands.includes('now'))
         throw new Error('비활성화된 기능입니다.')
       const date = new Date()
       await sendCommandReply(

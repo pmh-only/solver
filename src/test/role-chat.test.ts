@@ -108,7 +108,6 @@ describe('role mention chat', () => {
   )
   it.each([
     { guildId: null },
-    { guildId: '666666666666666666' },
     { author: { id: USER, bot: true } },
     { webhookId: '123' },
     { system: true },
@@ -129,7 +128,7 @@ describe('role mention chat', () => {
   it('is disabled by default and fails closed on corrupt settings', async () => {
     const handler = createRoleChatHandler(generate)
     await handler(message())
-    setStoredValue(`community:settings:${GUILD}`, 'broken json')
+    setStoredValue('community:settings', 'broken json')
     await handler(message())
     expect(generate).not.toHaveBeenCalled()
   })
@@ -221,12 +220,12 @@ describe('role mention chat', () => {
         kickvoteThreshold: 5
       })
     )
-    expect(loadCommunitySettings(GUILD)).toMatchObject({
+    expect(loadCommunitySettings()).toMatchObject({
       roleChat: { roleId: ROLE, model: 'legacy-model' },
       kickvoteThreshold: 5
     })
-    expect(loadCommunitySettings(GUILD).roleChat).not.toHaveProperty('cooldownSeconds')
-    expect(loadCommunitySettings(GUILD).roleChat).not.toHaveProperty('requestsPerHour')
+    expect(loadCommunitySettings().roleChat).not.toHaveProperty('cooldownSeconds')
+    expect(loadCommunitySettings().roleChat).not.toHaveProperty('requestsPerHour')
     const handler = createRoleChatHandler(generate)
     await handler(message())
     await handler(message())
@@ -236,7 +235,7 @@ describe('role mention chat', () => {
       guildId: GUILD,
       settings: { anonymousName: 'new name' }
     })
-    expect(loadCommunitySettings(GUILD).roleChat?.model).toBe('legacy-model')
+    expect(loadCommunitySettings().roleChat?.model).toBe('legacy-model')
   })
   it.each(['failure', 'empty'])(
     'returns a safe ordinary error on %s and releases concurrency',
@@ -581,7 +580,7 @@ describe('random replies and processing acknowledgements', () => {
     'replies without a role mention only below the 1%% threshold: %s',
     async (chance) => {
       configure()
-      expect(loadCommunitySettings(GUILD).roleChat?.randomReplyChance).toBe(0.01)
+      expect(loadCommunitySettings().roleChat?.randomReplyChance).toBe(0.01)
       const input = message({ content: '그냥 일반 채팅' })
       await createRoleChatHandler(generate, () => chance)(input)
       expect(generate).toHaveBeenCalledTimes(chance < 0.01 ? 1 : 0)
@@ -623,14 +622,13 @@ describe('random replies and processing acknowledgements', () => {
     expect(another.react).toHaveBeenCalledWith('✅')
   })
 
-  it('never randomly replies to bots, webhooks, DMs, unconfigured guilds, or empty messages', async () => {
+  it('never randomly replies to bots, webhooks, DMs, or empty messages', async () => {
     configure()
     const handler = createRoleChatHandler(generate, () => 0)
     for (const overrides of [
       { author: { id: USER, bot: true } },
       { webhookId: USER },
       { guildId: null },
-      { guildId: USER },
       { content: '   ' },
       { system: true }
     ]) {
@@ -923,6 +921,6 @@ describe('plain Markdown text generation', () => {
     { roleId: ROLE, randomReplyChance: 1.1 }
   ])('rejects invalid configuration %j', (settings) => {
     expect(() => configure(GUILD, settings)).toThrow()
-    expect(loadCommunitySettings(GUILD).roleChat).toBeNull()
+    expect(loadCommunitySettings().roleChat).toBeNull()
   })
 })

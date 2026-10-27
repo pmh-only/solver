@@ -142,7 +142,7 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
     if (!message.guildId || message.author.bot || message.webhookId || message.system) return
     let settings: ChatSettings | null
     try {
-      settings = loadCommunitySettings(message.guildId).roleChat
+      settings = loadCommunitySettings().roleChat
     } catch {
       return // Corrupt configuration must never enable public paid requests.
     }

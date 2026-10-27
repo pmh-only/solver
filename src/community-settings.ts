@@ -1,5 +1,12 @@
 import { z } from 'zod'
-import { deleteStoredValue, getStoredValue, setStoredValue } from './helpers/kv-store.js'
+import {
+  deleteStoredValue,
+  getStoredValue,
+  listStoredKeys,
+  setStoredValue
+} from './helpers/kv-store.js'
+
+export const COMMUNITY_SETTINGS_KEY = 'community:settings'
 
 export const communityCommandNames = [
   'food',
@@ -80,10 +87,6 @@ export const communitySettingsSchema = z
 
 export const manageCommunitySettingsSchema = z.object({
   action: z.enum(['get', 'update', 'reset', 'reset-message-replies', 'reset-reaction-forwards']),
-  guildId: z
-    .string()
-    .regex(/^\d{17,20}$/)
-    .describe('Discord server ID for the guild-installed community commands'),
   // A PATCH must not inject defaults for omitted fields (Zod 4 also applies defaults
   // inside optional fields). Keep the update schema free of defaults.
   settings: z.object(communitySettingsFields).strict().partial().optional()
@@ -91,9 +94,7 @@ export const manageCommunitySettingsSchema = z.object({
 
 export type CommunitySettings = z.infer<typeof communitySettingsSchema>
 
-export function loadCommunitySettings(scope: string): CommunitySettings {
-  const raw = getStoredValue(`community:settings:${scope}`)
-  if (!raw) return communitySettingsSchema.parse({})
+function parseCommunitySettings(raw: string): CommunitySettings {
   // Fail closed on corrupt configuration instead of silently re-enabling moderation actions.
   const stored: unknown = JSON.parse(raw)
   if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
@@ -109,17 +110,44 @@ export function loadCommunitySettings(scope: string): CommunitySettings {
   return communitySettingsSchema.parse(stored)
 }
 
+export function loadCommunitySettings(): CommunitySettings {
+  const raw = getStoredValue(COMMUNITY_SETTINGS_KEY)
+  if (raw !== undefined) return parseCommunitySettings(raw)
+  const legacy = listStoredKeys().filter((key) => /^community:settings:\d{17,20}$/.test(key))
+  if (!legacy.length) {
+    const defaults = communitySettingsSchema.parse({})
+    setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify(defaults))
+    return defaults
+  }
+  const previous = legacy.map((key) => parseCommunitySettings(getStoredValue(key)!))
+  const serialized = JSON.stringify(previous[0])
+  if (previous.some((settings) => JSON.stringify(settings) !== serialized)) {
+    throw new Error('기존 서버 설정이 서로 다릅니다. /a에서 전역 설정을 초기화한 뒤 설정하세요.')
+  }
+  // Keep old keys as backups; all current readers use only the single global key.
+  setStoredValue(COMMUNITY_SETTINGS_KEY, serialized)
+  return previous[0]!
+}
+
 export function manageCommunitySettings(input: unknown): CommunitySettings {
-  const { action, guildId, settings } = manageCommunitySettingsSchema.parse(input)
-  const key = `community:settings:${guildId}`
-  if (action === 'reset') deleteStoredValue(key)
-  if (action === 'reset-message-replies') deleteStoredValue(`community:message-bot:${guildId}`)
-  if (action === 'reset-reaction-forwards')
-    deleteStoredValue(`community:reaction-forward:${guildId}`)
+  const { action, settings } = manageCommunitySettingsSchema.parse(input)
+  if (action === 'reset') {
+    // An explicit global default prevents legacy backups from being restored on the next read.
+    setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify(communitySettingsSchema.parse({})))
+  }
+  const resetPrefix =
+    action === 'reset-message-replies'
+      ? 'community:message-bot:'
+      : action === 'reset-reaction-forwards'
+        ? 'community:reaction-forward:'
+        : null
+  if (resetPrefix) {
+    for (const key of listStoredKeys()) if (key.startsWith(resetPrefix)) deleteStoredValue(key)
+  }
   if (action === 'update') {
     if (!settings) throw new Error('settings is required')
-    const next = communitySettingsSchema.parse({ ...loadCommunitySettings(guildId), ...settings })
-    setStoredValue(key, JSON.stringify(next))
+    const next = communitySettingsSchema.parse({ ...loadCommunitySettings(), ...settings })
+    setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify(next))
   }
-  return loadCommunitySettings(guildId)
+  return loadCommunitySettings()
 }

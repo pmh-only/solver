@@ -59,7 +59,7 @@ export function requireCommunityGuild(
   name: 'date' | 'anon' | 'color' | 'invite' | 'emoji' | 'kickvote'
 ): Guild {
   if (!interaction.guild) throw new Error('서버에서만 사용할 수 있습니다.')
-  const settings = loadCommunitySettings(interaction.guild.id)
+  const settings = loadCommunitySettings()
   if (settings.disabledCommands.includes(name)) throw new Error('비활성화된 기능입니다.')
   if (name === 'invite' || name === 'kickvote') {
     const channelId = name === 'invite' ? settings.inviteChannelId : settings.kickvoteChannelId
@@ -193,7 +193,7 @@ export async function handleCommunityConfirm(interaction: ButtonInteraction) {
       // Invites are always private, even if the source message was copied publicly.
       if (!interaction.message.flags.has(MessageFlags.Ephemeral))
         throw new Error('비공개 요청으로 초대 링크를 생성하세요.')
-      const settings = loadCommunitySettings(guild.id)
+      const settings = loadCommunitySettings()
       const cooldownKey = `invite:${guild.id}:${state.userId}`
       if (loadCommunityState(cooldownKey, cooldownSchema))
         throw new Error('초대 링크 생성 대기 시간이 남아 있습니다.')
@@ -305,10 +305,10 @@ const invite: Subcommand = {
   usage: '/invite',
   examples: ['/invite'],
   async execute(interaction, args, flags) {
-    const guild = requireCommunityGuild(interaction, 'invite')
+    requireCommunityGuild(interaction, 'invite')
     if (flags.has('pub') || rest(args))
       throw new Error('초대 링크는 invite 명령으로 비공개 생성만 가능합니다.')
-    const settings = loadCommunitySettings(guild.id)
+    const settings = loadCommunitySettings()
     await confirm(
       interaction,
       new Map(),
@@ -336,7 +336,7 @@ const anon: Subcommand = {
       if (!channel || !('createWebhook' in channel))
         throw new Error('웹훅을 지원하는 서버 채널에서 사용하세요.')
       const webhook = await channel.createWebhook({
-        name: loadCommunitySettings(guild.id).anonymousName
+        name: loadCommunitySettings().anonymousName
       })
       let cleanupFailed = false
       try {

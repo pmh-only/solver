@@ -23,12 +23,13 @@ and reply notifications never ping anyone.
 
 ## Configuration
 
-Use `/a` and `manage_community_settings` for the current server:
+Use `/a` and `manage_community_settings`. There is one global configuration;
+no server ID is required:
 
 - `messageCommands: { enabled: true, prefix: '!!' }` is the default.
 - Change `prefix` or set `enabled: false` without restarting.
 - `foods` configures the shared food menu; null restores the original menu.
-- `action: 'reset-message-replies'` clears only this guild's message-command
+- `action: 'reset-message-replies'` clears only the message-command
   records, including corrupt-data recovery. It does not clear `/c` variables.
 
 Message commands require the already-used Guild Messages and Message Content

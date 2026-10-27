@@ -266,25 +266,23 @@ describe('imported leisure commands', () => {
 })
 
 describe('community settings and resource limits', () => {
-  it('defaults, scopes, updates, and resets settings', () => {
-    expect(loadCommunitySettings(GUILD).kickvoteThreshold).toBe(7)
+  it('defaults, updates, and resets one global configuration without a server ID', () => {
+    expect(loadCommunitySettings().kickvoteThreshold).toBe(7)
     manageCommunitySettings({
       action: 'update',
-      guildId: GUILD,
       settings: { kickvoteThreshold: 3 }
     })
-    expect(loadCommunitySettings(GUILD).kickvoteThreshold).toBe(3)
+    expect(loadCommunitySettings().kickvoteThreshold).toBe(3)
     manageCommunitySettings({
       action: 'update',
-      guildId: GUILD,
       settings: { anonymousName: '익명' }
     })
-    expect(loadCommunitySettings(GUILD)).toMatchObject({
+    expect(loadCommunitySettings()).toMatchObject({
       kickvoteThreshold: 3,
       anonymousName: '익명'
     })
-    expect(loadCommunitySettings(OTHER).kickvoteThreshold).toBe(7)
-    expect(manageCommunitySettings({ action: 'reset', guildId: GUILD }).kickvoteThreshold).toBe(7)
+    expect(manageCommunitySettings({ action: 'get' }).kickvoteThreshold).toBe(3)
+    expect(manageCommunitySettings({ action: 'reset' }).kickvoteThreshold).toBe(7)
   })
   it.each([
     { kickvoteThreshold: 1 },
@@ -297,7 +295,7 @@ describe('community settings and resource limits', () => {
     expect(() => manageCommunitySettings({ action: 'update', guildId: GUILD, settings })).toThrow()
   })
   it('fails closed on corrupt configuration, and reset recovers it', async () => {
-    setStoredValue(`community:settings:${USER}`, 'not json')
+    setStoredValue('community:settings', 'not json')
     const calls = await dispatch(commandJSON('food'), subs)
     expect(JSON.stringify(getCallback(calls))).not.toContain('오늘의 메뉴')
     expect(manageCommunitySettings({ action: 'reset', guildId: USER }).disabledCommands).toEqual([])

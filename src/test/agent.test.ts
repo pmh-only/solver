@@ -669,7 +669,6 @@ describe('/a', () => {
     expect(managementTool).toBeDefined()
     const result = managementTool.callback({
       action: 'update',
-      guildId: '333333333333333333',
       settings: {
         kickvoteThreshold: 5,
         kickvoteChannelId: '777777777777777777',
@@ -685,7 +684,7 @@ describe('/a', () => {
       inviteCooldownHours: 12,
       inviteChannelId: '777777777777777777'
     })
-    expect(JSON.parse(getStoredValue('community:settings:333333333333333333')!)).toMatchObject({
+    expect(JSON.parse(getStoredValue('community:settings')!)).toMatchObject({
       kickvoteThreshold: 5,
       roleChat: { roleId: '444444444444444444', model: 'gpt-5.4', maxOutputTokens: 1024 },
       messageCommands: { enabled: true, prefix: '!' },
@@ -694,14 +693,10 @@ describe('/a', () => {
     expect(() =>
       managementTool.callback({
         action: 'update',
-        guildId: '333333333333333333',
         settings: { kickvoteThreshold: 0 }
       })
     ).toThrow()
-    expect(
-      JSON.parse(managementTool.callback({ action: 'reset', guildId: '333333333333333333' }))
-        .kickvoteThreshold
-    ).toBe(7)
+    expect(JSON.parse(managementTool.callback({ action: 'reset' })).kickvoteThreshold).toBe(7)
   })
 
   it('tells the next agent run to repair safely redacted runtime failures', async () => {

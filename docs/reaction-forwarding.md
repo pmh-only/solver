@@ -5,6 +5,8 @@ Configure through `/a`, for example:
 > 이 서버에서 반응이 3개 이상인 메시지를 #인기글 채널에 전달하도록 설정해
 
 `manage_community_settings` accepts `reactionForward: { channelId: '...' }`.
+This is one global setting for the bot, not a per-server configuration. No server
+ID is required. Existing single-server settings migrate automatically.
 The default is `null` (disabled); set it back to null to stop processing immediately.
 The destination must be a sendable channel in the same server.
 

@@ -47,7 +47,7 @@ Existing saved replies and calculations are not overwritten or migrated implicit
 ## Configuration through `/a`
 
 The agent's `manage_community_settings` tool supports `get`, `update`, and `reset`
-for a server ID. `/a` configuration remains administrator-only. Updates are validated,
+for one global configuration, with no server ID parameter. `/a` configuration remains administrator-only. Updates are validated,
 persist across restarts, and take effect immediately. No new environment variables
 or terminal operations are required. Example requests:
 
@@ -56,6 +56,14 @@ or terminal operations are required. Example requests:
 - `/a 이 서버에서 익명 메시지 기능을 비활성화해`
 - `/a 이 서버 음식 추천 목록을 비빔밥(한식, 혼밥), 우동(일식, 국물)으로 바꿔`
 - `/a 이 서버의 커뮤니티 기능 설정을 기본값으로 초기화해`
+
+Settings are stored once under `community:settings`. A single old server-scoped
+configuration (or equivalent copies) migrates automatically; old keys remain as
+inactive backups. Conflicting old configurations fail closed until an explicit
+global reset. Reset writes global defaults so backups are not silently restored.
+Runtime records such as votes, invite cooldowns, and forwarded-message tracking
+remain scoped by Discord IDs for ownership and message isolation; they are not
+separate server configurations.
 
 Settings: `disabledCommands`, `kickvoteChannelId` (default `null`: any channel),
 `kickvoteThreshold` (7), `kickvoteIdleMinutes` (30), `inviteMaxAgeHours` (12),

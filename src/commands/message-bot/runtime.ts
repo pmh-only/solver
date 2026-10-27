@@ -88,7 +88,7 @@ export function createMessageBotHandler() {
     if (!message.guildId || message.author.bot || message.webhookId || message.system) return false
     let settings: ReturnType<typeof loadCommunitySettings>
     try {
-      settings = loadCommunitySettings(message.guildId)
+      settings = loadCommunitySettings()
     } catch {
       return false
     }

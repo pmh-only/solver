@@ -118,7 +118,7 @@ export async function handleKickvoteButton(interaction: ButtonInteraction) {
     return
   }
   const guild = interaction.guild
-  const settings = loadCommunitySettings(guild.id)
+  const settings = loadCommunitySettings()
   if (settings.disabledCommands.includes('kickvote')) {
     await reject('비활성화된 기능입니다.')
     return
@@ -228,7 +228,7 @@ export const subcommand: Subcommand = {
     const targetId = parseMemberId(rawId)
     if (targetId === interaction.user.id)
       throw new Error('본인에 대한 추방 투표는 시작할 수 없습니다.')
-    const settings = loadCommunitySettings(guild.id)
+    const settings = loadCommunitySettings()
     const lock = `${guild.id}:${targetId}`
     if (active.has(lock)) throw new Error('이미 진행 중인 투표입니다.')
     active.add(lock)
