@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { Client, Collection, Events, REST, Routes } from 'discord.js'
 import { discordClientOptions } from './discord-client-options.js'
+import { createRoleChatHandler } from './role-chat.js'
 import type { Subcommand } from './types.js'
 import { areApplicationCommandsCurrent } from './application-commands.js'
 import {
@@ -173,6 +174,13 @@ client.on(Events.Error, (error) => {
 })
 
 client.on(Events.InteractionCreate, featureRegistry.createHandler(recoverInteractionWithAgent))
+
+const handleRoleChat = createRoleChatHandler()
+client.on(Events.MessageCreate, (message) => {
+  void handleRoleChat(message).catch(() => {
+    console.error('role chat message handling failed')
+  })
+})
 
 const webServer = await startWebServer()
 const address = webServer.address()

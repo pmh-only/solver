@@ -20,6 +20,17 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  roleChat: z
+    .object({
+      roleId: z.string().regex(/^\d{17,20}$/),
+      model: z.string().trim().min(1).max(100).default('gpt-5.4'),
+      systemPrompt: z.string().trim().max(4000).default('친절하고 간결하게 대화하세요.'),
+      maxOutputTokens: z.number().int().min(256).max(4096).default(1024),
+      cooldownSeconds: z.number().int().min(5).max(3600).default(30),
+      requestsPerHour: z.number().int().min(1).max(100).default(30)
+    })
+    .strict()
+    .nullable(),
   disabledCommands: z.array(z.enum(communityCommandNames)).max(communityCommandNames.length),
   inviteChannelId: z
     .string()
@@ -39,6 +50,7 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    roleChat: communitySettingsFields.roleChat.default(null),
     disabledCommands: communitySettingsFields.disabledCommands.default([]),
     inviteChannelId: communitySettingsFields.inviteChannelId.default(null),
     kickvoteChannelId: communitySettingsFields.kickvoteChannelId.default(null),
