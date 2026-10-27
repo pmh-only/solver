@@ -23,6 +23,8 @@ const communitySettingsFields = {
   roleChat: z
     .object({
       roleId: z.string().regex(/^\d{17,20}$/),
+      randomReplyChance: z.number().min(0).max(1).default(0.01),
+      webSearch: z.boolean().default(true),
       model: z.string().trim().min(1).max(100).default('gpt-5.4'),
       systemPrompt: z.string().trim().max(4000).default('친절하고 간결하게 대화하세요.'),
       maxOutputTokens: z.number().int().min(256).max(4096).default(1024),
