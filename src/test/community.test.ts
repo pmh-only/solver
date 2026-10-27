@@ -145,9 +145,11 @@ async function clickConfirm(
 async function startVote() {
   manageCommunitySettings({ action: 'update', guildId: GUILD, settings: { kickvoteThreshold: 2 } })
   const calls = await guildCommand(`kickvote <@${TARGET}> 스팸 --pub`)
-  const edit = getEdit(calls) as { components: unknown[] }
-  expect(JSON.stringify(edit)).toContain('0/2')
-  return edit.components
+  expect(callbackData(calls).flags & MessageFlags.Ephemeral).toBeTruthy()
+  expect(JSON.stringify(getEdit(calls))).toContain('추방 투표를 시작했어요!')
+  const published = channelSend.mock.calls.at(-1)![0] as { components: unknown[] }
+  expect(JSON.stringify(published)).toContain('0/2')
+  return JSON.parse(JSON.stringify(published.components)) as unknown[]
 }
 async function vote(components: unknown[], user = USER, permissions = '0') {
   return dispatch(

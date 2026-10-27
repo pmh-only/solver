@@ -67,6 +67,7 @@ function votePayload(token: string, state: Vote, result?: string) {
     'kickvote',
     new Map([['pub', true]]),
     summarySection('추방 투표', [
+      '누군가가 추방 투표를 시작했습니다!',
       `대상: <@${state.targetId}>`,
       state.reason,
       `${state.votes.length}/${state.threshold}표 · 무기명 찬성, 취소 불가 · ban이 아닌 kick`,
@@ -232,7 +233,9 @@ export const subcommand: Subcommand = {
     if (active.has(lock)) throw new Error('이미 진행 중인 투표입니다.')
     active.add(lock)
     try {
-      await deferCommandResponse(interaction, flags)
+      // Public interaction replies expose the invoking member through Discord metadata.
+      // Acknowledge privately and publish an ordinary bot message, like mntserver.
+      await deferCommandResponse(interaction, new Map())
       const target = await guild.members.fetch(targetId)
       if (
         !target.kickable ||
@@ -243,6 +246,8 @@ export const subcommand: Subcommand = {
       pruneCommunityState(2)
       if (loadCommunityState(`vote-target:${lock}`, pointerSchema))
         throw new Error('이미 진행 중인 투표입니다.')
+      const channel = await guild.channels.fetch(interaction.channelId!)
+      if (!channel?.isSendable()) throw new Error('투표를 전송할 수 없는 채널입니다.')
       const token = randomUUID().replaceAll('-', '')
       const state: Vote = {
         guildId: guild.id,
@@ -257,7 +262,7 @@ export const subcommand: Subcommand = {
       }
       saveVote(token, state)
       try {
-        await interaction.editReply({
+        await channel.send({
           components: votePayload(token, state).components,
           flags: MessageFlags.IsComponentsV2,
           allowedMentions: { parse: [] }
@@ -266,6 +271,10 @@ export const subcommand: Subcommand = {
         removeVote(token, state)
         throw error
       }
+      await sendCommandReply(
+        interaction,
+        errorContainer('kickvote', new Map(), '추방 투표를 시작했어요!')
+      )
     } finally {
       active.delete(lock)
     }

@@ -127,6 +127,9 @@ function body(calls: RestCall[]): { flags: number; components: unknown[] } {
   }
 }
 const run = (name: string, args: Option[] = []) => dispatch(slashJSON(name, args), subs, options)
+function postedVote(): { components: unknown[]; flags: number } {
+  return JSON.parse(JSON.stringify(channelSend.mock.calls.at(-1)![0]))
+}
 const click = (components: unknown[], prefix: string, flags = 0, user = USER) =>
   dispatch(buttonJSON(components, prefix, guildData(user), flags), subs, options)
 
@@ -263,9 +266,8 @@ describe('standalone commands called by ordinary guild members', () => {
   it.each([null, OTHER])(
     'blocks existing kickvote buttons after changing the channel to %s',
     async (channelId) => {
-      const source = body(
-        await run('kickvote', [userOption('user'), stringOption('reason', '스팸')])
-      )
+      await run('kickvote', [userOption('user'), stringOption('reason', '스팸')])
+      const source = postedVote()
       manageCommunitySettings({
         action: 'update',
         guildId: GUILD,
@@ -427,9 +429,12 @@ describe('standalone commands called by ordinary guild members', () => {
       guildId: GUILD,
       settings: { kickvoteThreshold: 2 }
     })
-    const source = body(
-      await run('kickvote', [userOption('user'), stringOption('reason', '스팸 --pub')])
-    )
+    const calls = await run('kickvote', [userOption('user'), stringOption('reason', '스팸 --pub')])
+    expect(
+      (getCallback(calls) as { data: { flags: number } }).data.flags & MessageFlags.Ephemeral
+    ).toBeTruthy()
+    expect(JSON.stringify(body(calls))).toContain('추방 투표를 시작했어요!')
+    const source = postedVote()
     expect(source.flags & MessageFlags.Ephemeral).toBeFalsy()
     expect(JSON.stringify(source)).toContain('스팸 --pub')
     const cancelId = JSON.stringify(source).match(/community-kickvote:[a-f0-9]{32}:cancel/)![0]
