@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { Client, Collection, Events, REST, Routes } from 'discord.js'
 import { discordClientOptions } from './discord-client-options.js'
 import { createMessageHandler } from './message-handler.js'
+import { createReactionForwardHandler } from './reaction-forward.js'
 import type { Subcommand } from './types.js'
 import { areApplicationCommandsCurrent } from './application-commands.js'
 import {
@@ -181,6 +182,17 @@ client.on(Events.MessageCreate, (message) => {
     console.error('message handling failed')
   })
 })
+
+const handleReactionForward = createReactionForwardHandler()
+const syncReactions = (message: Parameters<typeof handleReactionForward>[0]) => {
+  void handleReactionForward(message).catch(() => {
+    console.error('reaction forwarding failed')
+  })
+}
+client.on(Events.MessageReactionAdd, (reaction) => syncReactions(reaction.message))
+client.on(Events.MessageReactionRemove, (reaction) => syncReactions(reaction.message))
+client.on(Events.MessageReactionRemoveEmoji, (reaction) => syncReactions(reaction.message))
+client.on(Events.MessageReactionRemoveAll, (message) => syncReactions(message))
 
 const webServer = await startWebServer()
 const address = webServer.address()

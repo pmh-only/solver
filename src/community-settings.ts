@@ -20,6 +20,10 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  reactionForward: z
+    .object({ channelId: z.string().regex(/^\d{17,20}$/) })
+    .strict()
+    .nullable(),
   messageCommands: z
     .object({
       enabled: z.boolean().default(true),
@@ -56,6 +60,7 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    reactionForward: communitySettingsFields.reactionForward.default(null),
     messageCommands: communitySettingsFields.messageCommands.default({
       enabled: true,
       prefix: '!!'
@@ -74,7 +79,7 @@ export const communitySettingsSchema = z
   .strict()
 
 export const manageCommunitySettingsSchema = z.object({
-  action: z.enum(['get', 'update', 'reset', 'reset-message-replies']),
+  action: z.enum(['get', 'update', 'reset', 'reset-message-replies', 'reset-reaction-forwards']),
   guildId: z
     .string()
     .regex(/^\d{17,20}$/)
@@ -109,6 +114,8 @@ export function manageCommunitySettings(input: unknown): CommunitySettings {
   const key = `community:settings:${guildId}`
   if (action === 'reset') deleteStoredValue(key)
   if (action === 'reset-message-replies') deleteStoredValue(`community:message-bot:${guildId}`)
+  if (action === 'reset-reaction-forwards')
+    deleteStoredValue(`community:reaction-forward:${guildId}`)
   if (action === 'update') {
     if (!settings) throw new Error('settings is required')
     const next = communitySettingsSchema.parse({ ...loadCommunitySettings(guildId), ...settings })
