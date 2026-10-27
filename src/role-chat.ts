@@ -9,6 +9,11 @@ const NO_MENTIONS = { parse: [] as const, repliedUser: false }
 const TYPING_INTERVAL_MS = 8000
 const HISTORY_LIMIT = 50
 const HISTORY_TIMEOUT_MS = 10_000
+const STREAM_UPDATE_MS = 1000
+
+function boundedReply(content: string) {
+  return content.length > 2000 ? `${content.slice(0, 1999)}…` : content
+}
 
 function messageContext(message: Message, content = message.content) {
   return {
@@ -102,7 +107,8 @@ function createTypingTracker() {
 
 export async function generateRoleChatReply(
   prompt: string,
-  settings: ChatSettings
+  settings: ChatSettings,
+  onText?: (content: string) => Promise<void>
 ): Promise<string> {
   const client = new OpenAI({
     apiKey: loadOpenAIApiKey(),
@@ -110,7 +116,7 @@ export async function generateRoleChatReply(
     maxRetries: 0,
     timeout: TIMEOUT_MS
   })
-  const response = await client.responses.create(
+  const stream = await client.responses.create(
     {
       model: settings.model,
       instructions: [
@@ -125,14 +131,31 @@ export async function generateRoleChatReply(
       tool_choice: settings.webSearch ? 'auto' : 'none',
       ...(settings.webSearch ? { max_tool_calls: 2 } : {}),
       max_output_tokens: settings.maxOutputTokens,
-      store: false
+      store: false,
+      stream: true
     },
     { signal: AbortSignal.timeout(TIMEOUT_MS) }
   )
-  if (response.status !== 'completed' || !response.output_text?.trim()) {
+  let content = ''
+  let completed = false
+  for await (const event of stream) {
+    if (event.type === 'response.output_text.delta') {
+      content = (content + event.delta).slice(0, 2001)
+      if (content.trim()) await onText?.(boundedReply(content))
+    } else if (event.type === 'response.completed') {
+      completed = event.response.status === 'completed'
+    } else if (
+      event.type === 'response.failed' ||
+      event.type === 'response.incomplete' ||
+      event.type === 'error'
+    ) {
+      throw new Error('Response stream failed')
+    }
+  }
+  if (!completed || !content.trim()) {
     throw new Error('No complete text response')
   }
-  return response.output_text
+  return boundedReply(content)
 }
 
 export function createRoleChatHandler(generate = generateRoleChatReply, random = Math.random) {
@@ -168,26 +191,30 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
 
     const stopTyping = startTyping(message)
     try {
-      // Acknowledge only admitted work; reaction failures must not block generation.
-      const acknowledge = async () => {
-        try {
-          await message.react('✅')
-        } catch {
-          // The bot may lack reaction permissions or the message may have been deleted.
-        }
+      let reply: Message | undefined
+      let lastContent = ''
+      let lastUpdate = 0
+      const publish = async (content: string, final = false) => {
+        content = boundedReply(content)
+        if (!content.trim() || content === lastContent) return
+        if (!final && reply && Date.now() - lastUpdate < STREAM_UPDATE_MS) return
+        const payload = { content, allowedMentions: NO_MENTIONS }
+        if (reply) await reply.edit(payload)
+        else reply = await message.reply(payload)
+        lastContent = content
+        lastUpdate = Date.now()
       }
-      void acknowledge()
       let content: string
       try {
         const input = await buildRoleChatInput(message, prompt)
-        content = await generate(input, settings)
+        content = await generate(input, settings, publish)
         if (!content.trim()) throw new Error('Empty reply')
-        content = content.length > 2000 ? `${content.slice(0, 1999)}…` : content
+        content = boundedReply(content)
       } catch {
         content = '지금은 응답을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요.'
       }
       // This intentionally uses plain Markdown, with no command controls or shared agent runtime.
-      await message.reply({ content, allowedMentions: NO_MENTIONS })
+      await publish(content, true)
     } finally {
       stopTyping()
     }

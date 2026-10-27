@@ -38,9 +38,21 @@ const GUILD = '333333333333333333'
 const ROLE = '444444444444444444'
 const USER = '555555555555555555'
 const BOT = '999999999999999999'
-const generate = vi.fn<(prompt: string, settings: unknown) => Promise<string>>()
+const generate =
+  vi.fn<
+    (
+      prompt: string,
+      settings: unknown,
+      onText?: (content: string) => Promise<void>
+    ) => Promise<string>
+  >()
 const sendTyping = vi.fn<() => Promise<void>>()
 const fetchHistory = vi.fn()
+
+async function* responseStream(content: string, status = 'completed') {
+  yield { type: 'response.output_text.delta', delta: content }
+  yield { type: 'response.completed', response: { status } }
+}
 
 function message(overrides: Record<string, unknown> = {}) {
   return {
@@ -74,9 +86,7 @@ beforeEach(() => {
   generate.mockReset().mockResolvedValue('**안녕하세요!**')
   sendTyping.mockReset().mockResolvedValue(undefined)
   fetchHistory.mockReset().mockResolvedValue(new Collection())
-  createResponse
-    .mockReset()
-    .mockResolvedValue({ status: 'completed', output_text: '**안녕하세요!**' })
+  createResponse.mockReset().mockImplementation(async () => responseStream('**안녕하세요!**'))
 })
 afterEach(() => {
   vi.clearAllTimers()
@@ -98,7 +108,8 @@ describe('role mention chat', () => {
       await createRoleChatHandler(generate)(input)
       expect(generate).toHaveBeenCalledWith(
         expect.stringContaining('"content":"안녕"'),
-        expect.objectContaining({ roleId: ROLE })
+        expect.objectContaining({ roleId: ROLE }),
+        expect.any(Function)
       )
       expect(input.reply).toHaveBeenCalledExactlyOnceWith({
         content: '**안녕하세요!**',
@@ -140,7 +151,8 @@ describe('role mention chat', () => {
     await handler(message({ content: `<@&${USER}> 안녕` }))
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining('"content":"안녕"'),
-      expect.objectContaining({ model: 'custom-model' })
+      expect.objectContaining({ model: 'custom-model' }),
+      expect.any(Function)
     )
     configure(GUILD, null)
     await handler(message({ content: `<@&${USER}> 안녕` }))
@@ -287,12 +299,13 @@ describe('replies to the bot', () => {
     await handler(input)
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining('"content":"그건 왜 그래?"'),
-      expect.any(Object)
+      expect.any(Object),
+      expect.any(Function)
     )
     expect(generate.mock.calls[0]?.[0]).toContain(`"replyToMessageId":"${reference.messageId}"`)
     expect(random).not.toHaveBeenCalled()
     expect(fetchHistory).toHaveBeenCalledWith({ limit: 50, before: input.id, cache: false })
-    expect(input.react).toHaveBeenCalledWith('✅')
+    expect(input.react).not.toHaveBeenCalled()
     expect(input.reply).toHaveBeenCalledWith({
       content: '**안녕하세요!**',
       allowedMentions: { parse: [], repliedUser: false }
@@ -575,7 +588,7 @@ describe('role chat typing indicators', () => {
   })
 })
 
-describe('random replies and processing acknowledgements', () => {
+describe('random replies without reactions', () => {
   it.each([0, 0.009999, 0.01, 0.99])(
     'replies without a role mention only below the 1%% threshold: %s',
     async (chance) => {
@@ -584,14 +597,15 @@ describe('random replies and processing acknowledgements', () => {
       const input = message({ content: '그냥 일반 채팅' })
       await createRoleChatHandler(generate, () => chance)(input)
       expect(generate).toHaveBeenCalledTimes(chance < 0.01 ? 1 : 0)
-      expect(input.react).toHaveBeenCalledTimes(chance < 0.01 ? 1 : 0)
+      expect(input.react).not.toHaveBeenCalled()
       expect(input.reply).toHaveBeenCalledTimes(chance < 0.01 ? 1 : 0)
       if (chance < 0.01) {
         expect(generate).toHaveBeenCalledWith(
           expect.stringContaining('"content":"그냥 일반 채팅"'),
-          expect.any(Object)
+          expect.any(Object),
+          expect.any(Function)
         )
-        expect(input.react).toHaveBeenCalledWith('✅')
+        expect(input.react).not.toHaveBeenCalled()
       }
     }
   )
@@ -604,7 +618,7 @@ describe('random replies and processing acknowledgements', () => {
     const input = message()
     await handler(input)
     expect(generate).toHaveBeenCalledTimes(1)
-    expect(input.react).toHaveBeenCalledWith('✅')
+    expect(input.react).not.toHaveBeenCalled()
   })
 
   it('allows random and explicit requests from the same user without cooldowns', async () => {
@@ -617,9 +631,9 @@ describe('random replies and processing acknowledgements', () => {
     const another = message({ author: { id: ROLE, bot: false } })
     await handler(another)
     expect(generate).toHaveBeenCalledTimes(3)
-    expect(first.react).toHaveBeenCalledWith('✅')
-    expect(explicit.react).toHaveBeenCalledWith('✅')
-    expect(another.react).toHaveBeenCalledWith('✅')
+    expect(first.react).not.toHaveBeenCalled()
+    expect(explicit.react).not.toHaveBeenCalled()
+    expect(another.react).not.toHaveBeenCalled()
   })
 
   it('never randomly replies to bots, webhooks, DMs, or empty messages', async () => {
@@ -639,7 +653,7 @@ describe('random replies and processing acknowledgements', () => {
     expect(generate).not.toHaveBeenCalled()
   })
 
-  it('acknowledges every concurrent request including requests beyond the old cap', async () => {
+  it('handles concurrent requests without checkmark reactions', async () => {
     configure()
     let finish!: (value: string) => void
     generate.mockReturnValue(
@@ -654,14 +668,15 @@ describe('random replies and processing acknowledgements', () => {
     const first = handler(a)
     const second = handler(b)
     const last = handler(third)
-    expect(a.react).toHaveBeenCalledExactlyOnceWith('✅')
-    expect(b.react).toHaveBeenCalledExactlyOnceWith('✅')
-    expect(third.react).toHaveBeenCalledExactlyOnceWith('✅')
+    expect(a.react).not.toHaveBeenCalled()
+    expect(b.react).not.toHaveBeenCalled()
+    expect(third.react).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
     finish('done')
     await Promise.all([first, second, last])
   })
 
-  it('does not block or fail replies when reactions fail', async () => {
+  it('does not require reaction permissions', async () => {
     configure()
     const input = message({ react: vi.fn().mockRejectedValue(new Error('missing AddReactions')) })
     await createRoleChatHandler(generate)(input)
@@ -860,6 +875,66 @@ describe('recent channel context', () => {
   })
 })
 
+describe('streaming Markdown replies', () => {
+  it('publishes early text, throttles edits, and flushes final text into the same reply', async () => {
+    configure()
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = message({ reply: vi.fn().mockResolvedValue({ edit }) })
+    createResponse.mockImplementation(async () =>
+      (async function* () {
+        yield { type: 'response.output_text.delta', delta: '안녕' }
+        expect(input.reply).toHaveBeenCalledWith({
+          content: '안녕',
+          allowedMentions: { parse: [], repliedUser: false }
+        })
+        yield { type: 'response.output_text.delta', delta: '하세요' }
+        expect(edit).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1000)
+        yield { type: 'response.output_text.delta', delta: '!' }
+        expect(edit).toHaveBeenCalledTimes(1)
+        yield { type: 'response.output_text.delta', delta: ' 반가워요.' }
+        yield { type: 'response.completed', response: { status: 'completed' } }
+      })()
+    )
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledTimes(1)
+    expect(edit).toHaveBeenCalledTimes(2)
+    expect(edit).toHaveBeenLastCalledWith({
+      content: '안녕하세요! 반가워요.',
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(input.react).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('replaces partial text with a safe error when the stream fails', async () => {
+    configure()
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = message({ reply: vi.fn().mockResolvedValue({ edit }) })
+    createResponse.mockImplementation(async () =>
+      (async function* () {
+        yield { type: 'response.output_text.delta', delta: 'partial' }
+        throw new Error('secret-token')
+      })()
+    )
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledTimes(1)
+    expect(edit).toHaveBeenCalledWith({
+      content: expect.stringContaining('지금은'),
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(JSON.stringify(edit.mock.calls)).not.toContain('secret-token')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('bounds streamed text and final text to the Discord limit', async () => {
+    createResponse.mockImplementation(async () => responseStream('a'.repeat(5000)))
+    const onText = vi.fn().mockResolvedValue(undefined)
+    expect(await generateRoleChatReply('hi', configure().roleChat!, onText)).toHaveLength(2000)
+    expect(onText.mock.calls[0]![0]).toHaveLength(2000)
+  })
+})
+
 describe('plain Markdown text generation', () => {
   it('can disable web search through /a configuration', async () => {
     const settings = configure(GUILD, { roleId: ROLE, webSearch: false }).roleChat!
@@ -892,7 +967,8 @@ describe('plain Markdown text generation', () => {
         tool_choice: 'auto',
         max_tool_calls: 2,
         max_output_tokens: 512,
-        store: false
+        store: false,
+        stream: true
       },
       { signal: expect.any(AbortSignal) }
     )
@@ -904,7 +980,9 @@ describe('plain Markdown text generation', () => {
     { status: 'incomplete', output_text: 'partial' },
     { status: 'completed', output_text: '' }
   ])('rejects malformed or incomplete service output %j', async (response) => {
-    createResponse.mockResolvedValue(response)
+    createResponse.mockImplementation(async () =>
+      responseStream(response.output_text, response.status)
+    )
     await expect(generateRoleChatReply('hi', configure().roleChat!)).rejects.toThrow()
   })
   it('propagates service timeout without retrying', async () => {
