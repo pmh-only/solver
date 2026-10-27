@@ -27,9 +27,7 @@ const communitySettingsFields = {
       webSearch: z.boolean().default(true),
       model: z.string().trim().min(1).max(100).default('gpt-5.4'),
       systemPrompt: z.string().trim().max(4000).default('친절하고 간결하게 대화하세요.'),
-      maxOutputTokens: z.number().int().min(256).max(4096).default(1024),
-      cooldownSeconds: z.number().int().min(5).max(3600).default(30),
-      requestsPerHour: z.number().int().min(1).max(100).default(30)
+      maxOutputTokens: z.number().int().min(256).max(4096).default(1024)
     })
     .strict()
     .nullable(),
@@ -82,7 +80,18 @@ export function loadCommunitySettings(scope: string): CommunitySettings {
   const raw = getStoredValue(`community:settings:${scope}`)
   if (!raw) return communitySettingsSchema.parse({})
   // Fail closed on corrupt configuration instead of silently re-enabling moderation actions.
-  return communitySettingsSchema.parse(JSON.parse(raw))
+  const stored: unknown = JSON.parse(raw)
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    const fields = stored as Record<string, unknown>
+    if (fields.roleChat && typeof fields.roleChat === 'object' && !Array.isArray(fields.roleChat)) {
+      // Existing configurations must keep working after removing these obsolete limits.
+      const roleChat = { ...fields.roleChat } as Record<string, unknown>
+      delete roleChat.cooldownSeconds
+      delete roleChat.requestsPerHour
+      return communitySettingsSchema.parse({ ...fields, roleChat })
+    }
+  }
+  return communitySettingsSchema.parse(stored)
 }
 
 export function manageCommunitySettings(input: unknown): CommunitySettings {
