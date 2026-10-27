@@ -1,27 +1,39 @@
 // Only fixed, trusted HTTPS origins are used. Redirects are intentionally rejected.
 let activeTransfers = 0
 
-export async function fetchCommunityBytes(url: string, maxBytes: number): Promise<Buffer> {
+export async function fetchCommunityBytes(
+  url: string,
+  maxBytes: number,
+  allowedHosts: readonly string[] = [
+    'www.pizzint.watch',
+    'cdn.discordapp.com',
+    'media.discordapp.net'
+  ]
+): Promise<Buffer> {
   if (activeTransfers >= 4)
     throw new Error('다운로드 요청이 너무 많습니다. 잠시 후 다시 시도하세요.')
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024)
     throw new Error('잘못된 다운로드 제한입니다.')
   activeTransfers++
   try {
-    return await readCommunityBytes(url, maxBytes)
+    return await readCommunityBytes(url, maxBytes, allowedHosts)
   } finally {
     activeTransfers--
   }
 }
 
-async function readCommunityBytes(url: string, maxBytes: number): Promise<Buffer> {
+async function readCommunityBytes(
+  url: string,
+  maxBytes: number,
+  allowedHosts: readonly string[]
+): Promise<Buffer> {
   const parsed = new URL(url)
   if (
     parsed.protocol !== 'https:' ||
     parsed.username ||
     parsed.password ||
     parsed.port ||
-    !['www.pizzint.watch', 'cdn.discordapp.com', 'media.discordapp.net'].includes(parsed.hostname)
+    !allowedHosts.includes(parsed.hostname)
   ) {
     throw new Error('지원하지 않는 URL입니다. Discord 첨부 파일 URL을 사용하세요.')
   }

@@ -20,6 +20,12 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  messageCommands: z
+    .object({
+      enabled: z.boolean().default(true),
+      prefix: z.string().min(1).max(10).regex(/^\S+$/).default('!!')
+    })
+    .strict(),
   roleChat: z
     .object({
       roleId: z.string().regex(/^\d{17,20}$/),
@@ -50,6 +56,10 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    messageCommands: communitySettingsFields.messageCommands.default({
+      enabled: true,
+      prefix: '!!'
+    }),
     roleChat: communitySettingsFields.roleChat.default(null),
     disabledCommands: communitySettingsFields.disabledCommands.default([]),
     inviteChannelId: communitySettingsFields.inviteChannelId.default(null),
@@ -64,7 +74,7 @@ export const communitySettingsSchema = z
   .strict()
 
 export const manageCommunitySettingsSchema = z.object({
-  action: z.enum(['get', 'update', 'reset']),
+  action: z.enum(['get', 'update', 'reset', 'reset-message-replies']),
   guildId: z
     .string()
     .regex(/^\d{17,20}$/)
@@ -98,6 +108,7 @@ export function manageCommunitySettings(input: unknown): CommunitySettings {
   const { action, guildId, settings } = manageCommunitySettingsSchema.parse(input)
   const key = `community:settings:${guildId}`
   if (action === 'reset') deleteStoredValue(key)
+  if (action === 'reset-message-replies') deleteStoredValue(`community:message-bot:${guildId}`)
   if (action === 'update') {
     if (!settings) throw new Error('settings is required')
     const next = communitySettingsSchema.parse({ ...loadCommunitySettings(guildId), ...settings })

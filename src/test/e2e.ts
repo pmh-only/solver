@@ -19,6 +19,7 @@ import {
   ChatInputCommandInteraction,
   Client,
   Collection,
+  Message,
   MessageContextMenuCommandInteraction,
   StringSelectMenuInteraction,
   UserContextMenuCommandInteraction
@@ -32,6 +33,7 @@ import {
 } from '../components.js'
 import { createFeatureRegistry } from '../features.js'
 import { discordClientOptions } from '../discord-client-options.js'
+import { createMessageHandler } from '../message-handler.js'
 import type { Subcommand } from '../types.js'
 
 export interface RestCall {
@@ -49,6 +51,18 @@ export interface DispatchOptions {
   postError?: (route: string, body: unknown, calls: RestCall[]) => Error | undefined
   postResult?: (route: string, body: unknown, calls: RestCall[]) => unknown
   patchError?: (body: unknown, calls: RestCall[]) => Error | undefined
+}
+
+/** Raw gateway message -> production message router -> captured Discord REST calls. */
+export async function dispatchMessage(
+  raw: Record<string, unknown>,
+  options: DispatchOptions = {},
+  handle = createMessageHandler()
+): Promise<RestCall[]> {
+  const { client, calls } = makeClient(options)
+  const MessageCtor = Message as unknown as new (client: Client, data: unknown) => Message
+  await handle(new MessageCtor(client, raw))
+  return calls
 }
 
 function makeClient(options: DispatchOptions = {}): { client: Client; calls: RestCall[] } {

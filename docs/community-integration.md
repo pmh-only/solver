@@ -1,5 +1,9 @@
 # Community bot integration
 
+This document describes the original slash-command adaptation. The upstream
+message commands are now also available unchanged through their original
+prefix/plain-message entrypoints; see [message-bot-integration.md](message-bot-integration.md).
+
 Reviewed upstream source snapshots:
 
 - `pmh-only/mntserver`, `develop`, `132f604728015d3383a5302627dd263f3952e3cc`

@@ -675,6 +675,7 @@ describe('/a', () => {
         kickvoteChannelId: '777777777777777777',
         inviteChannelId: '777777777777777777',
         roleChat: { roleId: '444444444444444444', model: 'gpt-5.4' },
+        messageCommands: { enabled: true, prefix: '!' },
         inviteCooldownHours: 12
       }
     })
@@ -685,7 +686,8 @@ describe('/a', () => {
     })
     expect(JSON.parse(getStoredValue('community:settings:333333333333333333')!)).toMatchObject({
       kickvoteThreshold: 5,
-      roleChat: { roleId: '444444444444444444', model: 'gpt-5.4', maxOutputTokens: 1024 }
+      roleChat: { roleId: '444444444444444444', model: 'gpt-5.4', maxOutputTokens: 1024 },
+      messageCommands: { enabled: true, prefix: '!' }
     })
     expect(() =>
       managementTool.callback({
