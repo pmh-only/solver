@@ -40,7 +40,20 @@ describe('public persona editor', () => {
     const page = await fetch(`${origin}/personas`)
     expect(page.status).toBe(200)
     expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
-    expect(await page.text()).toContain('누구나')
+    const html = await page.text()
+    expect(html).toContain('누구나')
+    expect(html).toContain('<table aria-labelledby="list-heading">')
+    expect(html).toContain('<th scope="col">지침 요약</th>')
+    for (const id of [
+      'search',
+      'persona-count',
+      'character-count',
+      'save-state',
+      'copy-usage',
+      'duplicate'
+    ]) {
+      expect(html).toContain(`id="${id}"`)
+    }
     for (const path of ['/personas.js', '/personas.css']) {
       expect((await fetch(origin + path)).status).toBe(200)
     }
@@ -48,8 +61,12 @@ describe('public persona editor', () => {
     expect(head.status).toBe(200)
     expect(await head.text()).toBe('')
     const script = await (await fetch(`${origin}/personas.js`)).text()
-    expect(script).toContain('button.textContent = persona.name')
+    expect(script).toContain('name.textContent = persona.name')
     expect(script).not.toContain('innerHTML')
+    expect(script).toContain("window.addEventListener('beforeunload'")
+    expect(script).toContain('existing.prompt !== baseline.prompt')
+    expect(script).toContain('nameInput.readOnly = selected !== null')
+    expect(script).toContain('navigator.clipboard.writeText')
   })
   it('creates, lists, edits and deletes public personas and shares configuration with /a', async () => {
     manageCommunitySettings({ action: 'update', settings: { anonymousName: 'preserve' } })

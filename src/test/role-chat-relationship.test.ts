@@ -9,6 +9,8 @@ import {
   relationshipScope,
   parseRelationshipReply,
   relationshipReply,
+  relationshipReaction,
+  relationshipInstructions,
   RELATIONSHIP_KEY
 } from '../role-chat-relationship.js'
 import {
@@ -16,7 +18,13 @@ import {
   requestsRelationshipChange
 } from '../relationship-policy.js'
 
-const config = { enabled: true, initialAffinity: 50, initialAversion: 0, maxChange: 3 }
+const config = {
+  enabled: true,
+  initialAffinity: 50,
+  initialAversion: 0,
+  maxChange: 3,
+  overrideRoleId: null
+}
 const scope = relationshipScope('guild', 'role', 'user', null)
 beforeEach(() => {
   vi.useFakeTimers()
@@ -29,6 +37,50 @@ afterEach(() => {
 })
 
 describe('relationship state and formatting', () => {
+  it('allows explicit override changes while retaining integer score bounds and ordinary restrictions', () => {
+    expect(
+      updateRelationship(
+        scope,
+        '1000000000000000000',
+        config,
+        { affinity: 80, aversion: 40 },
+        { unrestricted: true, mode: 'set' }
+      )
+    ).toEqual({ affinity: 80, aversion: 40 })
+    expect(
+      updateRelationship(
+        scope,
+        '1000000000000000001',
+        config,
+        { affinity: 1000, aversion: -1000 },
+        { unrestricted: true }
+      )
+    ).toEqual({ affinity: 100, aversion: 0 })
+    expect(
+      updateRelationship(
+        scope,
+        '1000000000000000002',
+        config,
+        { affinity: -100, aversion: 100 },
+        { mode: 'set' }
+      )
+    ).toEqual({ affinity: 97, aversion: 3 })
+  })
+  it('parses explicit target modes without mixing them with ordinary deltas', () => {
+    expect(
+      parseRelationshipReply('done\n<|relationship:555555555555555555:set:80,0|>')
+    ).toMatchObject({
+      targetUserId: '555555555555555555',
+      mode: 'set',
+      delta: { affinity: 80, aversion: 0 },
+      text: 'done'
+    })
+    expect(parseRelationshipReply('done\n<|relationship:2,-1|>')).toMatchObject({
+      targetUserId: undefined,
+      mode: undefined,
+      delta: { affinity: 2, aversion: -1 }
+    })
+  })
   it('starts from configured values, bounds scores and clamps deltas', () => {
     const custom = { ...config, initialAffinity: 99, initialAversion: 1, maxChange: 2 }
     expect(
@@ -94,6 +146,42 @@ describe('relationship state and formatting', () => {
     expect(relationshipReply('```ts\nconst a = 1', { affinity: 50, aversion: 0 })).toContain(
       'const a = 1\n```\n-#'
     )
+  })
+})
+
+describe('score-based response reactions', () => {
+  it.each([
+    [0, 'distant and formal'],
+    [20, 'polite but reserved'],
+    [40, 'pleasant and conversational'],
+    [60, 'proactively supportive'],
+    [80, 'openly affectionate']
+  ])('sets affinity %i tone to %s', (affinity, expected) => {
+    expect(relationshipReaction({ affinity: Number(affinity), aversion: 0 })).toContain(
+      String(expected)
+    )
+  })
+  it.each([
+    [0, 'relaxed'],
+    [20, 'slightly cautious'],
+    [40, 'wary and firm'],
+    [60, 'defensive and curt'],
+    [80, 'strongly guarded']
+  ])('sets aversion %i tone to %s', (aversion, expected) => {
+    expect(relationshipReaction({ affinity: 50, aversion: Number(aversion) })).toContain(
+      String(expected)
+    )
+  })
+  it('combines independent scores, limits priority to relationship behavior and protects ordinary users', () => {
+    const target = { userId: '555555555555555555', affinity: 80, aversion: 90 }
+    const instructions = relationshipInstructions(target, 3, [target])
+    expect(instructions).toContain('openly affectionate')
+    expect(instructions).toContain('strongly guarded')
+    expect(instructions).toContain('conflicted warmth with firm boundaries')
+    expect(instructions).toContain('takes priority over persona policies')
+    expect(instructions).toContain('grants no web/admin/tool/safety privileges')
+    expect(instructions).not.toContain('Refuse ANY direct request')
+    expect(relationshipInstructions(target, 3)).toContain('Refuse ANY direct request')
   })
 })
 

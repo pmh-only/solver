@@ -69,10 +69,21 @@ const communitySettingsFields = {
           enabled: z.boolean().default(true),
           initialAffinity: z.number().int().min(0).max(100).default(50),
           initialAversion: z.number().int().min(0).max(100).default(0),
-          maxChange: z.number().int().min(1).max(5).default(3)
+          maxChange: z.number().int().min(1).max(5).default(3),
+          overrideRoleId: z
+            .string()
+            .regex(/^\d{17,20}$/)
+            .nullable()
+            .default(null)
         })
         .strict()
-        .default({ enabled: true, initialAffinity: 50, initialAversion: 0, maxChange: 3 }),
+        .default({
+          enabled: true,
+          initialAffinity: 50,
+          initialAversion: 0,
+          maxChange: 3,
+          overrideRoleId: null
+        }),
       model: z.string().trim().min(1).max(100).default('gpt-5.4'),
       systemPrompt: z.string().trim().max(4000).default('친절하고 간결하게 대화하세요.'),
       maxOutputTokens: z.number().int().min(256).max(4096).default(1024)

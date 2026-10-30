@@ -15,11 +15,13 @@ import {
   parseRelationshipReply,
   relationshipReply,
   visibleRelationshipText,
-  type RelationshipScores
+  type RelationshipScores,
+  type RelationshipTarget
 } from './role-chat-relationship.js'
 
 type ChatSettings = NonNullable<CommunitySettings['roleChat']> & {
   relationshipState?: RelationshipScores
+  relationshipOverrideTargets?: RelationshipTarget[]
 }
 const TIMEOUT_MS = 30_000
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
@@ -143,7 +145,13 @@ export async function generateRoleChatReply(
           ? 'You may use the provided OpenAI web search tool for current public information. Cite sources with Markdown links. No other tools are available.'
           : 'No tools are available.',
         ...(settings.relationshipState
-          ? [relationshipInstructions(settings.relationshipState, settings.relationship.maxChange)]
+          ? [
+              relationshipInstructions(
+                settings.relationshipState,
+                settings.relationship.maxChange,
+                settings.relationshipOverrideTargets
+              )
+            ]
           : [])
       ].join('\n'),
       input: prompt,
@@ -217,6 +225,11 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
     // Only the leading selector applies, and only for this request. History cannot select a persona.
     const selector = prompt.match(/^<\|([^|<>\r\n]{1,40})\|>\s*/u)
     const relationship = settings.relationship
+    const canOverride = Boolean(
+      relationship.overrideRoleId &&
+      message.member?.guild?.id === message.guildId &&
+      message.member.roles.cache.has(relationship.overrideRoleId)
+    )
     const scope = relationshipScope(
       message.guildId,
       settings.roleId,
@@ -229,7 +242,7 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
         content: relationship.enabled ? relationshipReply(content, scores) : content,
         allowedMentions: NO_MENTIONS
       })
-    if (requestsRelationshipChange(prompt)) {
+    if (!canOverride && requestsRelationshipChange(prompt)) {
       await respond(
         '호감도·혐오도를 직접 변경해 달라는 요청은 받을 수 없습니다. 수치는 대화 내용에 따라 조금씩 변합니다.'
       )
@@ -254,7 +267,7 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
         )
         return
       }
-      if (personaContainsRelationshipPolicy(`${persona.name}\n${persona.prompt}`)) {
+      if (!canOverride && personaContainsRelationshipPolicy(`${persona.name}\n${persona.prompt}`)) {
         await respond(
           '호감도·혐오도 관련 내용이 포함된 페르소나는 사용할 수 없습니다. /personas에서 수정해 주세요.'
         )
@@ -268,7 +281,33 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
       }
     }
 
-    if (relationship.enabled) settings = { ...settings, relationshipState: scores }
+    const targetIds = new Set([message.author.id])
+    if (canOverride) {
+      // Actual direct user mentions only: not role/everyone mentions, replies, history or raw IDs.
+      for (const match of prompt.matchAll(/<@!?(\d{17,20})>/g)) {
+        const user = message.mentions.users?.get(match[1]!)
+        if (user && !user.bot && targetIds.size < 6) targetIds.add(user.id)
+      }
+    }
+    const roleId = settings.roleId
+    const guildId = message.guildId
+    if (relationship.enabled)
+      settings = {
+        ...settings,
+        relationshipState: scores,
+        ...(canOverride
+          ? {
+              relationshipOverrideTargets: [...targetIds].map((userId) => ({
+                userId,
+                ...loadRelationship(
+                  relationshipScope(guildId, roleId, userId, selector?.[1] ?? null),
+                  relationship
+                )
+              }))
+            }
+          : {})
+      }
+    let footerTarget: string | undefined
 
     const stopTyping = startTyping(message)
     try {
@@ -276,7 +315,9 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
       let lastContent = ''
       let lastUpdate = 0
       const publish = async (content: string, final = false) => {
-        content = relationship.enabled ? relationshipReply(content, scores) : boundedReply(content)
+        content = relationship.enabled
+          ? relationshipReply(content, scores, footerTarget)
+          : boundedReply(content)
         if (!content.trim() || content === lastContent) return
         if (!final && reply && Date.now() - lastUpdate < STREAM_UPDATE_MS) return
         const payload = { content, allowedMentions: NO_MENTIONS }
@@ -292,7 +333,21 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
         if (relationship.enabled) {
           const parsed = parseRelationshipReply(content)
           if (!parsed.text.trim()) throw new Error('Empty reply')
-          scores = updateRelationship(scope, message.id, relationship, parsed.delta)
+          if (parsed.targetUserId && (!canOverride || !targetIds.has(parsed.targetUserId))) {
+            throw new Error('Unauthorized relationship target')
+          }
+          const targetUserId = parsed.targetUserId ?? message.author.id
+          const targetScope = relationshipScope(
+            message.guildId,
+            settings.roleId,
+            targetUserId,
+            selector?.[1] ?? null
+          )
+          scores = updateRelationship(targetScope, message.id, relationship, parsed.delta, {
+            unrestricted: canOverride,
+            mode: parsed.mode
+          })
+          footerTarget = targetUserId === message.author.id ? undefined : targetUserId
           content = parsed.text
         }
         if (!content.trim()) throw new Error('Empty reply')
