@@ -154,6 +154,7 @@ function safeError(error: unknown): string {
   if (!(error instanceof Error)) return 'Request failed'
   if (error.name === 'ZodError' || error instanceof SyntaxError) return 'Invalid request data'
   const safe = [
+    '페르소나에는',
     'Prompt must',
     'Session name',
     'Invalid reasoning effort',

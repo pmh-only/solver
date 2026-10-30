@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { personaContainsRelationshipPolicy } from './relationship-policy.js'
 import {
   deleteStoredValue,
   getStoredValue,
@@ -63,6 +64,15 @@ const communitySettingsFields = {
       roleId: z.string().regex(/^\d{17,20}$/),
       randomReplyChance: z.number().min(0).max(1).default(0.01),
       webSearch: z.boolean().default(true),
+      relationship: z
+        .object({
+          enabled: z.boolean().default(true),
+          initialAffinity: z.number().int().min(0).max(100).default(50),
+          initialAversion: z.number().int().min(0).max(100).default(0),
+          maxChange: z.number().int().min(1).max(5).default(3)
+        })
+        .strict()
+        .default({ enabled: true, initialAffinity: 50, initialAversion: 0, maxChange: 3 }),
       model: z.string().trim().min(1).max(100).default('gpt-5.4'),
       systemPrompt: z.string().trim().max(4000).default('친절하고 간결하게 대화하세요.'),
       maxOutputTokens: z.number().int().min(256).max(4096).default(1024)
@@ -108,10 +118,28 @@ export const communitySettingsSchema = z
   .strict()
 
 export const manageCommunitySettingsSchema = z.object({
-  action: z.enum(['get', 'update', 'reset', 'reset-message-replies', 'reset-reaction-forwards']),
+  action: z.enum([
+    'get',
+    'update',
+    'reset',
+    'reset-message-replies',
+    'reset-reaction-forwards',
+    'reset-role-chat-relationships'
+  ]),
   // A PATCH must not inject defaults for omitted fields (Zod 4 also applies defaults
   // inside optional fields). Keep the update schema free of defaults.
-  settings: z.object(communitySettingsFields).strict().partial().optional()
+  settings: z
+    .object({
+      ...communitySettingsFields,
+      personas: personasSchema.refine(
+        (items) =>
+          items.every((item) => !personaContainsRelationshipPolicy(`${item.name}\n${item.prompt}`)),
+        '페르소나에는 호감도·혐오도 관련 내용을 넣을 수 없습니다.'
+      )
+    })
+    .strict()
+    .partial()
+    .optional()
 })
 
 export type CommunitySettings = z.infer<typeof communitySettingsSchema>
@@ -157,6 +185,8 @@ export function manageCommunitySettings(input: unknown): CommunitySettings {
     // An explicit global default prevents legacy backups from being restored on the next read.
     setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify(communitySettingsSchema.parse({})))
   }
+  if (action === 'reset-role-chat-relationships')
+    deleteStoredValue('community:role-chat-relationships')
   const resetPrefix =
     action === 'reset-message-replies'
       ? 'community:message-bot:'
