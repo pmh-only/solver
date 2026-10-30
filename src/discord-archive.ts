@@ -313,7 +313,7 @@ export class DiscordArchiveService {
           (('code' in error && error.code === 10008) || ('status' in error && error.status === 404))
         )
           continue
-        throw new Error('Could not verify current search results')
+        throw new Error('Could not verify current search results', { cause: error })
       }
       if (
         !message ||

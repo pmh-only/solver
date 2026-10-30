@@ -61,6 +61,7 @@ const communitySettingsFields = {
       enabled: z.boolean().default(true),
       maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
       maxChannels: z.number().int().min(1).max(500).default(100),
+      searchModel: z.string().trim().min(1).max(100).default('gpt-5-mini'),
       searchRoleId: z
         .string()
         .regex(/^\d{17,20}$/)
@@ -133,7 +134,8 @@ export const communitySettingsSchema = z
       enabled: true,
       maxStorageMiB: 1024,
       maxChannels: 100,
-      searchRoleId: null
+      searchRoleId: null,
+      searchModel: 'gpt-5-mini'
     }),
     personas: communitySettingsFields.personas.default([]),
     reactionForward: communitySettingsFields.reactionForward.default(null),
