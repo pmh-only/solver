@@ -1,11 +1,19 @@
 import { mkdtemp, rm, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { EventEmitter } from 'node:events'
+import { DatabaseSync } from 'node:sqlite'
+import { DuckDBInstance } from '@duckdb/node-api'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ChannelType, PermissionFlagsBits, type Client } from 'discord.js'
-import { DiscordArchiveService } from '../discord-archive.js'
+import { ChannelType, Events, PermissionFlagsBits, type Client } from 'discord.js'
+import {
+  closeDiscordArchive,
+  DiscordArchiveService,
+  setDiscordArchiveClient
+} from '../discord-archive.js'
 import { manageCommunitySettings } from '../community-settings.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
+import { clearRuntimeIssuesForTests } from '../runtime-health.js'
 
 const USER = '666666666666666666'
 const BOT = '999999999999999999'
@@ -64,6 +72,7 @@ async function collectOne() {
 beforeEach(async () => {
   isolateStoredValues(join(process.cwd(), '.tmp', 'discord-archive.test.sqlite'))
   clearStoredValues()
+  clearRuntimeIssuesForTests()
   directory = await mkdtemp(join(process.cwd(), '.tmp', 'discord-archive-'))
   vi.resetAllMocks()
   fetchChannel.mockResolvedValue(channel())
@@ -71,12 +80,17 @@ beforeEach(async () => {
   permissions.mockReturnValue({ has: () => true })
   service = new DiscordArchiveService(
     { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
-    directory
+    directory,
+    false
   )
 })
 afterEach(async () => {
+  await closeDiscordArchive()
+  await service.close()
+  vi.restoreAllMocks()
   await rm(directory, { force: true, recursive: true })
   clearStoredValues()
+  clearRuntimeIssuesForTests()
 })
 
 describe('Discord DuckDB archive', () => {
@@ -89,9 +103,11 @@ describe('Discord DuckDB archive', () => {
       complete: false,
       resumable: true
     })
+    await service.close()
     service = new DiscordArchiveService(
       { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
-      directory
+      directory,
+      false
     )
     get.mockResolvedValueOnce([message('1000000000000000098')]).mockResolvedValueOnce([])
     expect(await call({ action: 'collect' })).toMatchObject({
@@ -108,7 +124,7 @@ describe('Discord DuckDB archive', () => {
     const raw = (await call({
       action: 'query',
       sql: `SELECT raw_json FROM messages WHERE message_id='1000000000000000100'`
-    })) as { rows: { raw_json: string }[] }
+    })) as unknown as { rows: { raw_json: string }[] }
     expect(JSON.parse(raw.rows[0]!.raw_json)).toEqual(message())
     const json = await call({
       action: 'query',
@@ -189,7 +205,10 @@ describe('Discord DuckDB archive', () => {
       message_count: 1,
       issue: expect.stringContaining('non-advancing')
     })
-    const raw = (await call({ action: 'query', sql: 'SELECT raw_json FROM messages' })) as {
+    const raw = (await call({
+      action: 'query',
+      sql: 'SELECT raw_json FROM messages'
+    })) as unknown as {
       rows: { raw_json: string }[]
     }
     expect(raw.rows[0]!.raw_json).not.toContain('sensitive')
@@ -324,5 +343,415 @@ describe('Discord DuckDB archive', () => {
     get.mockResolvedValueOnce([])
     release()
     await first
+  })
+})
+
+function packet(type: string, data: Record<string, unknown>, sequence = 1) {
+  return { t: type, s: sequence, d: { channel_id: CHANNEL, guild_id: GUILD, ...data } }
+}
+function queueContents() {
+  const db = new DatabaseSync(join(directory, 'realtime-outbox.sqlite'), { readOnly: true })
+  try {
+    return db.prepare('SELECT id, payload FROM events').all() as { id: string; payload: string }[]
+  } finally {
+    db.close()
+  }
+}
+function queueKeys() {
+  return queueContents().map((item) => item.id)
+}
+async function rows(sql: string) {
+  const result = await call({ action: 'query', sql })
+  if (!('rows' in result) || !Array.isArray(result.rows)) throw new Error('Expected query rows')
+  return result.rows as Record<string, unknown>[]
+}
+
+describe('realtime Discord archives', () => {
+  it('migrates existing snapshot databases without deleting history or resetting pagination', async () => {
+    const db = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
+    const connection = await db.connect()
+    try {
+      await connection.run(`CREATE TABLE messages (
+        message_id VARCHAR PRIMARY KEY, guild_id VARCHAR NOT NULL, channel_id VARCHAR NOT NULL,
+        author_id VARCHAR NOT NULL, author_username VARCHAR, author_global_name VARCHAR,
+        author_bot BOOLEAN, content VARCHAR, message_type INTEGER, created_at TIMESTAMPTZ,
+        edited_at TIMESTAMPTZ, pinned BOOLEAN, tts BOOLEAN, flags UBIGINT, reply_to_id VARCHAR,
+        attachments_count INTEGER, embeds_count INTEGER, raw_json JSON, collected_at TIMESTAMPTZ DEFAULT current_timestamp
+      )`)
+      await connection.run(
+        'INSERT INTO messages(message_id,guild_id,channel_id,author_id,content,created_at,message_type,raw_json) VALUES (?,?,?,?,?,?::TIMESTAMPTZ,0,?::JSON)',
+        [
+          '1000000000000000100',
+          GUILD,
+          CHANNEL,
+          USER,
+          'Hello world',
+          '2026-10-30T01:00:00Z',
+          JSON.stringify(message())
+        ]
+      )
+      await connection.run(
+        `CREATE TABLE archive_state(id INTEGER PRIMARY KEY, guild_id VARCHAR, channel_id VARCHAR, channel_name VARCHAR, cursor VARCHAR, complete BOOLEAN, started_at TIMESTAMPTZ DEFAULT current_timestamp, updated_at TIMESTAMPTZ DEFAULT current_timestamp)`
+      )
+      await connection.run(
+        'INSERT INTO archive_state(id,guild_id,channel_id,channel_name,cursor,complete) VALUES (1,?,?,?,?,true)',
+        [GUILD, CHANNEL, 'general', '1000000000000000100']
+      )
+    } finally {
+      connection.closeSync()
+      db.closeSync()
+    }
+    expect(await call({ action: 'watch' })).toMatchObject({
+      complete: true,
+      cursor: '1000000000000000100',
+      message_count: 1,
+      realtime_enabled: true
+    })
+    service.handleGatewayPacket(packet('MESSAGE_DELETE', { id: '1000000000000000100' }))
+    await service.flushRealtime()
+    expect(await rows('SELECT content, deleted_at IS NOT NULL AS deleted FROM messages')).toEqual([
+      { content: 'Hello world', deleted: true }
+    ])
+  })
+
+  it('automatically enrolls collected channels and ingests all authors without duplicate event writes', async () => {
+    await collectOne()
+    expect(await call({ action: 'status' })).toMatchObject({ realtime_enabled: true })
+    const event = packet(
+      'MESSAGE_CREATE',
+      message('1000000000000000101', {
+        author: { id: BOT, username: 'bot', bot: true },
+        metadata: { token: 'do-not-store' }
+      })
+    )
+    expect(service.handleGatewayPacket(event)).toBe(true)
+    expect(service.handleGatewayPacket(event)).toBe(true)
+    expect(queueKeys()).toHaveLength(1)
+    expect(queueContents()[0]!.payload).not.toContain('do-not-store')
+    expect(await service.flushRealtime()).toBe(1)
+    expect(
+      (
+        await rows(
+          "SELECT author_bot, content, last_gateway_at IS NOT NULL AS live FROM messages WHERE message_id='1000000000000000101'"
+        )
+      )[0]
+    ).toEqual({ author_bot: true, content: 'Hello world', live: true })
+    service.handleGatewayPacket(event)
+    await service.flushRealtime()
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM message_events')).toEqual([
+      { total: 1 }
+    ])
+  })
+
+  it('merges partial edits without losing existing metadata and prevents stale backfill from reverting edits', async () => {
+    await collectOne()
+    service.handleGatewayPacket(
+      packet('MESSAGE_UPDATE', {
+        id: '1000000000000000100',
+        content: 'edited live',
+        edited_timestamp: '2026-10-30T02:00:00Z'
+      })
+    )
+    await service.flushRealtime()
+    const data = JSON.parse(String((await rows('SELECT raw_json FROM messages'))[0]!.raw_json))
+    expect(data).toMatchObject({
+      content: 'edited live',
+      author: { username: 'alice' },
+      unknown_future_field: { value: 'preserved' }
+    })
+    expect(data.attachments).toHaveLength(1)
+    get.mockResolvedValueOnce([message()]).mockResolvedValueOnce([])
+    await call({ action: 'collect', restart: true })
+    expect(await rows('SELECT content FROM messages')).toEqual([{ content: 'edited live' }])
+  })
+
+  it('hydrates uncached updates through the Discord API and still records unavailable-message events', async () => {
+    await call({ action: 'watch' })
+    get.mockResolvedValueOnce(message())
+    service.handleGatewayPacket(
+      packet('MESSAGE_UPDATE', {
+        id: '1000000000000000100',
+        content: 'changed',
+        edited_timestamp: '2026-10-30T02:00:00Z'
+      })
+    )
+    await service.flushRealtime()
+    expect(get).toHaveBeenCalledWith(
+      `/channels/${CHANNEL}/messages/1000000000000000100`,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(await rows('SELECT content, author_username FROM messages')).toEqual([
+      { content: 'changed', author_username: 'alice' }
+    ])
+    get.mockRejectedValueOnce(Object.assign(new Error('missing'), { code: 10008 }))
+    service.handleGatewayPacket(
+      packet('MESSAGE_UPDATE', { id: '1000000000000000101', content: 'unavailable' }, 2)
+    )
+    expect(await service.flushRealtime()).toBe(1)
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM message_events')).toEqual([
+      { total: 2 }
+    ])
+  })
+
+  it('records deletions and bulk tombstones, retains previous content, and never resurrects deleted rows during backfill', async () => {
+    await collectOne()
+    service.handleGatewayPacket(packet('MESSAGE_DELETE', { id: '1000000000000000100' }))
+    service.handleGatewayPacket(
+      packet('MESSAGE_DELETE_BULK', { ids: ['1000000000000000099', '1000000000000000098'] }, 2)
+    )
+    await service.flushRealtime()
+    expect(await rows('SELECT content, deleted_at IS NOT NULL AS deleted FROM messages')).toEqual([
+      { content: 'Hello world', deleted: true }
+    ])
+    get.mockResolvedValueOnce([message('1000000000000000099')]).mockResolvedValueOnce([])
+    await call({ action: 'collect', restart: true })
+    expect(
+      await rows('SELECT count(*)::INTEGER AS total FROM messages WHERE deleted_at IS NULL')
+    ).toEqual([{ total: 0 }])
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM message_tombstones')).toEqual([
+      { total: 3 }
+    ])
+  })
+
+  it('retains raw reaction and poll events and supports stopping tracking without deleting the archive', async () => {
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(
+      packet('MESSAGE_REACTION_ADD', {
+        message_id: '1000000000000000100',
+        user_id: USER,
+        emoji: { name: '👍' }
+      })
+    )
+    service.handleGatewayPacket(
+      packet(
+        'MESSAGE_POLL_VOTE_ADD',
+        { message_id: '1000000000000000100', user_id: USER, answer_id: 2 },
+        2
+      )
+    )
+    expect(await call({ action: 'unwatch' })).toMatchObject({ realtime_enabled: false })
+    expect(service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))).toBe(false)
+    const events = await rows(
+      'SELECT event_type, raw_json FROM message_events ORDER BY gateway_sequence'
+    )
+    expect(events.map((event) => event.event_type)).toEqual([
+      'MESSAGE_REACTION_ADD',
+      'MESSAGE_POLL_VOTE_ADD'
+    ])
+    expect(JSON.parse(String(events[0]!.raw_json))).toMatchObject({
+      emoji: { name: '👍' },
+      user_id: USER
+    })
+  })
+
+  it('restores tracking and pending events after restart, with credentials redacted before durable persistence', async () => {
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    await service.close()
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    expect(await service.flushRealtime()).toBe(1)
+    expect(await call({ action: 'status' })).toMatchObject({
+      realtime_enabled: true,
+      message_count: 1,
+      queued_events: 0
+    })
+    expect(queueKeys()).toHaveLength(0)
+  })
+
+  it('discards corrupt persisted events with a visible channel gap warning', async () => {
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    await service.close()
+    const db = new DatabaseSync(join(directory, 'realtime-outbox.sqlite'))
+    try {
+      db.prepare('UPDATE events SET payload=?').run('{broken')
+    } finally {
+      db.close()
+    }
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    expect(await call({ action: 'status' })).toMatchObject({
+      queued_events: 0,
+      needs_history_refresh: true,
+      realtime_issue: expect.stringContaining('Corrupt')
+    })
+  })
+
+  it('flushes gateway events automatically without another /a command', async () => {
+    await service.close()
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory
+    )
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    expect(queueKeys()).toHaveLength(1)
+    await vi.waitFor(() => expect(queueKeys()).toHaveLength(0), { timeout: 4000 })
+    expect(await rows('SELECT content FROM messages')).toEqual([{ content: 'Hello world' }])
+  })
+
+  it('ignores untracked channels, DMs, malformed payloads and disabled collection', async () => {
+    await call({ action: 'watch' })
+    expect(
+      service.handleGatewayPacket(packet('MESSAGE_CREATE', { ...message(), channel_id: OTHER }))
+    ).toBe(false)
+    expect(
+      service.handleGatewayPacket({ t: 'MESSAGE_CREATE', d: { ...message(), channel_id: OTHER } })
+    ).toBe(false)
+    expect(
+      service.handleGatewayPacket(packet('MESSAGE_CREATE', { ...message(), id: 'invalid' }))
+    ).toBe(false)
+    expect(await call({ action: 'status' })).toMatchObject({
+      needs_history_refresh: true,
+      queued_events: 0
+    })
+    manageCommunitySettings({ action: 'update', settings: { discordArchive: { enabled: false } } })
+    expect(service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))).toBe(false)
+    expect(await service.flushRealtime()).toBe(0)
+    expect(await call({ action: 'unwatch' })).toMatchObject({ realtime_enabled: false })
+  })
+
+  it('pauses on permission failure, retains the durable event, and resumes after authorized re-enrollment', async () => {
+    await call({ action: 'watch' })
+    permissions.mockReturnValue({ has: () => false })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    expect(await service.flushRealtime()).toBe(0)
+    expect(queueKeys()).toHaveLength(1)
+    permissions.mockReturnValue({ has: () => true })
+    await call({ action: 'watch' })
+    expect(await service.flushRealtime()).toBe(1)
+    expect(await call({ action: 'status' })).toMatchObject({
+      message_count: 1,
+      realtime_issue: null
+    })
+  })
+
+  it('invalidates cached permissions on gateway changes and stops capture for removed administrators', async () => {
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    await service.flushRealtime()
+    permissions.mockReturnValue({ has: () => false })
+    service.handleGatewayPacket({ t: 'CHANNEL_UPDATE', d: { id: CHANNEL, guild_id: GUILD } })
+    service.handleGatewayPacket(
+      packet('MESSAGE_UPDATE', { id: '1000000000000000100', content: 'unauthorized change' }, 2)
+    )
+    expect(await service.flushRealtime()).toBe(0)
+    permissions.mockReturnValue({ has: () => true })
+    const previous = process.env.ADMIN_USER_IDS
+    process.env.ADMIN_USER_IDS = BOT
+    try {
+      expect(
+        service.handleGatewayPacket(packet('MESSAGE_CREATE', message('1000000000000000101'), 3))
+      ).toBe(false)
+    } finally {
+      process.env.ADMIN_USER_IDS = previous
+    }
+    await call({ action: 'unwatch' })
+    expect(await call({ action: 'status' })).toMatchObject({
+      needs_history_refresh: true,
+      realtime_enabled: false
+    })
+  })
+
+  it('pauses live writes at the storage quota without dropping pending data', async () => {
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { maxStorageMiB: 64 } }
+    })
+    await call({ action: 'watch' })
+    const filler = join(directory, `${OTHER}.duckdb`)
+    await writeFile(filler, '')
+    await truncate(filler, 64 * 1024 * 1024)
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    expect(await service.flushRealtime()).toBe(0)
+    expect(await call({ action: 'status' })).toMatchObject({
+      queued_events: 1,
+      realtime_issue: expect.stringContaining('paused')
+    })
+    await rm(filler)
+    await call({ action: 'watch' })
+    expect(await service.flushRealtime()).toBe(1)
+  })
+
+  it('bounds the outbox and reports a gap instead of silently claiming complete capture', async () => {
+    await call({ action: 'watch' })
+    for (let sequence = 0; sequence < 1000; sequence++) {
+      expect(
+        service.handleGatewayPacket(
+          packet(
+            'MESSAGE_REACTION_ADD',
+            { message_id: '1000000000000000100', user_id: USER, emoji: { name: '👍' } },
+            sequence
+          )
+        )
+      ).toBe(true)
+    }
+    expect(
+      service.handleGatewayPacket(
+        packet(
+          'MESSAGE_REACTION_ADD',
+          { message_id: '1000000000000000100', user_id: USER, emoji: { name: '👍' } },
+          1001
+        )
+      )
+    ).toBe(false)
+    expect(queueKeys()).toHaveLength(1000)
+    expect(await call({ action: 'status' })).toMatchObject({ needs_history_refresh: true })
+    await call({ action: 'delete' })
+    expect(queueKeys()).toHaveLength(0)
+    expect(service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))).toBe(false)
+  })
+
+  it('expires old pending events and makes the gap visible', async () => {
+    await call({ action: 'watch' })
+    service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now + 8 * 24 * 60 * 60_000)
+    expect(await service.flushRealtime()).toBe(0)
+    expect(await call({ action: 'status' })).toMatchObject({
+      needs_history_refresh: true,
+      queued_events: 0,
+      message_count: 0
+    })
+  })
+
+  it('buffers during backfill and applies live changes without racing the history writer', async () => {
+    await call({ action: 'watch' })
+    let release!: (value: unknown) => void
+    get
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve
+        })
+      )
+      .mockResolvedValueOnce([])
+    const collecting = call({ action: 'collect' })
+    await vi.waitFor(() => expect(get).toHaveBeenCalled())
+    service.handleGatewayPacket(
+      packet('MESSAGE_CREATE', message('1000000000000000100', { content: 'live version' }))
+    )
+    expect(await service.flushRealtime()).toBe(0)
+    release([message()])
+    expect(await collecting).toMatchObject({ complete: true })
+    expect(await rows('SELECT content FROM messages')).toEqual([{ content: 'live version' }])
+  })
+
+  it('routes the production raw gateway listener and detaches cleanly on shutdown', async () => {
+    await call({ action: 'watch' })
+    const emitter = Object.assign(new EventEmitter(), { isReady: () => false })
+    setDiscordArchiveClient(emitter as unknown as Client, service)
+    emitter.emit(Events.ClientReady)
+    emitter.emit(Events.Raw, packet('MESSAGE_CREATE', message()))
+    expect(await service.flushRealtime()).toBe(1)
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM messages')).toEqual([{ total: 1 }])
+    await closeDiscordArchive()
+    expect(emitter.listenerCount(Events.Raw)).toBe(0)
   })
 })

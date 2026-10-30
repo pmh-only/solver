@@ -16,18 +16,30 @@ Use the existing `/a` command; no Discord command deployment or extra environmen
 
 ## Collection
 
-The `discord_message_archive` agent tool supports `collect`, `status`, `query`, and explicit `delete` actions. It is available only to configured Discord administrators in private Discord sessions. Both the user and bot must currently be able to view the requested channel and read its history; private-thread membership is also checked.
+The `discord_message_archive` agent tool supports `collect`, `watch`, `unwatch`, `status`, `query`, and explicit `delete` actions. It is available only to configured Discord administrators in private Discord sessions. Both the user and bot must currently be able to view the requested channel and read its history; private-thread membership is also checked.
 
 DuckDB **2.0.0-r.1** is pinned. Each channel has its own persistent database beside the existing KV store, under `discord-archive/<channel_id>.duckdb`.
 
 Collection paginates in batches of 100. Each tool call processes up to 20 pages or 60 seconds. A transaction commits message upserts and the pagination cursor together. Repeat `collect` with the same channel ID to resume; only `complete: true` means the oldest accessible message has been reached. `restart: true` starts a refresh from newest, preserving previous rows and updating retrieved messages.
 
+## Realtime tracking
+
+`collect` automatically enables realtime tracking for that channel. Alternatively ask `/a` to start realtime collection: `watch` starts tracking immediately without fetching old messages. `unwatch` stops new capture but retains the archive and finishes writing already queued events. `delete` stops tracking, discards that channel's pending events and deletes its database.
+
+The bot listens to raw gateway events, including messages from bots and webhooks. Creates and partial edits update `messages`; older backfill cannot overwrite a newer gateway edit. Message deletions and bulk deletions set `messages.deleted_at` and populate `message_tombstones`, preserving previously collected content. A deletion observed before backfill cannot resurrect the message as active later. `last_gateway_at` identifies rows observed live. For active messages query `WHERE deleted_at IS NULL`.
+
+`message_events` retains observed creates, edits, deletions, reaction changes and poll votes as raw JSON, with their event type, sequence and received time. Reaction and poll events are queryable there; `messages.raw_json` reaction aggregates remain snapshots unless a full message update refreshes them. Unknown partial edits are hydrated through Discord when available; edits of already unavailable messages retain the raw event without inventing missing content.
+
+Tracking settings and the pending outbox survive process restarts. The SQLite WAL outbox is temporary; final message data and event logs are stored in DuckDB. The writer batches events on a roughly 250 ms cadence, serialized with history collection and SQL queries. Events arriving during backfill are applied between history pages. Channel authorization is rechecked for live batches with a maximum 30-second permission cache, invalidated by relevant gateway permission changes. Queries always recheck requester permissions directly.
+
+The outbox is bounded to 1000 events / 16 MiB of payload with seven-day retention. SQLite WAL uses NORMAL synchronization: it survives normal process restarts, but sudden OS/power failures can lose recent uncheckpointed events. Disk limits or permission failures pause writes and retain pending events. `status` exposes `queued_events`, `realtime_issue`, `last_gateway_event_at` and `needs_history_refresh`; overflow or expiry is reported as a capture gap, not silently ignored. Gap warnings remain visible because missing edits/deletions cannot be reconstructed reliably. Capture is disabled when `discordArchive.enabled` is false.
+
 `messages` contains searchable author, content, timestamp, type, flags, pin, reference and attachment/embed-count columns. `raw_json` preserves every field returned by Discord's message endpoint, including nested metadata and unknown future fields, except credential/token fields. Use JSON extraction for attachments, embeds, reactions, mentions, components, polls, forwarded snapshots and references. `archive_state` exposes progress.
 
-This is an API-visible snapshot, not a live listener. It cannot recover previously deleted messages or earlier edits. Later deletions do not purge previously collected snapshots. Attachment **metadata** is stored, not file bytes; reaction counts and poll metadata are stored, not exhaustive reactor/voter lists. Threads must be collected separately by their channel IDs. Missing Message Content intent or Discord permissions can limit returned fields.
+Realtime tracking can only record gateway events delivered while the bot is connected. Historical collection cannot recover earlier deleted messages or earlier edits; refresh history after downtime to recover available messages. Attachment **metadata** is stored, not file bytes. Existing reaction counts and poll metadata are snapshots; gateway events record individual changes observed after tracking starts, not exhaustive past reactor/voter lists. Threads must be tracked separately by their channel IDs. Missing Message Content intent or Discord permissions can limit returned fields.
 
 ## Queries and controls
 
 Queries accept one read-only `SELECT`/`WITH` statement, with filesystem/network access and extension loading disabled. Query time is limited to 10 seconds, memory to 256 MB, and output to 200 rows, 4000 characters per cell and 48 KiB. A `truncated` result requires narrowing the SQL; stored data is not truncated. Narrow queries to selected columns, or use `substr` to retrieve portions of large JSON fields.
 
-Configure `discordArchive.enabled`, `maxStorageMiB` (64–20480, default 1024) and `maxChannels` (1–500, default 100) through `/a` using `manage_community_settings`. When a quota is reached, free space with an explicit archive deletion or increase the configured limit. Only one archive operation runs at a time. No real collection runs until requested through `/a`.
+Configure `discordArchive.enabled`, `maxStorageMiB` (64–20480, default 1024) and `maxChannels` (1–500, default 100) through `/a` using `manage_community_settings`. When a quota is reached, free space with an explicit archive deletion or increase the configured limit. Only one archive writer/query runs at a time. Tracking starts only for channels enrolled through `/a`, and then continues automatically without repeated commands.

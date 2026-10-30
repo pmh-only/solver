@@ -1,14 +1,28 @@
 import { DuckDBInstance, StatementType, type DuckDBConnection } from '@duckdb/node-api'
-import { ChannelType, PermissionFlagsBits, Routes, type Client, type APIMessage } from 'discord.js'
+import {
+  ChannelType,
+  Events,
+  PermissionFlagsBits,
+  Routes,
+  type Client,
+  type APIMessage
+} from 'discord.js'
 import { chmod, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { isAdminUser } from './authorization.js'
 import { loadCommunitySettings } from './community-settings.js'
 import { getDefaultKvStorePath } from './helpers/kv-store-path.js'
+import {
+  archiveJson,
+  DiscordArchiveLiveQueue,
+  type ArchiveWatch,
+  type ArchiveGatewayEvent
+} from './discord-archive-live.js'
+import { reportRuntimeIssue } from './runtime-health.js'
 
 export const discordArchiveToolSchema = z.object({
-  action: z.enum(['collect', 'status', 'query', 'delete']),
+  action: z.enum(['collect', 'watch', 'unwatch', 'status', 'query', 'delete']),
   channelId: z.string().regex(/^\d{17,20}$/),
   sql: z.string().min(1).max(10000).optional(),
   maxPages: z.number().int().min(1).max(20).default(20),
@@ -31,23 +45,63 @@ const CREATE_MESSAGES = `CREATE TABLE IF NOT EXISTS messages (
   author_bot BOOLEAN, content VARCHAR, message_type INTEGER,
   created_at TIMESTAMPTZ, edited_at TIMESTAMPTZ, pinned BOOLEAN, tts BOOLEAN,
   flags UBIGINT, reply_to_id VARCHAR, attachments_count INTEGER, embeds_count INTEGER,
-  raw_json JSON, collected_at TIMESTAMPTZ DEFAULT current_timestamp
+  raw_json JSON, collected_at TIMESTAMPTZ DEFAULT current_timestamp,
+  deleted_at TIMESTAMPTZ, last_gateway_at TIMESTAMPTZ
 )`
-const UPSERT_MESSAGE = `INSERT OR REPLACE INTO messages VALUES (
+const MESSAGE_COLUMNS = [
+  'message_id',
+  'guild_id',
+  'channel_id',
+  'author_id',
+  'author_username',
+  'author_global_name',
+  'author_bot',
+  'content',
+  'message_type',
+  'created_at',
+  'edited_at',
+  'pinned',
+  'tts',
+  'flags',
+  'reply_to_id',
+  'attachments_count',
+  'embeds_count',
+  'raw_json'
+]
+const UPSERT_MESSAGE = `INSERT INTO messages (${MESSAGE_COLUMNS.join(',')}, collected_at) VALUES (
   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::TIMESTAMPTZ, ?::TIMESTAMPTZ, ?, ?, ?, ?, ?, ?, ?::JSON, current_timestamp
-)`
+) ON CONFLICT(message_id) DO UPDATE SET ${MESSAGE_COLUMNS.slice(1)
+  .map((name) => `${name}=excluded.${name}`)
+  .join(',')}, collected_at=now()
+WHERE ?::BOOLEAN OR messages.last_gateway_at IS NULL OR (excluded.edited_at IS NOT NULL AND (messages.edited_at IS NULL OR excluded.edited_at > messages.edited_at))`
 const REQUIRED_PERMISSIONS = [
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.ReadMessageHistory
 ]
+const ARCHIVE_FILES = /^(?:\d{17,20}\.duckdb(?:\.wal)?|realtime-outbox\.sqlite(?:-wal|-shm)?)$/
 
-function archiveJson(message: APIMessage): string {
-  const json = JSON.stringify(message, (key, value: unknown) =>
-    /^(?:token|access_token|authorization|client_secret)$/i.test(key) ? undefined : value
-  )
-  if (Buffer.byteLength(json) > 1024 * 1024)
-    throw new Error('Message metadata exceeds the 1 MiB record limit')
-  return json
+function messageValues(message: APIMessage, guildId: string, json: string, gateway = false) {
+  return [
+    message.id,
+    guildId,
+    message.channel_id,
+    message.author.id,
+    message.author.username ?? '',
+    message.author.global_name ?? null,
+    message.author.bot ?? false,
+    message.content ?? '',
+    message.type ?? 0,
+    message.timestamp,
+    message.edited_timestamp ?? null,
+    message.pinned ?? false,
+    message.tts ?? false,
+    message.flags ?? 0,
+    message.message_reference?.message_id ?? null,
+    message.attachments?.length ?? 0,
+    message.embeds?.length ?? 0,
+    json,
+    gateway
+  ]
 }
 
 async function size(path: string) {
@@ -61,18 +115,288 @@ async function size(path: string) {
 
 export class DiscordArchiveService {
   private busy = false
+  private readonly live: DiscordArchiveLiveQueue
+  private readonly permissionCache = new Map<string, number>()
   constructor(
     private readonly client: Client,
-    private readonly directory = join(dirname(getDefaultKvStorePath()), 'discord-archive')
-  ) {}
+    private readonly directory = join(dirname(getDefaultKvStorePath()), 'discord-archive'),
+    automaticRealtime = true
+  ) {
+    this.live = new DiscordArchiveLiveQueue(
+      (watch, events) => this.flushLiveEvents(watch, events),
+      join(directory, 'realtime-outbox.sqlite'),
+      automaticRealtime
+    )
+  }
+
+  handleGatewayPacket(packet: unknown) {
+    try {
+      if (
+        packet &&
+        typeof packet === 'object' &&
+        't' in packet &&
+        typeof packet.t === 'string' &&
+        /^(?:GUILD_(?:MEMBER|ROLE)|CHANNEL_|THREAD_)/.test(packet.t)
+      )
+        this.permissionCache.clear()
+      return this.live.ingest(packet)
+    } catch {
+      reportRuntimeIssue(
+        'discord_archive_realtime',
+        new Error('Realtime archive ingestion failed; check archive status through /a')
+      )
+      return false
+    }
+  }
+
+  startRealtime() {
+    this.live.start(true)
+  }
+  flushRealtime() {
+    return this.live.flush()
+  }
+  close() {
+    return this.live.close()
+  }
+
+  private async authorizeChannel(channelId: string, userId: string) {
+    if (!isAdminUser(userId)) throw new Error('Archive owner is no longer an administrator')
+    const channel = await this.client.channels.fetch(channelId)
+    if (!channel || !channel.isTextBased() || !('guild' in channel) || !('messages' in channel))
+      throw new Error('Select a guild text channel or thread, not a DM, forum parent or category')
+    if (!this.client.user) throw new Error('Discord client is not ready')
+    const [requester, bot] = await Promise.all([
+      channel.guild.members.fetch(userId),
+      channel.guild.members.fetch(this.client.user.id)
+    ])
+    if (
+      !channel.permissionsFor(requester)?.has(REQUIRED_PERMISSIONS) ||
+      !channel.permissionsFor(bot)?.has(REQUIRED_PERMISSIONS)
+    )
+      throw new Error('Both requester and bot need View Channel and Read Message History')
+    if (channel.isThread() && channel.type === ChannelType.PrivateThread) {
+      for (const member of [requester, bot])
+        if (!channel.permissionsFor(member)?.has(PermissionFlagsBits.ManageThreads)) {
+          try {
+            await channel.members.fetch(member.id)
+          } catch {
+            throw new Error(
+              'Requester and bot must be private-thread members or have Manage Threads'
+            )
+          }
+        }
+    }
+    return channel
+  }
+
+  private async ensureLiveTables(connection: DuckDBConnection) {
+    await connection.run(CREATE_MESSAGES)
+    await connection.run('ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ')
+    await connection.run(
+      'ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_gateway_at TIMESTAMPTZ'
+    )
+    await connection.run(`CREATE TABLE IF NOT EXISTS message_events (
+      event_id VARCHAR PRIMARY KEY, message_id VARCHAR, event_type VARCHAR,
+      gateway_sequence BIGINT, received_at TIMESTAMPTZ, raw_json JSON
+    )`)
+    await connection.run(
+      'CREATE TABLE IF NOT EXISTS message_tombstones(message_id VARCHAR PRIMARY KEY, deleted_at TIMESTAMPTZ)'
+    )
+  }
+
+  private async applyTombstones(connection: DuckDBConnection, ids: string[]) {
+    if (!ids.length) return
+    await connection.run(
+      "UPDATE messages SET deleted_at=t.deleted_at FROM message_tombstones t WHERE messages.message_id=t.message_id AND messages.deleted_at IS NULL AND messages.message_id IN (SELECT unnest(string_split(?, ',')))",
+      [ids.join(',')]
+    )
+  }
+
+  private async flushLiveEvents(watch: ArchiveWatch, events: ArchiveGatewayEvent[]) {
+    if (this.busy) return false
+    this.busy = true
+    let instance: DuckDBInstance | undefined
+    let connection: DuckDBConnection | undefined
+    try {
+      if (!isAdminUser(watch.userId)) throw new Error('Archive owner is no longer an administrator')
+      const key = `${watch.channelId}:${watch.userId}`
+      if ((this.permissionCache.get(key) ?? 0) <= Date.now()) {
+        const channel = await this.authorizeChannel(watch.channelId, watch.userId)
+        if (channel.guild.id !== watch.guildId) throw new Error('Archive guild changed')
+        this.permissionCache.set(key, Date.now() + 30_000)
+      }
+      const path = join(this.directory, `${watch.channelId}.duckdb`)
+      if (!(await size(path))) throw new Error('Archive database is missing')
+      const settings = loadCommunitySettings().discordArchive
+      const files = (await readdir(this.directory)).filter((name) => ARCHIVE_FILES.test(name))
+      const used = (
+        await Promise.all(files.map((name) => size(join(this.directory, name))))
+      ).reduce((a, b) => a + b, 0)
+      if (
+        !settings.enabled ||
+        used +
+          events.reduce((sum, event) => sum + Buffer.byteLength(JSON.stringify(event)) * 2, 0) >
+          settings.maxStorageMiB * 1024 * 1024
+      )
+        throw new Error('Archive storage limit reached or collection disabled')
+      instance = await DuckDBInstance.create(path, { ...DB_OPTIONS, access_mode: 'READ_WRITE' })
+      connection = await instance.connect()
+      await connection.run('SET lock_configuration = true')
+      await this.ensureLiveTables(connection)
+      const state = await this.status(connection)
+      if (state.guild_id !== watch.guildId || state.channel_id !== watch.channelId)
+        throw new Error('Archive channel identity mismatch')
+      await this.applyLiveBatch(connection, watch, events)
+      return true
+    } finally {
+      connection?.closeSync()
+      instance?.closeSync()
+      this.busy = false
+    }
+  }
+
+  private async applyLiveBatch(
+    connection: DuckDBConnection,
+    watch: ArchiveWatch,
+    events: ArchiveGatewayEvent[]
+  ) {
+    if (!loadCommunitySettings().discordArchive.enabled || !isAdminUser(watch.userId))
+      throw new Error('Realtime collection is disabled')
+    const signal = AbortSignal.timeout(20_000)
+    await connection.run('BEGIN TRANSACTION')
+    try {
+      const affected = new Set<string>()
+      for (const event of events) {
+        signal.throwIfAborted()
+        if (event.channelId !== watch.channelId || event.guildId !== watch.guildId)
+          throw new Error('Invalid persisted event identity')
+        const existingEvent = await connection.runAndReadAll(
+          'SELECT event_id FROM message_events WHERE event_id=?',
+          [event.eventId]
+        )
+        let duplicate: boolean
+        try {
+          duplicate = existingEvent.currentRowCount > 0
+        } finally {
+          existingEvent.closeSync()
+        }
+        if (duplicate) continue
+        const timestamp = new Date(event.receivedAt).toISOString()
+        const id =
+          typeof event.data.id === 'string'
+            ? event.data.id
+            : typeof event.data.message_id === 'string'
+              ? event.data.message_id
+              : null
+        if (id) affected.add(id)
+        await connection.run(
+          'INSERT INTO message_events VALUES (?, ?, ?, ?, ?::TIMESTAMPTZ, ?::JSON)',
+          [event.eventId, id, event.type, event.sequence, timestamp, archiveJson(event.data)]
+        )
+        if (event.type === 'MESSAGE_DELETE' || event.type === 'MESSAGE_DELETE_BULK') {
+          const ids = event.type === 'MESSAGE_DELETE_BULK' ? event.data.ids : [event.data.id]
+          if (
+            !Array.isArray(ids) ||
+            ids.some((value) => typeof value !== 'string' || !/^\d{17,20}$/.test(value))
+          )
+            throw new Error('Invalid persisted delete event')
+          for (const messageId of ids) {
+            affected.add(String(messageId))
+            await connection.run(
+              'INSERT INTO message_tombstones VALUES (?, ?::TIMESTAMPTZ) ON CONFLICT(message_id) DO UPDATE SET deleted_at=least(message_tombstones.deleted_at,excluded.deleted_at)',
+              [String(messageId), timestamp]
+            )
+          }
+        } else if (event.type === 'MESSAGE_CREATE' || event.type === 'MESSAGE_UPDATE') {
+          if (!id || !/^\d{17,20}$/.test(id)) throw new Error('Invalid persisted message event')
+          const stored = await connection.runAndReadAll(
+            'SELECT raw_json FROM messages WHERE message_id=?',
+            [id]
+          )
+          let base: Record<string, unknown> = {}
+          try {
+            const raw = stored.getRowObjectsJson()[0]?.raw_json
+            if (typeof raw === 'string') {
+              const parsed: unknown = JSON.parse(raw)
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                base = parsed as Record<string, unknown>
+            }
+          } finally {
+            stored.closeSync()
+          }
+          if (!base.author && (!event.data.author || !event.data.timestamp)) {
+            try {
+              const fetched = await this.client.rest.get(
+                Routes.channelMessage(watch.channelId, id),
+                { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }
+              )
+              if (fetched && typeof fetched === 'object' && !Array.isArray(fetched))
+                base = fetched as Record<string, unknown>
+            } catch (error) {
+              if (
+                error &&
+                typeof error === 'object' &&
+                (('code' in error && error.code === 10008) ||
+                  ('status' in error && error.status === 404))
+              )
+                continue
+              throw error
+            }
+          }
+          const merged = {
+            ...base,
+            ...event.data,
+            id,
+            channel_id: watch.channelId,
+            guild_id: watch.guildId,
+            author: {
+              ...(base.author && typeof base.author === 'object' ? base.author : {}),
+              ...(event.data.author && typeof event.data.author === 'object'
+                ? event.data.author
+                : {})
+            },
+            ...(event.data.member && typeof event.data.member === 'object'
+              ? {
+                  member: {
+                    ...(base.member && typeof base.member === 'object' ? base.member : {}),
+                    ...event.data.member
+                  }
+                }
+              : {})
+          } as unknown as APIMessage
+          if (!merged.author.id || typeof merged.timestamp !== 'string')
+            throw new Error('Incomplete gateway message data')
+          const previousEdit =
+            typeof base.edited_timestamp === 'string' ? Date.parse(base.edited_timestamp) : 0
+          const incomingEdit = merged.edited_timestamp ? Date.parse(merged.edited_timestamp) : 0
+          if (incomingEdit >= previousEdit)
+            await connection.run(
+              UPSERT_MESSAGE,
+              messageValues(merged, watch.guildId, archiveJson(merged), true)
+            )
+          await connection.run(
+            'UPDATE messages SET last_gateway_at=?::TIMESTAMPTZ WHERE message_id=?',
+            [timestamp, id]
+          )
+        }
+      }
+      await this.applyTombstones(connection, [...affected])
+      await connection.run('COMMIT')
+    } catch (error) {
+      await connection.run('ROLLBACK')
+      throw error
+    }
+  }
 
   async run(rawInput: unknown, userId: string, signal = new AbortController().signal) {
     if (!isAdminUser(userId))
       throw new Error('Discord archive requires a configured Discord administrator')
     const input = discordArchiveToolSchema.parse(rawInput)
     const settings = loadCommunitySettings().discordArchive
-    if (!settings.enabled && input.action !== 'delete')
+    if (!settings.enabled && input.action !== 'delete' && input.action !== 'unwatch')
       throw new Error('Discord archive is disabled; enable discordArchive through /a')
+    signal.throwIfAborted()
+    await this.live.flush()
     signal.throwIfAborted()
     if (this.busy)
       throw new Error('Discord archive is busy; retry after the current operation finishes')
@@ -80,44 +404,21 @@ export class DiscordArchiveService {
     try {
       const path = join(this.directory, `${input.channelId}.duckdb`)
       if (input.action === 'delete') {
+        this.live.remove(input.channelId)
         await rm(path, { force: true })
         await rm(`${path}.wal`, { force: true })
         return { deleted: true, channelId: input.channelId }
       }
-      const channel = await this.client.channels.fetch(input.channelId)
-      if (!channel || !channel.isTextBased() || !('guild' in channel) || !('messages' in channel)) {
-        throw new Error('Select a guild text channel or thread, not a DM, forum parent or category')
+      if (input.action === 'unwatch') {
+        this.live.unwatch(input.channelId)
+        return { channelId: input.channelId, ...this.live.stats(input.channelId) }
       }
-      if (!this.client.user) throw new Error('Discord client is not ready')
-      const [requester, bot] = await Promise.all([
-        channel.guild.members.fetch(userId),
-        channel.guild.members.fetch(this.client.user.id)
-      ])
-      if (
-        !channel.permissionsFor(requester)?.has(REQUIRED_PERMISSIONS) ||
-        !channel.permissionsFor(bot)?.has(REQUIRED_PERMISSIONS)
-      ) {
-        throw new Error('Both requester and bot need View Channel and Read Message History')
-      }
-      if (channel.isThread() && channel.type === ChannelType.PrivateThread) {
-        for (const member of [requester, bot]) {
-          if (!channel.permissionsFor(member)?.has(PermissionFlagsBits.ManageThreads)) {
-            try {
-              await channel.members.fetch(member.id)
-            } catch {
-              throw new Error(
-                'Requester and bot must be private-thread members or have Manage Threads'
-              )
-            }
-          }
-        }
-      }
+      const channel = await this.authorizeChannel(input.channelId, userId)
+      const writing = input.action === 'collect' || input.action === 'watch'
       signal.throwIfAborted()
       await mkdir(this.directory, { recursive: true, mode: 0o700 })
       await chmod(this.directory, 0o700)
-      const files = (await readdir(this.directory)).filter((name) =>
-        /^\d{17,20}\.duckdb(?:\.wal)?$/.test(name)
-      )
+      const files = (await readdir(this.directory)).filter((name) => ARCHIVE_FILES.test(name))
       const storageBytes = async () =>
         (await Promise.all(files.map((name) => size(join(this.directory, name))))).reduce(
           (a, b) => a + b,
@@ -126,8 +427,7 @@ export class DiscordArchiveService {
         (files.includes(`${input.channelId}.duckdb`) ? 0 : await size(path)) +
         (files.includes(`${input.channelId}.duckdb.wal`) ? 0 : await size(`${path}.wal`))
       const existing = await size(path)
-      if (!existing && input.action !== 'collect')
-        throw new Error('No archive exists; collect this channel first')
+      if (!existing && !writing) throw new Error('No archive exists; collect this channel first')
       if (
         !existing &&
         files.filter((name) => name.endsWith('.duckdb')).length >= settings.maxChannels
@@ -135,24 +435,21 @@ export class DiscordArchiveService {
         throw new Error(
           'Archive channel limit reached; delete an archive or increase discordArchive.maxChannels through /a'
         )
-      if (
-        input.action === 'collect' &&
-        (await storageBytes()) >= settings.maxStorageMiB * 1024 * 1024
-      )
+      if (writing && (await storageBytes()) >= settings.maxStorageMiB * 1024 * 1024)
         throw new Error(
           'Archive storage limit reached; delete data or increase discordArchive.maxStorageMiB through /a'
         )
       const instance = await DuckDBInstance.create(path, {
         ...DB_OPTIONS,
-        access_mode: input.action === 'collect' ? 'READ_WRITE' : 'READ_ONLY'
+        access_mode: writing ? 'READ_WRITE' : 'READ_ONLY'
       })
       let connection: DuckDBConnection | undefined
       try {
         connection = await instance.connect()
         await connection.run('SET lock_configuration = true')
-        if (input.action === 'collect') {
+        if (writing) {
           await chmod(path, 0o600)
-          await connection.run(CREATE_MESSAGES)
+          await this.ensureLiveTables(connection)
           await connection.run(`CREATE TABLE IF NOT EXISTS archive_state (
             id INTEGER PRIMARY KEY CHECK (id = 1), guild_id VARCHAR, channel_id VARCHAR,
             channel_name VARCHAR, cursor VARCHAR, complete BOOLEAN,
@@ -166,21 +463,29 @@ export class DiscordArchiveService {
         const state = await this.status(connection)
         if (state.guild_id !== channel.guild.id || state.channel_id !== channel.id)
           throw new Error('Archive channel identity does not match Discord')
-        if (input.action === 'query') return await this.query(connection, input, signal)
-        if (input.action === 'status') return state
-        return await this.collect(
+        if (writing) this.live.watch(channel.id, channel.guild.id, userId)
+        if (input.action === 'query')
+          return {
+            ...(await this.query(connection, input, signal)),
+            ...this.live.stats(input.channelId)
+          }
+        if (input.action === 'status' || input.action === 'watch')
+          return { ...state, ...this.live.stats(input.channelId) }
+        const result = await this.collect(
           connection,
           input,
           signal,
           storageBytes,
           settings.maxStorageMiB * 1024 * 1024
         )
+        return { ...result, ...this.live.stats(input.channelId) }
       } finally {
         connection?.closeSync()
         instance.closeSync()
       }
     } finally {
       this.busy = false
+      this.live.start()
     }
   }
 
@@ -256,26 +561,7 @@ export class DiscordArchiveService {
           try {
             for (const { message, json } of records) {
               boundedSignal.throwIfAborted()
-              prepared.bind([
-                message.id,
-                String(state.guild_id),
-                message.channel_id,
-                message.author.id,
-                message.author.username ?? '',
-                message.author.global_name ?? null,
-                message.author.bot ?? false,
-                message.content ?? '',
-                message.type,
-                message.timestamp,
-                message.edited_timestamp ?? null,
-                message.pinned ?? false,
-                message.tts ?? false,
-                message.flags ?? 0,
-                message.message_reference?.message_id ?? null,
-                message.attachments?.length ?? 0,
-                message.embeds?.length ?? 0,
-                json
-              ])
+              prepared.bind(messageValues(message, String(state.guild_id), json))
               ;(await prepared.run()).closeSync()
             }
           } finally {
@@ -290,12 +576,20 @@ export class DiscordArchiveService {
             'UPDATE archive_state SET cursor=?, complete=?, updated_at=current_timestamp WHERE id=1',
             [cursor, messages.length === 0]
           )
+          await this.applyTombstones(
+            connection,
+            messages.map((message) => message.id)
+          )
           await connection.run('COMMIT')
         } catch (error) {
           await connection.run('ROLLBACK')
           throw error
         }
         pages++
+        await this.live.flush(input.channelId, async (watch, events) => {
+          await this.applyLiveBatch(connection, watch, events)
+          return true
+        })
         state = await this.status(connection)
       }
     } catch (error) {
@@ -310,7 +604,7 @@ export class DiscordArchiveService {
       pages_this_call: pages,
       resumable: !state.complete,
       ...(issue ? { issue } : {}),
-      note: 'API-visible snapshot only. No deleted messages, file downloads, exhaustive reaction-user lists or history of earlier edits. Threads are collected separately by channel ID. Use restart:true to refresh existing messages and include newer messages.'
+      note: 'Realtime tracking is enabled for this channel, including create/edit/delete and reaction/poll events. Previously unavailable deleted messages, offline edits/deletes and attachment bytes cannot be recovered. Threads are separate channels. Use restart:true to refresh history after downtime or a reported collection gap.'
     }
   }
 
@@ -389,8 +683,38 @@ export class DiscordArchiveService {
 }
 
 let service: DiscordArchiveService | undefined
-export function setDiscordArchiveClient(client: Client) {
-  service = new DiscordArchiveService(client)
+let detachGateway: (() => void) | undefined
+export function setDiscordArchiveClient(client: Client, archiveService?: DiscordArchiveService) {
+  detachGateway?.()
+  if (service && service !== archiveService)
+    void service
+      .close()
+      .catch(() =>
+        reportRuntimeIssue(
+          'discord_archive_realtime',
+          new Error('Previous archive worker did not close cleanly')
+        )
+      )
+  service = archiveService ?? new DiscordArchiveService(client)
+  const active = service
+  const raw = (packet: unknown) => {
+    active.handleGatewayPacket(packet)
+  }
+  const ready = () => active.startRealtime()
+  client.on(Events.Raw, raw)
+  client.once(Events.ClientReady, ready)
+  if (client.isReady()) ready()
+  detachGateway = () => {
+    client.off(Events.Raw, raw)
+    client.off(Events.ClientReady, ready)
+  }
+}
+export async function closeDiscordArchive() {
+  detachGateway?.()
+  detachGateway = undefined
+  const active = service
+  service = undefined
+  await active?.close()
 }
 export async function runDiscordArchiveTool(input: unknown, userId: string, signal: AbortSignal) {
   if (!isAdminUser(userId))

@@ -59,7 +59,7 @@ import {
 import { safeErrorMessage } from './safe-error.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 import { initializeBotReadyServices } from './bot-ready.js'
-import { setDiscordArchiveClient } from './discord-archive.js'
+import { closeDiscordArchive, setDiscordArchiveClient } from './discord-archive.js'
 
 restoreStoredEnvironment()
 
@@ -208,7 +208,7 @@ async function shutdown(signal: string) {
   shuttingDown = true
   console.log(`shutdown: ${signal}`)
   client.destroy()
-  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime()])
+  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime(), closeDiscordArchive()])
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -225,6 +225,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 try {
   await client.login(token)
 } catch (error) {
-  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime()])
+  await Promise.all([closeWebServer(webServer), closeAgentMcpRuntime(), closeDiscordArchive()])
   throw error
 }
