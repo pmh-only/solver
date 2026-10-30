@@ -16,7 +16,15 @@ export const personaSchema = z
       .trim()
       .min(1)
       .max(40)
-      .regex(/^[\p{L}\p{N}_-]+$/u),
+      // OpenAI's tool-schema regex validator rejects Unicode property escapes.
+      // Keep this check runtime-only instead of emitting an incompatible JSON Schema pattern.
+      .refine(
+        (name) => /^[\p{L}\p{N}_-]+$/u.test(name),
+        'Use only letters, numbers, underscores or hyphens'
+      )
+      .describe(
+        '1-40 Unicode letters or numbers, underscores or hyphens; no spaces or punctuation'
+      ),
     prompt: z.string().trim().min(1).max(4000)
   })
   .strict()

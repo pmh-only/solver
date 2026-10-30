@@ -1,10 +1,12 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import {
   COMMUNITY_SETTINGS_KEY,
   loadCommunitySettings,
   manageCommunitySettings,
-  manageCommunitySettingsSchema
+  manageCommunitySettingsSchema,
+  personaSchema
 } from '../community-settings.js'
 import {
   clearStoredValues,
@@ -24,6 +26,38 @@ beforeEach(() => {
 })
 
 describe('single global community configuration', () => {
+  it('exports an API-compatible tool schema without Unicode regex patterns', () => {
+    const schema = z.toJSONSchema(manageCommunitySettingsSchema)
+    expect(JSON.stringify(schema)).not.toContain('\\p{')
+    const name = z.toJSONSchema(personaSchema.shape.name)
+    expect(name).toMatchObject({ type: 'string', minLength: 1, maxLength: 40 })
+    expect(name.description).toContain('Unicode letters or numbers')
+    expect(name).not.toHaveProperty('pattern')
+  })
+
+  it.each(['한글_페르소나', 'technical-advisor', 'Ελληνικά', 'العربية', '𝔘ser', '123_test'])(
+    'keeps Unicode persona-name validation working for %s',
+    (name) => {
+      const result = manageCommunitySettings({
+        action: 'update',
+        settings: { personas: [{ name, prompt: 'Concise responses.' }] }
+      })
+      expect(result.personas[0]?.name).toBe(name)
+    }
+  )
+
+  it.each(['a b', 'a/b', '<script>', 'test.name', 'emoji😀', '', 'a'.repeat(41)])(
+    'still rejects invalid persona names at runtime: %s',
+    (name) => {
+      expect(() =>
+        manageCommunitySettings({
+          action: 'update',
+          settings: { personas: [{ name, prompt: 'Concise responses.' }] }
+        })
+      ).toThrow()
+      expect(loadCommunitySettings().personas).toEqual([])
+    }
+  )
   it('gets and updates without a guild ID and only writes one configuration key', () => {
     expect(manageCommunitySettingsSchema.shape).not.toHaveProperty('guildId')
     expect(manageCommunitySettings({ action: 'get' }).reactionForward).toBeNull()
