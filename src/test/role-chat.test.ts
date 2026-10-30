@@ -16,6 +16,7 @@ import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { discordClientOptions } from '../discord-client-options.js'
 import { commandJSON, dispatch, getCallback, makeSubcommands } from './e2e.js'
 import { subcommand as list } from '../commands/list.js'
+import { savePersona, deletePersona } from '../personas.js'
 
 const { createResponse, createClient } = vi.hoisted(() => ({
   createResponse: vi.fn(),
@@ -95,6 +96,56 @@ afterEach(() => {
 })
 
 describe('role mention chat', () => {
+  it('applies a selected public persona only to the current request and strips its selector', async () => {
+    configure()
+    savePersona({ name: '우주_탐험가', prompt: '별에 빗대어 말해.' })
+    const handler = createRoleChatHandler(generate)
+    await handler(message({ content: `<@&${ROLE}> <|우주_탐험가|> 안녕` }))
+    expect(generate).toHaveBeenLastCalledWith(
+      expect.stringContaining('"content":"안녕"'),
+      expect.objectContaining({ systemPrompt: expect.stringContaining('별에 빗대어 말해.') }),
+      expect.any(Function)
+    )
+    expect(generate.mock.calls[0]![0]).not.toContain('<|우주_탐험가|>')
+    await handler(message())
+    expect(generate.mock.calls[1]![1]).toEqual(configure().roleChat)
+  })
+  it('uses immediate persona edits and never generates for deleted or unknown personas', async () => {
+    configure()
+    savePersona({ name: 'cat', prompt: 'old' })
+    const handler = createRoleChatHandler(generate)
+    savePersona({ name: 'cat', prompt: 'new' })
+    await handler(message({ content: `<@&${ROLE}> <|cat|> hi` }))
+    expect(generate.mock.calls[0]![1]).toMatchObject({
+      systemPrompt: expect.stringContaining('new')
+    })
+    deletePersona({ name: 'cat' })
+    const unknown = message({ content: `<@&${ROLE}> <|cat|> hi` })
+    await handler(unknown)
+    expect(generate).toHaveBeenCalledTimes(1)
+    expect(unknown.reply).toHaveBeenCalledWith({
+      content: expect.stringContaining('/personas'),
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+  })
+  it('does not generate for a selector without a message, or trigger chat from a selector alone', async () => {
+    configure()
+    savePersona({ name: 'cat', prompt: 'meow' })
+    const handler = createRoleChatHandler(generate)
+    await handler(message({ content: `<@&${ROLE}> <|cat|>` }))
+    await handler(message({ content: '<|cat|> hi' }))
+    expect(generate).not.toHaveBeenCalled()
+    expect(fetchHistory).not.toHaveBeenCalled()
+  })
+  it('rejects malformed selectors without making a paid request', async () => {
+    configure()
+    const input = message({ content: `<@&${ROLE}> <|${'x'.repeat(41)}|> hi` })
+    await createRoleChatHandler(generate)(input)
+    expect(generate).not.toHaveBeenCalled()
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('/personas') })
+    )
+  })
   it('requests guild messages and message content gateway intents', () => {
     const intents = new IntentsBitField(discordClientOptions.intents)
     expect(intents.has(GatewayIntentBits.GuildMessages)).toBe(true)

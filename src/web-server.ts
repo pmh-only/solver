@@ -46,7 +46,16 @@ import {
   requireCsrf,
   saveOidcSettings
 } from './web-auth.js'
-import { WEB_CSS, WEB_HTML, WEB_JS, WEB_MARKDOWN_JS } from './web-ui.js'
+import {
+  WEB_CSS,
+  WEB_HTML,
+  WEB_JS,
+  WEB_MARKDOWN_JS,
+  PERSONAS_HTML,
+  PERSONAS_JS,
+  PERSONAS_CSS
+} from './web-ui.js'
+import { listPersonas, savePersona, deletePersona } from './personas.js'
 import { RequestTiming } from './request-timing.js'
 
 const DEFAULT_PORT = 3000
@@ -182,6 +191,39 @@ async function handleApiRequest(
   requestStartedAt: number
 ): Promise<boolean> {
   const method = request.method ?? 'GET'
+  if (url.pathname === '/api/personas') {
+    if (method === 'GET') {
+      sendJson(response, 200, { personas: listPersonas() })
+      return true
+    }
+    if (method !== 'PUT' && method !== 'DELETE') {
+      response.setHeader('Allow', 'GET, PUT, DELETE')
+      sendJson(response, 405, { error: 'Method not allowed' })
+      return true
+    }
+    // Public editing is intentional, but cross-site browser writes are not.
+    const origin = request.headers.origin
+    if (
+      request.headers['x-persona-editor'] !== '1' ||
+      request.headers['sec-fetch-site'] === 'cross-site' ||
+      (origin && new URL(origin).host !== request.headers.host)
+    ) {
+      sendJson(response, 403, { error: 'Use the same-origin persona editor' })
+      return true
+    }
+    if (
+      !consumeStoredRateLimit('web-rate:persona-writes', 100, 60_000) ||
+      !consumeStoredRateLimit(`web-rate:personas:${remoteId(request)}`, 20, 60_000)
+    ) {
+      sendJson(response, 429, { error: 'Too many persona edits; try again shortly' })
+      return true
+    }
+    const body = await readJson(request)
+    sendJson(response, 200, {
+      personas: method === 'PUT' ? savePersona(body) : deletePersona(body)
+    })
+    return true
+  }
   if (url.pathname === '/api/session' && method === 'GET') {
     const session = getWebSession(request)
     let settings = null
@@ -635,6 +677,16 @@ export async function handleWebRequest(
       return
     }
     const head = method === 'HEAD'
+    const personaAssets: Record<string, [string, string]> = {
+      '/personas': ['text/html; charset=utf-8', PERSONAS_HTML],
+      '/personas.js': ['text/javascript; charset=utf-8', PERSONAS_JS],
+      '/personas.css': ['text/css; charset=utf-8', PERSONAS_CSS]
+    }
+    const personaAsset = personaAssets[url.pathname]
+    if (personaAsset) {
+      send(response, 200, personaAsset[0]!, personaAsset[1]!, head)
+      return
+    }
     if (url.pathname === '/') {
       send(response, 200, 'text/html; charset=utf-8', WEB_HTML, head)
       return

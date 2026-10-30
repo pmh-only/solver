@@ -8,6 +8,26 @@ import {
 
 export const COMMUNITY_SETTINGS_KEY = 'community:settings'
 
+export const personaSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(40)
+      .regex(/^[\p{L}\p{N}_-]+$/u),
+    prompt: z.string().trim().min(1).max(4000)
+  })
+  .strict()
+
+const personasSchema = z
+  .array(personaSchema)
+  .max(100)
+  .refine(
+    (items) => new Set(items.map((item) => item.name)).size === items.length,
+    'Persona names must be unique'
+  )
+
 export const communityCommandNames = [
   'food',
   'pizza',
@@ -27,6 +47,7 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  personas: personasSchema,
   reactionForward: z
     .object({ channelId: z.string().regex(/^\d{17,20}$/) })
     .strict()
@@ -67,6 +88,7 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    personas: communitySettingsFields.personas.default([]),
     reactionForward: communitySettingsFields.reactionForward.default(null),
     messageCommands: communitySettingsFields.messageCommands.default({
       enabled: true,
