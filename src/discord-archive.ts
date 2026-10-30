@@ -30,6 +30,28 @@ export const discordArchiveToolSchema = z.object({
   rowLimit: z.number().int().min(1).max(200).default(100)
 })
 type ArchiveInput = z.infer<typeof discordArchiveToolSchema>
+export interface ArchiveSearchRequest {
+  guildId: string
+  channelId: string
+  userId: string
+  requestMessageId: string
+  keyword: string
+  scope: 'all' | 'content' | 'embeds'
+}
+export interface ArchiveSearchResult {
+  matches: { id: string; authorName: string; snippet: string; field: 'content' | 'embeds' }[]
+  more: boolean
+  historyComplete: boolean
+  pendingEvents: number
+}
+const searchSchema = z.object({
+  guildId: z.string().regex(/^\d{17,20}$/),
+  channelId: z.string().regex(/^\d{17,20}$/),
+  userId: z.string().regex(/^\d{17,20}$/),
+  requestMessageId: z.string().regex(/^\d{17,20}$/),
+  keyword: z.string().trim().min(1).max(200),
+  scope: z.enum(['all', 'content', 'embeds'])
+})
 const DB_OPTIONS = {
   threads: '2',
   memory_limit: '256MB',
@@ -113,6 +135,23 @@ async function size(path: string) {
   }
 }
 
+function findEmbedSearchText(value: unknown, keyword: string): string | null {
+  const pending = [{ value, depth: 0 }]
+  let visited = 0
+  while (pending.length && visited++ < 2048) {
+    const current = pending.pop()!
+    if (
+      typeof current.value === 'string' &&
+      current.value.toLowerCase().includes(keyword.toLowerCase())
+    )
+      return current.value
+    if (current.depth >= 12 || !current.value || typeof current.value !== 'object') continue
+    for (const child of Object.values(current.value).slice(0, 100))
+      pending.push({ value: child, depth: current.depth + 1 })
+  }
+  return null
+}
+
 export class DiscordArchiveService {
   private busy = false
   private readonly live: DiscordArchiveLiveQueue
@@ -159,8 +198,9 @@ export class DiscordArchiveService {
     return this.live.close()
   }
 
-  private async authorizeChannel(channelId: string, userId: string) {
-    if (!isAdminUser(userId)) throw new Error('Archive owner is no longer an administrator')
+  private async authorizeChannel(channelId: string, userId: string, requireAdministrator = true) {
+    if (requireAdministrator && !isAdminUser(userId))
+      throw new Error('Archive owner is no longer an administrator')
     const channel = await this.client.channels.fetch(channelId)
     if (!channel || !channel.isTextBased() || !('guild' in channel) || !('messages' in channel))
       throw new Error('Select a guild text channel or thread, not a DM, forum parent or category')
@@ -187,6 +227,127 @@ export class DiscordArchiveService {
         }
     }
     return channel
+  }
+
+  async search(raw: ArchiveSearchRequest): Promise<ArchiveSearchResult> {
+    const input = searchSchema.parse(raw)
+    const settings = loadCommunitySettings().discordArchive
+    if (!settings.enabled || !settings.searchRoleId)
+      throw new Error('Archive role search is disabled')
+    await this.live.flush()
+    if (this.busy) throw new Error('Discord archive is busy')
+    this.busy = true
+    const signal = AbortSignal.timeout(10_000)
+    let instance: DuckDBInstance | undefined
+    let connection: DuckDBConnection | undefined
+    let candidates: string[] = []
+    let complete = false
+    try {
+      const channel = await this.authorizeChannel(input.channelId, input.userId, false)
+      if (channel.guild.id !== input.guildId) throw new Error('Archive guild mismatch')
+      const path = join(this.directory, `${input.channelId}.duckdb`)
+      if (!(await size(path))) throw new Error('No archive exists; collect this channel first')
+      instance = await DuckDBInstance.create(path, { ...DB_OPTIONS, access_mode: 'READ_ONLY' })
+      connection = await instance.connect()
+      await connection.run('SET lock_configuration = true')
+      const state = await this.status(connection)
+      if (state.guild_id !== input.guildId || state.channel_id !== input.channelId)
+        throw new Error('Archive channel identity mismatch')
+      complete = Boolean(state.complete)
+      signal.throwIfAborted()
+      const interrupt = () => connection?.interrupt()
+      signal.addEventListener('abort', interrupt, { once: true })
+      try {
+        const reader = await connection.runAndReadAll(
+          `SELECT m.message_id FROM messages m
+          WHERE m.guild_id=? AND m.channel_id=? AND m.message_id<>? AND m.deleted_at IS NULL
+          AND strpos(m.content,?)=0 AND strpos(m.content,?)=0
+          AND NOT (m.author_id=? AND starts_with(m.content,'**아카이브 검색**'))
+          AND ((?::BOOLEAN AND strpos(lower(m.content),lower(?))>0) OR (?::BOOLEAN AND EXISTS (
+            SELECT 1 FROM json_tree(m.raw_json,'$.embeds') e WHERE e.type='VARCHAR'
+            AND strpos(lower(json_extract_string(e.atom,'$')),lower(?))>0
+          ))) ORDER BY m.created_at DESC,m.message_id DESC LIMIT 12`,
+          [
+            input.guildId,
+            input.channelId,
+            input.requestMessageId,
+            `<@&${settings.searchRoleId}>`,
+            `<&@${settings.searchRoleId}>`,
+            this.client.user!.id,
+            input.scope !== 'embeds',
+            input.keyword,
+            input.scope !== 'content',
+            input.keyword
+          ]
+        )
+        try {
+          candidates = reader
+            .getRowObjectsJson()
+            .map((row) => String(row.message_id))
+            .filter((id) => /^\d{17,20}$/.test(id))
+        } finally {
+          reader.closeSync()
+        }
+      } finally {
+        signal.removeEventListener('abort', interrupt)
+      }
+    } finally {
+      connection?.closeSync()
+      instance?.closeSync()
+      this.busy = false
+      this.live.start()
+    }
+    const matches: ArchiveSearchResult['matches'] = []
+    for (const id of candidates) {
+      signal.throwIfAborted()
+      // Verify current visibility/content: archived offline-deleted or edited content must not be disclosed publicly.
+      let message: APIMessage
+      try {
+        message = (await this.client.rest.get(Routes.channelMessage(input.channelId, id), {
+          signal
+        })) as APIMessage
+      } catch (error) {
+        if (
+          error &&
+          typeof error === 'object' &&
+          (('code' in error && error.code === 10008) || ('status' in error && error.status === 404))
+        )
+          continue
+        throw new Error('Could not verify current search results')
+      }
+      if (
+        !message ||
+        message.id !== id ||
+        message.channel_id !== input.channelId ||
+        !message.author?.id ||
+        typeof message.content !== 'string'
+      )
+        throw new Error('Invalid search message response')
+      const content =
+        input.scope !== 'embeds' &&
+        message.content.toLowerCase().includes(input.keyword.toLowerCase())
+          ? message.content
+          : null
+      const embed =
+        input.scope !== 'content' ? findEmbedSearchText(message.embeds, input.keyword) : null
+      const text = content ?? embed
+      if (text === null) continue
+      const at = text.toLowerCase().indexOf(input.keyword.toLowerCase())
+      const start = Math.max(0, at - 60)
+      matches.push({
+        id,
+        authorName: message.author.global_name ?? message.author.username ?? message.author.id,
+        snippet: `${start ? '…' : ''}${text.slice(start, start + 220)}`,
+        field: content !== null ? 'content' : 'embeds'
+      })
+      if (matches.length === 6) break
+    }
+    return {
+      matches: matches.slice(0, 5),
+      more: matches.length > 5 || candidates.length === 12,
+      historyComplete: complete,
+      pendingEvents: this.live.stats(input.channelId).queued_events
+    }
   }
 
   private async ensureLiveTables(connection: DuckDBConnection) {
@@ -721,4 +882,10 @@ export async function runDiscordArchiveTool(input: unknown, userId: string, sign
     throw new Error('Discord archive requires a configured Discord administrator')
   if (!service) throw new Error('Discord client is not available for archive operations')
   return service.run(input, userId, signal)
+}
+export async function searchDiscordArchive(
+  input: ArchiveSearchRequest
+): Promise<ArchiveSearchResult> {
+  if (!service) throw new Error('Discord archive is not available')
+  return service.search(input)
 }

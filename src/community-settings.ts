@@ -60,7 +60,12 @@ const communitySettingsFields = {
     .object({
       enabled: z.boolean().default(true),
       maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
-      maxChannels: z.number().int().min(1).max(500).default(100)
+      maxChannels: z.number().int().min(1).max(500).default(100),
+      searchRoleId: z
+        .string()
+        .regex(/^\d{17,20}$/)
+        .nullable()
+        .default(null)
     })
     .strict(),
   personas: personasSchema,
@@ -127,7 +132,8 @@ export const communitySettingsSchema = z
     discordArchive: communitySettingsFields.discordArchive.default({
       enabled: true,
       maxStorageMiB: 1024,
-      maxChannels: 100
+      maxChannels: 100,
+      searchRoleId: null
     }),
     personas: communitySettingsFields.personas.default([]),
     reactionForward: communitySettingsFields.reactionForward.default(null),

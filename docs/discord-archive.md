@@ -40,6 +40,14 @@ Realtime tracking can only record gateway events delivered while the bot is conn
 
 ## Queries and controls
 
+### Public role-mention search
+
+Ask `/a` to set `discordArchive.searchRoleId` to the search role's ID (supply its role mention). The default is `null`, disabling role search. No extra environment variables or Discord command deployment are required.
+
+Anyone can then send `@search-role 임베드나 컨텐츠에 "바나나" 들어가는 내용 있으면 찾아줘`. Neither administrator status nor possession of the role is required. Both `<@&ROLE_ID>` and `<&@ROLE_ID>` spellings are recognized. Use one quoted literal search term; a single bare word also works. Mentioning only 본문/컨텐츠/content searches content, mentioning only 임베드/embed searches embeds, and otherwise both are searched.
+
+Search is restricted to the requesting channel's existing archive and the requester/bot must have channel/history access. Replies are public in that channel, with at most five source links and short snippets. Each candidate is fetched from Discord before disclosure; known deletions, unavailable messages and content edited to remove the term are excluded. Collection gaps or incomplete history can still omit results. Searches are rate-limited and do not call a paid model. Arbitrary SQL and archive management remain administrator-only.
+
 Queries accept one read-only `SELECT`/`WITH` statement, with filesystem/network access and extension loading disabled. Query time is limited to 10 seconds, memory to 256 MB, and output to 200 rows, 4000 characters per cell and 48 KiB. A `truncated` result requires narrowing the SQL; stored data is not truncated. Narrow queries to selected columns, or use `substr` to retrieve portions of large JSON fields.
 
 Configure `discordArchive.enabled`, `maxStorageMiB` (64–20480, default 1024) and `maxChannels` (1–500, default 100) through `/a` using `manage_community_settings`. When a quota is reached, free space with an explicit archive deletion or increase the configured limit. Only one archive writer/query runs at a time. Tracking starts only for channels enrolled through `/a`, and then continues automatically without repeated commands.

@@ -20,6 +20,7 @@ const BOT = '999999999999999999'
 const GUILD = '333333333333333333'
 const CHANNEL = '777777777777777777'
 const OTHER = '888888888888888888'
+const SEARCH_ROLE = '444444444444444444'
 let directory: string
 let service: DiscordArchiveService
 const get = vi.fn()
@@ -753,5 +754,135 @@ describe('realtime Discord archives', () => {
     expect(await rows('SELECT count(*)::INTEGER AS total FROM messages')).toEqual([{ total: 1 }])
     await closeDiscordArchive()
     expect(emitter.listenerCount(Events.Raw)).toBe(0)
+  })
+})
+
+describe('member-accessible role search', () => {
+  const input = {
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: OTHER,
+    requestMessageId: '1000000000000000200',
+    keyword: '바나나',
+    scope: 'all' as const
+  }
+  function enable() {
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { searchRoleId: SEARCH_ROLE } }
+    })
+  }
+  async function seed(records: ReturnType<typeof message>[]) {
+    get.mockResolvedValueOnce(records).mockResolvedValueOnce([])
+    await call({ action: 'collect' })
+    get.mockImplementation(async (route: string) => {
+      const found = records.find((item) => route.endsWith('/' + item.id))
+      if (!found) throw new Error('Unexpected message lookup')
+      return found
+    })
+  }
+
+  it('lets ordinary members search literal content or embed string values without granting SQL access', async () => {
+    enable()
+    await seed([
+      message('1000000000000000100', { content: '바나나 BANANA' }),
+      message('1000000000000000099', {
+        content: '',
+        embeds: [{ title: '과일', fields: [{ name: '종류', value: '바나나' }] }]
+      }),
+      message('1000000000000000098', {
+        content: 'other',
+        embeds: [{ 바나나: 'only a JSON key, not matching text' }]
+      })
+    ])
+    expect((await service.search(input)).matches.map((item) => item.id)).toEqual([
+      '1000000000000000100',
+      '1000000000000000099'
+    ])
+    expect(
+      (await service.search({ ...input, scope: 'content' })).matches.map((item) => item.field)
+    ).toEqual(['content'])
+    expect(
+      (await service.search({ ...input, scope: 'embeds' })).matches.map((item) => item.field)
+    ).toEqual(['embeds'])
+    expect((await service.search({ ...input, keyword: 'banana' })).matches).toHaveLength(1)
+    await expect(
+      service.run({ action: 'query', channelId: CHANNEL, sql: 'SELECT * FROM messages' }, OTHER)
+    ).rejects.toThrow('administrator')
+    expect(fetchMember).toHaveBeenCalledWith(OTHER)
+  })
+
+  it('treats SQL operators and wildcard characters as literal search text', async () => {
+    enable()
+    await seed([
+      message('1000000000000000100', { content: '100%_literal' }),
+      message('1000000000000000099', { content: 'ordinary' })
+    ])
+    expect((await service.search({ ...input, keyword: '%_' })).matches).toHaveLength(1)
+    expect((await service.search({ ...input, keyword: "' OR true --" })).matches).toHaveLength(0)
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM messages')).toEqual([{ total: 2 }])
+  })
+
+  it('excludes observed deletes, role-search requests and search replies, and rechecks current Discord content before disclosure', async () => {
+    enable()
+    await seed([
+      message('1000000000000000100', { content: '바나나' }),
+      message('1000000000000000099', { content: '바나나' }),
+      message('1000000000000000098', { content: `<&@${SEARCH_ROLE}> "바나나" 찾아줘` }),
+      message('1000000000000000097', {
+        content: '**아카이브 검색** 바나나',
+        author: { id: BOT, username: 'bot', bot: true }
+      }),
+      message('1000000000000000096', { content: '바나나' })
+    ])
+    service.handleGatewayPacket(packet('MESSAGE_DELETE', { id: '1000000000000000096' }))
+    await service.flushRealtime()
+    get.mockImplementation(async (route: string) => {
+      if (route.endsWith('/1000000000000000100'))
+        throw Object.assign(new Error('offline deleted'), { code: 10008 })
+      if (route.endsWith('/1000000000000000099'))
+        return message('1000000000000000099', {
+          content: 'edited to remove the search word',
+          embeds: []
+        })
+      throw new Error('Search should not fetch excluded messages')
+    })
+    expect((await service.search(input)).matches).toEqual([])
+  })
+
+  it('requires current requester/bot channel permissions and matching guild identity', async () => {
+    enable()
+    await seed([message('1000000000000000100', { content: '바나나' })])
+    await expect(service.search({ ...input, guildId: OTHER })).rejects.toThrow('guild mismatch')
+    permissions.mockReturnValue({ has: () => false })
+    await expect(service.search(input)).rejects.toThrow('View Channel')
+  })
+
+  it('returns at most five verified results and reports additional matches', async () => {
+    enable()
+    await seed(
+      Array.from({ length: 8 }, (_, index) =>
+        message(String(1000000000000000100n + BigInt(index)), { content: '바나나' })
+      )
+    )
+    const result = await service.search(input)
+    expect(result.matches).toHaveLength(5)
+    expect(result.more).toBe(true)
+    expect(result.historyComplete).toBe(true)
+  })
+
+  it('fails closed on failed or malformed live message verification', async () => {
+    enable()
+    await seed([message('1000000000000000100', { content: '바나나' })])
+    get.mockRejectedValueOnce(new Error('network timeout'))
+    await expect(service.search(input)).rejects.toThrow('Could not verify')
+    get.mockResolvedValueOnce({ id: '1000000000000000100', channel_id: OTHER })
+    await expect(service.search(input)).rejects.toThrow('Invalid search message')
+  })
+
+  it('requires an existing archive and an enabled search-role configuration', async () => {
+    await expect(service.search(input)).rejects.toThrow('disabled')
+    enable()
+    await expect(service.search(input)).rejects.toThrow('collect this channel first')
   })
 })
