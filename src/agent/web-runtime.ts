@@ -94,6 +94,8 @@ export interface WebComponentInteractionRequest {
 
 function validateWebSessionName(sessionName: string): string {
   const name = sessionName.trim()
+  if (name.startsWith('__feature:'))
+    throw new Error('Session name is reserved for internal sessions')
   if (!name) throw new Error('Session name must not be empty')
   if (name.length > 100) throw new Error('Session name must not exceed 100 characters')
   return name

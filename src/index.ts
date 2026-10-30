@@ -59,6 +59,7 @@ import {
 import { safeErrorMessage } from './safe-error.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 import { initializeBotReadyServices } from './bot-ready.js'
+import { setDiscordArchiveClient } from './discord-archive.js'
 
 restoreStoredEnvironment()
 
@@ -163,6 +164,7 @@ await ensureDeployed(rest, clientId).catch((error) => {
 })
 
 const client = new Client(discordClientOptions)
+setDiscordArchiveClient(client)
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`ready: ${c.user.tag}`)

@@ -33,6 +33,8 @@ import {
 } from './runtime-types.js'
 
 export function footerSessionName(sessionName: string): string {
+  if (sessionName.startsWith('__feature:private:')) return 'Private session'
+  if (sessionName.startsWith('__feature:archive:')) return 'Archive (private)'
   return escapeMarkdown(sessionName.replace(/\s+/g, ' '))
 }
 

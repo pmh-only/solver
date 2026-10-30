@@ -243,7 +243,7 @@ export async function runGptStream(
       let agent!: Agent
       const createRuntimeTools = (getAgent: () => Agent, includeLoadedMcpTools = true) => {
         const runtimeTools = [
-          ...createAgentUtilityTools(controller.signal),
+          ...createAgentUtilityTools(controller.signal, { userId: ctx.userId, pub: ctx.pub }),
           ...createMcpRuntimeTools(getAgent, ctx.effort)
         ]
         return !includeLoadedMcpTools || !ctx.toolsEnabled || diagnosing

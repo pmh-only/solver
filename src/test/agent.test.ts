@@ -25,6 +25,7 @@ import {
 import {
   clearStoredValues,
   getStoredValue,
+  listStoredKeys,
   resetStoredValueConnection,
   setStoredValue
 } from '../helpers/kv-store.js'
@@ -37,6 +38,8 @@ import {
   setDynamicDiscordFeatureManager
 } from '../dynamic-features.js'
 import { clearRuntimeIssuesForTests, reportRuntimeIssue } from '../runtime-health.js'
+import { createAgentUtilityTools } from '../agent/mcp-runtime.js'
+import { loadDiscordSessionMode } from '../agent/session-privacy.js'
 import {
   agentCommandJSON,
   agentModelAutocompleteJSON,
@@ -697,6 +700,117 @@ describe('/a', () => {
       })
     ).toThrow()
     expect(JSON.parse(managementTool.callback({ action: 'reset' })).kickvoteThreshold).toBe(7)
+  })
+
+  it('registers channel collection and SQL tools only for private Discord administrator sessions', async () => {
+    const calls = await dispatch(
+      agentCommandJSON('/archive collect channel history in DuckDB', {}, undefined, {
+        systemPrompt: 'Temporary archive instructions'
+      }),
+      subs
+    )
+    expect(getCallback(calls)).toMatchObject({
+      type: InteractionResponseType.DeferredChannelMessageWithSource,
+      data: { flags: MessageFlags.Ephemeral }
+    })
+    const archive = registeredAgentTools.get('discord_message_archive') as {
+      callback: (input: unknown) => Promise<string>
+    }
+    expect(archive).toBeDefined()
+    expect(
+      listStoredKeys().some((key) => decodeURIComponent(key).includes('__feature:archive:'))
+    ).toBe(false)
+    const response = JSON.parse(
+      await archive.callback({ action: 'status', channelId: '777777777777777777' })
+    )
+    expect(response.error).toContain('Discord client is not available')
+    const signal = new AbortController().signal
+    expect(
+      createAgentUtilityTools(signal, { userId: '666666666666666666', pub: true }).map(
+        (candidate) => candidate.name
+      )
+    ).not.toContain('discord_message_archive')
+    expect(
+      createAgentUtilityTools(signal, { userId: 'web:issuer:user', pub: false }).map(
+        (candidate) => candidate.name
+      )
+    ).not.toContain('discord_message_archive')
+    expect(
+      createAgentUtilityTools(signal, { userId: '555555555555555555', pub: false }).map(
+        (candidate) => candidate.name
+      )
+    ).not.toContain('discord_message_archive')
+  })
+
+  it('switches /private and /public without calling the model and persists subsequent reply visibility', async () => {
+    const privateCalls = await dispatch(agentCommandJSON('/private', {}, 'work'), subs)
+    expect(
+      Number((getCallback(privateCalls) as { data: { flags: number } }).data.flags) &
+        MessageFlags.Ephemeral
+    ).toBe(MessageFlags.Ephemeral)
+    expect(agentMock).not.toHaveBeenCalled()
+    const next = await dispatch(agentCommandJSON('private request'), subs)
+    expect(getCallback(next)).toMatchObject({ data: { flags: MessageFlags.Ephemeral } })
+    expect(
+      (agentMock.mock.calls.at(-1)![0] as { tools: { name: string }[] }).tools.some(
+        (candidate) => candidate.name === 'discord_message_archive'
+      )
+    ).toBe(true)
+    const mode = loadDiscordSessionMode('666666666666666666', 'work')
+    expect(mode.private).toBe(true)
+    expect(loadWebSessionState('web-user').sessions).not.toContain(mode.privateSession)
+    const publicCalls = await dispatch(agentCommandJSON('/public'), subs)
+    expect(JSON.stringify(publicCalls)).toContain('is now public')
+    expect(agentMock).toHaveBeenCalledTimes(1)
+    const publicNext = await dispatch(agentCommandJSON('public request'), subs)
+    expect(
+      Number((getCallback(publicNext) as { data: { flags?: number } }).data.flags ?? 0) &
+        MessageFlags.Ephemeral
+    ).toBe(0)
+    expect(
+      (agentMock.mock.calls.at(-1)![0] as { tools: { name: string }[] }).tools.some(
+        (candidate) => candidate.name === 'discord_message_archive'
+      )
+    ).toBe(false)
+  })
+
+  it('keeps private history out of public runs and restores it only in the owner’s private session', async () => {
+    await dispatch(agentCommandJSON('public baseline'), subs)
+    await dispatch(agentCommandJSON('/private'), subs)
+    await dispatch(agentCommandJSON('private confidential detail'), subs)
+    expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
+    const mode = loadDiscordSessionMode('666666666666666666', 'default')
+    expect(() => loadWebConversation('web-user', mode.privateSession)).toThrow('reserved')
+    await dispatch(agentCommandJSON('/public'), subs)
+    await dispatch(agentCommandJSON('public follow-up'), subs)
+    expect(JSON.stringify(agentMock.mock.calls.at(-1)?.[0].messages)).toContain('public baseline')
+    expect(JSON.stringify(agentMock.mock.calls.at(-1)?.[0].messages)).not.toContain(
+      'private confidential detail'
+    )
+    await dispatch(agentCommandJSON('/private'), subs)
+    await dispatch(agentCommandJSON('private follow-up'), subs)
+    expect(JSON.stringify(agentMock.mock.calls.at(-1)?.[0].messages)).toContain(
+      'private confidential detail'
+    )
+    expect(JSON.stringify(agentMock.mock.calls.at(-1)?.[0].messages)).not.toContain(
+      'public follow-up'
+    )
+  })
+
+  it('supports visibility switches followed by a request, and clears only private history while private', async () => {
+    const calls = await dispatch(agentCommandJSON('/private remember this privately'), subs)
+    expect(getCallback(calls)).toMatchObject({ data: { flags: MessageFlags.Ephemeral } })
+    expect(streamMock.mock.calls[0]?.[0]).toBe('remember this privately')
+    const cleared = await dispatch(agentCommandJSON('/clear'), subs)
+    expect(getCallback(cleared)).toMatchObject({ data: { flags: MessageFlags.Ephemeral } })
+    await dispatch(agentCommandJSON('new private topic'), subs)
+    expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
+    const publicCalls = await dispatch(agentCommandJSON('/public say hello'), subs)
+    expect(
+      Number((getCallback(publicCalls) as { data: { flags?: number } }).data.flags ?? 0) &
+        MessageFlags.Ephemeral
+    ).toBe(0)
+    expect(streamMock.mock.calls.at(-1)?.[0]).toBe('say hello')
   })
 
   it('tells the next agent run to repair safely redacted runtime failures', async () => {
@@ -2453,6 +2567,40 @@ describe('/a', () => {
       type: InteractionResponseType.DeferredMessageUpdate
     })
     expect(streamMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects other users and administrators on private-session controls even without sender_only metadata', async () => {
+    process.env.ADMIN_USER_IDS = '666666666666666666,777777777777777777'
+    responsePayloads.push({
+      components: [
+        { type: 10, content: 'Private controls' },
+        {
+          type: 1,
+          components: [
+            { type: 2, custom_id: 'private-action', label: 'Continue privately', style: 1 }
+          ]
+        }
+      ],
+      flags: MessageFlags.IsComponentsV2
+    })
+    const initial = await dispatch(agentCommandJSON('/private show controls'), subs)
+    const payload = initial.filter((call) => call.method === 'PATCH').at(-1)?.body as {
+      components: unknown[]
+    }
+    const customId = JSON.stringify(payload).match(/gpt-action:[^"]+:private-action/)?.[0]
+    expect(customId).toBeTruthy()
+    for (const id of ['555555555555555555', '777777777777777777']) {
+      const calls = await dispatch(
+        buttonJSON(payload.components, customId!, {
+          user: { id, username: 'other', discriminator: '0', avatar: null, global_name: 'Other' }
+        }),
+        subs
+      )
+      expect(JSON.stringify(getCallback(calls))).toContain(
+        'only the user who sent this private request'
+      )
+    }
+    expect(streamMock).toHaveBeenCalledTimes(1)
   })
 
   it('persists web button payloads and routes custom-id clicks through the agent interaction flow', async () => {

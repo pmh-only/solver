@@ -39,6 +39,9 @@ export function loadGptContext(token: string): GptContext | null {
     }
     if (
       typeof parsed.displayPrompt !== 'string' ||
+      typeof parsed.userId !== 'string' ||
+      typeof parsed.sessionName !== 'string' ||
+      typeof parsed.pub !== 'boolean' ||
       typeof parsed.expiresAt !== 'number' ||
       parsed.expiresAt <= Date.now() ||
       (!Array.isArray(parsed.components) &&

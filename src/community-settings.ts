@@ -56,6 +56,13 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  discordArchive: z
+    .object({
+      enabled: z.boolean().default(true),
+      maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
+      maxChannels: z.number().int().min(1).max(500).default(100)
+    })
+    .strict(),
   personas: personasSchema,
   reactionForward: z
     .object({ channelId: z.string().regex(/^\d{17,20}$/) })
@@ -117,6 +124,11 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    discordArchive: communitySettingsFields.discordArchive.default({
+      enabled: true,
+      maxStorageMiB: 1024,
+      maxChannels: 100
+    }),
     personas: communitySettingsFields.personas.default([]),
     reactionForward: communitySettingsFields.reactionForward.default(null),
     messageCommands: communitySettingsFields.messageCommands.default({
