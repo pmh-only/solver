@@ -20,6 +20,16 @@ export function archiveWebFailure(error: unknown): ArchiveWebSearchError {
   if (error instanceof ArchiveQueryError) return new ArchiveWebSearchError(400, error.message)
   const value = error && typeof error === 'object' ? error : {}
   const detail = error instanceof Error ? error.message : ''
+  if (detail.includes('index is preparing'))
+    return new ArchiveWebSearchError(
+      503,
+      '기존 메시지의 검색 색인을 준비하고 있습니다. 잠시 후 다시 검색해 주세요.'
+    )
+  if (detail.includes('storage limit'))
+    return new ArchiveWebSearchError(
+      503,
+      '아카이브 저장 공간이 부족합니다. 관리자가 /a에서 저장 한도를 조정해 주세요.'
+    )
   const status = 'status' in value ? value.status : undefined
   const code = 'code' in value ? value.code : undefined
   if (

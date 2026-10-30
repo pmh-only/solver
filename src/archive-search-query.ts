@@ -258,7 +258,7 @@ function termMatches(term: SearchTerm, text: string, words: string[]): boolean {
   if (term.kind === 'word') return words.includes(term.value)
   return words.some(
     (word) =>
-      word.length <= 64 &&
+      [...word].length <= 64 &&
       (term.kind === 'wildcard'
         ? wildcard(term.value, word)
         : editDistance(term.value, word, term.distance))

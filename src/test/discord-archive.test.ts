@@ -834,6 +834,7 @@ describe('member-accessible role search', () => {
     try {
       await connection.run('ALTER TABLE messages DROP COLUMN deleted_at')
       await connection.run('ALTER TABLE messages DROP COLUMN last_gateway_at')
+      await connection.run('ALTER TABLE messages DROP COLUMN search_text')
       await connection.run('DROP TABLE message_events')
       await connection.run('DROP TABLE message_tombstones')
     } finally {
@@ -935,6 +936,91 @@ describe('member-accessible role search', () => {
     expect(metadata.matches[0]!.field).toBe('metadata')
     get.mockResolvedValueOnce(message('1000000000000000100', { content: 'cat fur', embeds: [] }))
     expect(await ids('cat AND banana')).toEqual([])
+  })
+
+  it('backfills derived search text in bounded batches without changing history or pagination', async () => {
+    enable()
+    await seed(
+      Array.from({ length: 100 }, (_, i) =>
+        message(String(1000000000000000100n + BigInt(i)), {
+          content: 'banana',
+          embeds: [{ description: 'extra metadata '.repeat(100) }]
+        })
+      )
+    )
+    const before = await call({ action: 'status' })
+    const instance = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
+    const connection = await instance.connect()
+    try {
+      await connection.run('UPDATE messages SET search_text=NULL')
+    } finally {
+      connection.closeSync()
+      instance.closeSync()
+    }
+    let now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
+      now += 5000
+      return now
+    })
+    try {
+      await expect(service.search({ ...input, keyword: 'banana' })).rejects.toThrow(
+        'index is preparing'
+      )
+    } finally {
+      clock.mockRestore()
+    }
+    expect(
+      await rows('SELECT count(*)::INTEGER AS total FROM messages WHERE search_text IS NOT NULL')
+    ).toEqual([{ total: 50 }])
+    expect(
+      (await service.search({ ...input, keyword: 'banana AND metadata' })).matches
+    ).toHaveLength(5)
+    expect(
+      await rows('SELECT count(*)::INTEGER AS total FROM messages WHERE search_text IS NOT NULL')
+    ).toEqual([{ total: 100 }])
+    expect(await call({ action: 'status' })).toMatchObject({
+      message_count: 100,
+      cursor: 'cursor' in before ? before.cursor : undefined,
+      complete: true
+    })
+    service.handleGatewayPacket(
+      packet('MESSAGE_UPDATE', {
+        id: '1000000000000000100',
+        content: 'replaced',
+        embeds: [],
+        edited_timestamp: '2026-10-30T05:00:00Z'
+      })
+    )
+    await service.flushRealtime()
+    expect(
+      await rows(
+        "SELECT strpos(search_text,'replaced')>0 AS updated, strpos(search_text,'banana')=0 AS removed FROM messages WHERE message_id='1000000000000000100'"
+      )
+    ).toEqual([{ updated: true, removed: true }])
+  })
+
+  it('preserves old messages and pauses search-text preparation at the storage quota', async () => {
+    enable()
+    await seed([message('1000000000000000100', { content: 'banana' })])
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { ...loadCommunitySettings().discordArchive, maxStorageMiB: 64 } }
+    })
+    const instance = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
+    const connection = await instance.connect()
+    try {
+      await connection.run('UPDATE messages SET search_text=NULL')
+    } finally {
+      connection.closeSync()
+      instance.closeSync()
+    }
+    const filler = join(directory, `${OTHER}.duckdb`)
+    await writeFile(filler, '')
+    await truncate(filler, 64 * 1024 * 1024)
+    await expect(service.search({ ...input, keyword: 'banana' })).rejects.toThrow('storage limit')
+    await rm(filler)
+    expect((await service.search({ ...input, keyword: 'banana' })).matches).toHaveLength(1)
+    expect(await rows('SELECT count(*)::INTEGER AS total FROM messages')).toEqual([{ total: 1 }])
   })
 
   it('excludes observed deletes, role-search requests and search replies, and rechecks current Discord content before disclosure', async () => {

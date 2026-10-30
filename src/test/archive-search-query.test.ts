@@ -113,6 +113,7 @@ describe('deterministic full-text query language', () => {
     })
   })
   it('keeps bounded fuzzy evaluation equivalent to character-based edit distance', () => {
+    expect(matches(`${'𝔘'.repeat(32)}~2`, '𝔘'.repeat(34))).toBe(true)
     const words = [
       'aa',
       'ab',

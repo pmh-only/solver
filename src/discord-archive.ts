@@ -79,7 +79,7 @@ const CREATE_MESSAGES = `CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ, edited_at TIMESTAMPTZ, pinned BOOLEAN, tts BOOLEAN,
   flags UBIGINT, reply_to_id VARCHAR, attachments_count INTEGER, embeds_count INTEGER,
   raw_json JSON, collected_at TIMESTAMPTZ DEFAULT current_timestamp,
-  deleted_at TIMESTAMPTZ, last_gateway_at TIMESTAMPTZ
+  deleted_at TIMESTAMPTZ, last_gateway_at TIMESTAMPTZ, search_text VARCHAR
 )`
 const MESSAGE_COLUMNS = [
   'message_id',
@@ -99,10 +99,11 @@ const MESSAGE_COLUMNS = [
   'reply_to_id',
   'attachments_count',
   'embeds_count',
-  'raw_json'
+  'raw_json',
+  'search_text'
 ]
 const UPSERT_MESSAGE = `INSERT INTO messages (${MESSAGE_COLUMNS.join(',')}, collected_at) VALUES (
-  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::TIMESTAMPTZ, ?::TIMESTAMPTZ, ?, ?, ?, ?, ?, ?, ?::JSON, current_timestamp
+  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::TIMESTAMPTZ, ?::TIMESTAMPTZ, ?, ?, ?, ?, ?, ?, ?::JSON, ?, current_timestamp
 ) ON CONFLICT(message_id) DO UPDATE SET ${MESSAGE_COLUMNS.slice(1)
   .map((name) => `${name}=excluded.${name}`)
   .join(',')}, collected_at=now()
@@ -133,6 +134,10 @@ function messageValues(message: APIMessage, guildId: string, json: string, gatew
     message.attachments?.length ?? 0,
     message.embeds?.length ?? 0,
     json,
+    messageSearchParts(JSON.parse(json))
+      .map((part) => part.text)
+      .join('\n')
+      .slice(0, 65536),
     gateway
   ]
 }
@@ -279,15 +284,16 @@ export class DiscordArchiveService {
       if (channel.guild.id !== input.guildId) throw new Error('Archive guild mismatch')
       const path = join(this.directory, `${input.channelId}.duckdb`)
       if (!(await size(path))) throw new Error('No archive exists; collect this channel first')
-      instance = await DuckDBInstance.create(path, { ...DB_OPTIONS, access_mode: 'READ_ONLY' })
+      instance = await DuckDBInstance.create(path, { ...DB_OPTIONS, access_mode: 'READ_WRITE' })
       connection = await instance.connect()
       await connection.run('SET lock_configuration = true')
       const state = await this.status(connection)
       if (state.guild_id !== input.guildId || state.channel_id !== input.channelId)
         throw new Error('Archive channel identity mismatch')
       complete = Boolean(state.complete)
+      await this.ensureSearchText(connection, signal, path, settings.maxStorageMiB * 1024 * 1024)
       // Snapshot archives created before realtime tracking have no deletion column.
-      // Keep public search read-only; live message verification below still excludes deletions.
+      // Only derived search text is backfilled; live verification still excludes deletions.
       const columns = await connection.runAndReadAll(
         "SELECT column_name FROM information_schema.columns WHERE table_name='messages' AND column_name='deleted_at'"
       )
@@ -302,12 +308,7 @@ export class DiscordArchiveService {
       signal.addEventListener('abort', interrupt, { once: true })
       try {
         const reader = await connection.runAndReadAll(
-          `WITH source AS MATERIALIZED (SELECT m.message_id,m.created_at,
-            lower(coalesce((SELECT left(string_agg(value, '\n' ORDER BY id),65536) FROM (
-              SELECT e.id,left(json_extract_string(e.atom,'$'),16384) AS value
-              FROM json_tree(m.raw_json) e WHERE e.type NOT IN ('OBJECT','ARRAY','NULL')
-              ORDER BY e.id LIMIT 4096
-            ) leaves),'') ) AS search_text FROM messages m
+          `WITH source AS MATERIALIZED (SELECT m.message_id,m.created_at,lower(m.search_text) AS search_text FROM messages m
           WHERE m.guild_id=? AND m.channel_id=? AND m.message_id<>? AND ${deletionFilter}
           AND strpos(m.content,?)=0 AND strpos(m.content,?)=0
           AND NOT (m.author_id=? AND starts_with(m.content,'**아카이브 검색**'))
@@ -388,6 +389,7 @@ export class DiscordArchiveService {
   private async ensureLiveTables(connection: DuckDBConnection) {
     await connection.run(CREATE_MESSAGES)
     await connection.run('ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ')
+    await connection.run('ALTER TABLE messages ADD COLUMN IF NOT EXISTS search_text VARCHAR')
     await connection.run(
       'ALTER TABLE messages ADD COLUMN IF NOT EXISTS last_gateway_at TIMESTAMPTZ'
     )
@@ -398,6 +400,61 @@ export class DiscordArchiveService {
     await connection.run(
       'CREATE TABLE IF NOT EXISTS message_tombstones(message_id VARCHAR PRIMARY KEY, deleted_at TIMESTAMPTZ)'
     )
+  }
+
+  private async ensureSearchText(
+    connection: DuckDBConnection,
+    signal: AbortSignal,
+    path: string,
+    quota: number
+  ) {
+    await connection.run('ALTER TABLE messages ADD COLUMN IF NOT EXISTS search_text VARCHAR')
+    const until = Date.now() + 4000
+    const files = (await readdir(this.directory)).filter((name) => ARCHIVE_FILES.test(name))
+    const otherBytes = (
+      await Promise.all(
+        files
+          .map((name) => join(this.directory, name))
+          .filter((file) => file !== path && file !== `${path}.wal`)
+          .map(size)
+      )
+    ).reduce((a, b) => a + b, 0)
+    while (true) {
+      signal.throwIfAborted()
+      const reader = await connection.runAndReadAll(
+        'SELECT message_id,raw_json FROM messages WHERE search_text IS NULL LIMIT 50'
+      )
+      let batch: { id: string; text: string }[]
+      try {
+        batch = reader.getRowObjectsJson().map((row) => ({
+          id: String(row.message_id),
+          text: messageSearchParts(JSON.parse(String(row.raw_json)))
+            .map((part) => part.text)
+            .join('\n')
+            .slice(0, 65536)
+        }))
+      } finally {
+        reader.closeSync()
+      }
+      if (!batch.length) return
+      const serialized = JSON.stringify(batch)
+      if (
+        otherBytes +
+          (await size(path)) +
+          (await size(`${path}.wal`)) +
+          Buffer.byteLength(serialized) * 2 >
+        quota
+      )
+        throw new Error(
+          'Archive storage limit reached while preparing search text; increase discordArchive.maxStorageMiB through /a'
+        )
+      await connection.run(
+        `UPDATE messages SET search_text=json_extract_string(v.value,'$.text')
+        FROM json_each(?::JSON) v WHERE messages.message_id=json_extract_string(v.value,'$.id') AND messages.search_text IS NULL`,
+        [serialized]
+      )
+      if (Date.now() >= until) throw new Error('Archive search index is preparing; retry shortly')
+    }
   }
 
   private async applyTombstones(connection: DuckDBConnection, ids: string[]) {

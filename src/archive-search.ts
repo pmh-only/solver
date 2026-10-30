@@ -137,17 +137,21 @@ export function createArchiveSearchHandler(
       )
       const message = detail.includes('No archive exists')
         ? '이 채널의 아카이브가 없습니다. 관리자가 /a에서 채널 수집을 시작해야 합니다.'
-        : permission
-          ? '채널 보기·메시지 기록 읽기 권한을 확인해 주세요.'
-          : timeout
-            ? '검색 처리 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.'
-            : stage === 'interpret'
-              ? '검색식을 처리하지 못했습니다. 검색 문법을 확인해 주세요.'
-              : schema
-                ? '아카이브 형식이 현재 검색과 호환되지 않습니다. 관리자가 /a에서 이 채널의 수집을 다시 시작해 주세요.'
-                : detail.includes('busy')
-                  ? '아카이브 수집이나 조회가 진행 중입니다. 잠시 후 다시 시도해 주세요.'
-                  : '아카이브 조회 또는 원문 확인에 실패했습니다. 관리자가 /a에서 봇 상태를 확인해 주세요.'
+        : detail.includes('index is preparing')
+          ? '기존 메시지의 검색 색인을 준비하고 있습니다. 잠시 후 다시 검색해 주세요. 준비된 데이터는 유지됩니다.'
+          : detail.includes('storage limit')
+            ? '아카이브 저장 공간이 부족합니다. 관리자가 /a에서 저장 한도를 조정해 주세요.'
+            : permission
+              ? '채널 보기·메시지 기록 읽기 권한을 확인해 주세요.'
+              : timeout
+                ? '검색 처리 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.'
+                : stage === 'interpret'
+                  ? '검색식을 처리하지 못했습니다. 검색 문법을 확인해 주세요.'
+                  : schema
+                    ? '아카이브 형식이 현재 검색과 호환되지 않습니다. 관리자가 /a에서 이 채널의 수집을 다시 시작해 주세요.'
+                    : detail.includes('busy')
+                      ? '아카이브 수집이나 조회가 진행 중입니다. 잠시 후 다시 시도해 주세요.'
+                      : '아카이브 조회 또는 원문 확인에 실패했습니다. 관리자가 /a에서 봇 상태를 확인해 주세요.'
       await reply(message)
     } finally {
       active = false
