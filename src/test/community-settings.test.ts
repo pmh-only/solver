@@ -26,6 +26,28 @@ beforeEach(() => {
 })
 
 describe('single global community configuration', () => {
+  it('removes obsolete archive AI settings without losing collection, role or other configuration', () => {
+    setStoredValue(
+      COMMUNITY_SETTINGS_KEY,
+      JSON.stringify({
+        discordArchive: {
+          enabled: true,
+          channelId: CHANNEL,
+          searchRoleId: FIRST,
+          searchModel: 'retired-model'
+        },
+        anonymousName: 'preserve',
+        roleChat: { roleId: SECOND, model: 'keep-chat-model' }
+      })
+    )
+    const settings = loadCommunitySettings()
+    expect(settings.discordArchive).toMatchObject({ channelId: CHANNEL, searchRoleId: FIRST })
+    expect(settings.discordArchive).not.toHaveProperty('searchModel')
+    expect(settings.roleChat?.model).toBe('keep-chat-model')
+    expect(settings.anonymousName).toBe('preserve')
+    manageCommunitySettings({ action: 'update', settings: { anonymousName: 'updated' } })
+    expect(getStoredValue(COMMUNITY_SETTINGS_KEY)).not.toContain('retired-model')
+  })
   it('exports an API-compatible tool schema without Unicode regex patterns', () => {
     const schema = z.toJSONSchema(manageCommunitySettingsSchema)
     expect(JSON.stringify(schema)).not.toContain('\\p{')

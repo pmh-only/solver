@@ -66,7 +66,6 @@ const communitySettingsFields = {
         .default(null),
       maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
       maxChannels: z.number().int().min(1).max(500).default(1),
-      searchModel: z.string().trim().min(1).max(100).default('gpt-5-mini'),
       searchRoleId: z
         .string()
         .regex(/^\d{17,20}$/)
@@ -140,8 +139,7 @@ export const communitySettingsSchema = z
       channelId: null,
       maxStorageMiB: 1024,
       maxChannels: 1,
-      searchRoleId: null,
-      searchModel: 'gpt-5-mini'
+      searchRoleId: null
     }),
     personas: communitySettingsFields.personas.default([]),
     reactionForward: communitySettingsFields.reactionForward.default(null),
@@ -193,14 +191,24 @@ function parseCommunitySettings(raw: string): CommunitySettings {
   // Fail closed on corrupt configuration instead of silently re-enabling moderation actions.
   const stored: unknown = JSON.parse(raw)
   if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-    const fields = stored as Record<string, unknown>
+    const fields = { ...stored } as Record<string, unknown>
+    if (
+      fields.discordArchive &&
+      typeof fields.discordArchive === 'object' &&
+      !Array.isArray(fields.discordArchive)
+    ) {
+      const archive = { ...fields.discordArchive } as Record<string, unknown>
+      delete archive.searchModel
+      fields.discordArchive = archive
+    }
     if (fields.roleChat && typeof fields.roleChat === 'object' && !Array.isArray(fields.roleChat)) {
       // Existing configurations must keep working after removing these obsolete limits.
       const roleChat = { ...fields.roleChat } as Record<string, unknown>
       delete roleChat.cooldownSeconds
       delete roleChat.requestsPerHour
-      return communitySettingsSchema.parse({ ...fields, roleChat })
+      fields.roleChat = roleChat
     }
+    return communitySettingsSchema.parse(fields)
   }
   return communitySettingsSchema.parse(stored)
 }

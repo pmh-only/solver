@@ -19,8 +19,8 @@
         <p class="eyebrow">DISCORD ARCHIVE SEARCH</p>
         <h1>기억나는 말로,<br />그 메시지를 찾아보세요.</h1>
         <p>
-          본문과 임베드에서 찾을 내용을 자연스럽게 입력하세요.<br />AI가 검색어를 이해하고, 지금
-          확인할 수 있는 원문을 찾아드립니다.
+          본문·임베드·작성자·첨부파일 등 전체 필드에서 검색합니다.<br />AND, OR와 정확한 구문으로
+          조건을 조합하세요. AI는 사용하지 않습니다.
         </p>
       </section>
       <section class="login-panel" id="login-panel" hidden>
@@ -42,23 +42,45 @@
             maxlength="4000"
             required
             disabled
-            placeholder="본문에 털이 들어가는 글 찾아줘"
+            placeholder="털 AND (고양이 OR 강아지) -광고"
           ></textarea>
           <div class="form-footer">
-            <span>따옴표 없이도 검색할 수 있어요.</span
+            <span>공백은 AND · 따옴표는 필수 구문</span
             ><button class="primary" id="submit" type="submit" disabled>
               메시지 검색 <span aria-hidden="true">↗</span>
             </button>
           </div>
         </form>
         <div class="examples" aria-label="검색 예시">
-          <button type="button" data-example="본문에 털이 들어가는 글 찾아줘" disabled>
-            본문에서 찾기
-          </button>
-          <button type="button" data-example="임베드에 바나나 들어간 내용 찾아줘" disabled>
-            임베드에서 찾기
-          </button>
+          <button type="button" data-example="털 AND (고양이 OR 강아지)" disabled>AND / OR</button>
+          <button type="button" data-example='"바나나" -광고' disabled>필수 구문 / 제외</button>
+          <button type="button" data-example="바나냐~1 OR 고양*" disabled>오타 / 와일드카드</button>
         </div>
+        <details class="syntax-help">
+          <summary>검색 문법 보기</summary>
+          <ul>
+            <li><code>고양이 털</code> 또는 <code>고양이 AND 털</code>: 두 조건 모두 포함</li>
+            <li><code>고양이 OR 강아지</code>: 둘 중 하나 포함 · AND가 OR보다 우선</li>
+            <li><code>(고양이 OR 강아지) AND 털</code>: 괄호로 조건 묶기</li>
+            <li><code>털 -광고</code> 또는 <code>털 NOT 광고</code>: 광고 제외</li>
+            <li>
+              <code>"정확한 구문"</code>: 해당 구문이 반드시 포함되어야 함. OR 바깥에서도 필수
+              조건으로 적용
+            </li>
+            <li>
+              <code>+필수단어</code>: OR가 있어도 반드시 포함 · <code>=cat</code>: 정확한 단어
+            </li>
+            <li>
+              <code>바나냐~1</code> / <code>바나냐~2</code>: 단어의 편집 거리 1 / 2까지 허용.
+              <code>~</code>는 1과 같음
+            </li>
+            <li><code>고양*</code>: 단어 내 0자 이상 · <code>고양?</code>: 단어 내 1자</li>
+            <li>
+              대소문자 구분 없음 · 일반 단어는 부분 일치 · 본문과 임베드에 나뉘어 있어도 AND로 검색
+              가능
+            </li>
+          </ul>
+        </details>
       </section>
       <p id="status" class="status" role="status" aria-live="polite">
         로그인 정보를 확인하는 중입니다.
@@ -73,8 +95,8 @@
       </section>
       <footer>
         접근 가능한 채널만 검색합니다. 삭제되었거나 검색어가 사라진 원문은 결과에 표시하지
-        않습니다.<br />과거 기록 수집 상태에 따라 일부 결과가 빠질 수 있습니다. 검색 요청은 AI
-        서비스에서 처리됩니다.
+        않습니다.<br />과거 기록 수집 상태에 따라 일부 결과가 빠질 수 있습니다. 검색은 서버 내부에서
+        처리되며 외부 AI로 전송되지 않습니다.
       </footer>
     </main>
   </body>

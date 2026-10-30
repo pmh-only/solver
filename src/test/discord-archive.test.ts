@@ -882,26 +882,59 @@ describe('member-accessible role search', () => {
     ])
     expect(
       (await service.search({ ...input, scope: 'content' })).matches.map((item) => item.field)
-    ).toEqual(['content'])
+    ).toEqual(['content', 'embeds'])
     expect(
       (await service.search({ ...input, scope: 'embeds' })).matches.map((item) => item.field)
-    ).toEqual(['embeds'])
+    ).toEqual(['content', 'embeds'])
     expect((await service.search({ ...input, keyword: 'banana' })).matches).toHaveLength(1)
+    expect((await service.search({ ...input, keyword: '바나냐~1' })).matches).toHaveLength(2)
     await expect(
       service.run({ action: 'query', channelId: CHANNEL, sql: 'SELECT * FROM messages' }, OTHER)
     ).rejects.toThrow('administrator')
     expect(fetchMember).toHaveBeenCalledWith({ user: OTHER, force: true })
   })
 
-  it('treats SQL operators and wildcard characters as literal search text', async () => {
+  it('keeps quoted SQL text and percent/underscore literal while parsing search operators safely', async () => {
     enable()
     await seed([
       message('1000000000000000100', { content: '100%_literal' }),
       message('1000000000000000099', { content: 'ordinary' })
     ])
     expect((await service.search({ ...input, keyword: '%_' })).matches).toHaveLength(1)
-    expect((await service.search({ ...input, keyword: "' OR true --" })).matches).toHaveLength(0)
+    expect((await service.search({ ...input, keyword: '"\' OR true --"' })).matches).toHaveLength(0)
     expect(await rows('SELECT count(*)::INTEGER AS total FROM messages')).toEqual([{ total: 2 }])
+  })
+
+  it('executes full-text Boolean, required phrase, wildcard and fuzzy expressions across every field', async () => {
+    enable()
+    await seed([
+      message('1000000000000000100', {
+        content: 'cat fur',
+        embeds: [{ title: 'banana' }],
+        attachments: [{ filename: 'report.pdf' }]
+      }),
+      message('1000000000000000099', { content: 'dog fur ad', embeds: [{ title: 'apple' }] }),
+      message('1000000000000000098', { content: 'bananna', embeds: [] }),
+      message('1000000000000000097', { content: 'banana only', embeds: [] }),
+      message('1000000000000000096', { content: 'bobcat', embeds: [] })
+    ])
+    const ids = async (keyword: string) =>
+      (await service.search({ ...input, keyword })).matches.map((match) => match.id)
+    expect(await ids('cat AND banana')).toEqual(['1000000000000000100'])
+    expect(await ids('(cat OR dog) AND fur NOT ad')).toEqual(['1000000000000000100'])
+    expect(await ids('cat OR "banana"')).toEqual(['1000000000000000100', '1000000000000000097'])
+    expect(await ids('banana~1')).toEqual([
+      '1000000000000000100',
+      '1000000000000000098',
+      '1000000000000000097'
+    ])
+    expect(await ids('bana?a')).toEqual(['1000000000000000100', '1000000000000000097'])
+    expect(await ids('=cat')).toEqual(['1000000000000000100'])
+    const metadata = await service.search({ ...input, keyword: 'report.pdf AND alice' })
+    expect(metadata.matches).toHaveLength(1)
+    expect(metadata.matches[0]!.field).toBe('metadata')
+    get.mockResolvedValueOnce(message('1000000000000000100', { content: 'cat fur', embeds: [] }))
+    expect(await ids('cat AND banana')).toEqual([])
   })
 
   it('excludes observed deletes, role-search requests and search replies, and rechecks current Discord content before disclosure', async () => {

@@ -46,7 +46,7 @@ Realtime tracking can only record gateway events delivered while the bot is conn
 
 Open `/search` on the existing web server. Sign in through the existing OIDC provider with a linked Discord account. The provider must include a trusted `discord_id` profile claim; the lab authentik mapping derives it from the actual Discord source connection, not an editable username or attribute. Login sessions created before this claim was added require signing in again.
 
-Any linked member can search the single configured channel without administrator status, a search role or assistant access. Current Discord membership and View Channel / Read Message History permissions are checked before AI interpretation and again before querying. Browser requests supply only natural-language text, never user IDs or channel IDs. The UI renders text safely and provides up to five verified source links, progress/errors, empty results and incomplete-history notices. Searches require session CSRF and are limited to six per user/minute, thirty globally/minute, three hundred globally/hour and one concurrent web search.
+Any linked member can search the single configured channel without administrator status, a search role or assistant access. Current Discord membership and View Channel / Read Message History permissions are checked before processing and again before querying. Browser requests supply only a search expression, never user IDs or channel IDs. The UI renders text safely and provides up to five verified source links, progress/errors, empty results and incomplete-history notices. Searches require session CSRF and are limited to six per user/minute, thirty globally/minute, three hundred globally/hour and one concurrent web search.
 
 The `/personas` editor now uses the same Discord-linked OIDC login for listing, creating, changing and deleting personas. Anonymous API access is rejected. Changes require CSRF; ordinary linked members do not gain assistant or administration access. No new listener, OAuth client, environment variable or Discord command deployment is needed.
 
@@ -54,12 +54,33 @@ The `/personas` editor now uses the same Discord-linked OIDC login for listing, 
 
 Ask `/a` to set `discordArchive.searchRoleId` to the search role's ID (supply its role mention). The default is `null`, disabling role search. No extra environment variables or Discord command deployment are required.
 
-Anyone can then send `@search-role 임베드나 컨텐츠에 "바나나" 들어가는 내용 있으면 찾아줘` or `@search-role 본문에 털이 들어가는 글 찾아줘`. Neither administrator status nor possession of the role is required. Both `<@&ROLE_ID>` and `<&@ROLE_ID>` spellings are recognized. AI extracts a literal keyword and content/embed scope from natural language; quotes are optional. Ambiguous requests receive usage guidance. Only the request text is sent to the model, not archived messages. Its output is schema-validated and cannot select channels or execute SQL.
+Anyone can then send `@search-role 털 AND (고양이 OR 강아지) -광고`. Neither administrator status nor possession of the role is required. Both `<@&ROLE_ID>` and `<&@ROLE_ID>` spellings are recognized. The web UI and role handler share the same deterministic query parser. **No AI is used and no search text is sent to OpenAI.** Old `searchModel` settings are removed automatically; OpenAI credentials are not required for search.
 
-Search is restricted to the requesting channel's existing archive and the requester/bot must have channel/history access. Replies are public in that channel, with at most five source links and short snippets. Each candidate is fetched from Discord before disclosure; known deletions, unavailable messages and content edited to remove the term are excluded. Collection gaps or incomplete history can still omit results. Searches use the existing OpenAI credentials/endpoint configured through `/a`. Configure `discordArchive.searchModel` through `/a` (default `gpt-5-mini`). Interpretation is rate-limited, single-concurrency, capped at 512 output tokens, and times out after 15 seconds without retries. Arbitrary SQL and archive management remain administrator-only.
+Search is restricted to the selected channel's existing archive and the requester/bot must have channel/history access. Replies are public in that channel, with at most five source links and short snippets. Each candidate is fetched from Discord and the complete expression is evaluated again before disclosure; deleted, unavailable or edited-away matches are excluded. Collection gaps or incomplete history can still omit results. Arbitrary SQL and archive management remain administrator-only.
+
+### Full-text query syntax
+
+All stored message field **values**, not JSON keys, are searched together: content, embed titles/descriptions/fields, authors, attachment filenames/metadata, components, polls, mentions and forwarded snapshots. Attachment file bytes are not downloaded. A condition can match content while another matches an embed or filename. Text is case-insensitive. Positive quoted phrases must occur contiguously in a field and are globally required, including in an `OR` expression.
+
+| Syntax | Meaning |
+| --- | --- |
+| `cat dog`, `cat AND dog`, `cat && dog` | Both conditions |
+| `cat OR dog`, `cat || dog` | Either condition |
+| `(cat OR dog) AND fur` | Parenthesized group; precedence is NOT, AND, OR |
+| `cat NOT ad`, `cat -ad`, `cat !ad` | Exclude ad |
+| `cat OR "must have"` | The exact phrase must be present regardless of the OR branch |
+| `cat OR +dog` | dog is globally required |
+| `=cat` | Whole token, unlike ordinary substring `cat` matching bobcat |
+| `bananna~`, `bananna~1`, `bananna~2` | Whole-token fuzzy matching with 1/1/2 Levenshtein edits |
+| `고양*`, `고양?` | Token glob: zero-or-more / one character |
+| `"AND"`, `"a*b"` | Literal operator or punctuation inside quotes |
+
+Inside quotes, escape a literal quote or backslash as `\"` or `\\`. Queries are capped at 4000 characters, 24 terms and 8 nested unary/group levels. At most four fuzzy terms are allowed; each is 2–32 letters/numbers/underscore and distances are capped at two. Unicode characters, including Korean syllables, each count as one edit. Wildcards require two literal characters, at most three wildcard characters and at most 64 characters total. Exclusion-only queries and malformed syntax return an actionable error, not a generic service failure.
+
+The engine uses bounded native DuckDB full-text scans/token comparisons without installing extensions, enabling external SQL access, or constructing SQL from user text. Values are bound parameters and only parser-generated operators enter SQL. Per document, up to 64 KiB of scalar text and 2048 tokens are evaluated; very large records may have unsearched tails. Queries and live verification retain the existing 10-second bound and candidate/result caps. No separate stale FTS index is maintained: committed realtime changes and old snapshot archives are immediately searchable.
 
 Pre-realtime snapshot databases remain searchable without schema changes; current Discord messages are still verified before disclosure. To upgrade one and enable ongoing capture, an administrator can request `watch` through `/a`. This preserves stored messages and the historical collection cursor. Merely installing a newer bot version does not enroll a previously untracked channel.
 
 Queries accept one read-only `SELECT`/`WITH` statement, with filesystem/network access and extension loading disabled. Query time is limited to 10 seconds, memory to 256 MB, and output to 200 rows, 4000 characters per cell and 48 KiB. A `truncated` result requires narrowing the SQL; stored data is not truncated. Narrow queries to selected columns, or use `substr` to retrieve portions of large JSON fields.
 
-Configure `discordArchive.enabled`, `maxStorageMiB` (64–20480, default 1024) and `maxChannels` (1–500, default 100) through `/a` using `manage_community_settings`. When a quota is reached, free space with an explicit archive deletion or increase the configured limit. Only one archive writer/query runs at a time. Tracking starts only for channels enrolled through `/a`, and then continues automatically without repeated commands.
+Configure `discordArchive.enabled`, `channelId`, `maxStorageMiB` (64–20480, default 1024) and `searchRoleId` through `/a` using `manage_community_settings`. Preserve other nested archive settings when changing one field. When a quota is reached, free space with an explicit archive deletion or increase the storage limit. Only one archive writer/query runs at a time. Tracking starts only for the channel enrolled through `/a`, and then continues automatically without repeated commands.

@@ -163,8 +163,25 @@ textarea::placeholder {
 }
 .examples {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0 22px 20px;
+}
+.syntax-help {
+  margin: 0 22px 20px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+}
+.syntax-help summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.syntax-help ul {
+  padding-left: 20px;
+}
+.syntax-help code {
+  color: #dce7ff;
 }
 .examples button {
   color: #b9c5da;

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { archiveWebChannel, searchDiscordArchiveForWeb } from './discord-archive.js'
-import { interpretArchiveSearch } from './archive-search-ai.js'
+import { ArchiveQueryError, prepareArchiveSearch } from './archive-search-query.js'
 import { consumeStoredRateLimit } from './helpers/kv-store.js'
 import { reportRuntimeIssue } from './runtime-health.js'
 
@@ -17,6 +17,7 @@ export class ArchiveWebSearchError extends Error {
 }
 export function archiveWebFailure(error: unknown): ArchiveWebSearchError {
   if (error instanceof ArchiveWebSearchError) return error
+  if (error instanceof ArchiveQueryError) return new ArchiveWebSearchError(400, error.message)
   const value = error && typeof error === 'object' ? error : {}
   const detail = error instanceof Error ? error.message : ''
   const status = 'status' in value ? value.status : undefined
@@ -45,16 +46,14 @@ export function archiveWebFailure(error: unknown): ArchiveWebSearchError {
     )
   reportRuntimeIssue(
     'archive_web_search',
-    new Error(
-      'Archive web search failed; check Discord access, archive availability and AI configuration'
-    )
+    new Error('Archive web search failed; check Discord access and archive availability')
   )
   return new ArchiveWebSearchError(502, '검색을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.')
 }
 
 export function createArchiveWebSearch(
   channel = archiveWebChannel,
-  interpret = interpretArchiveSearch,
+  interpret = prepareArchiveSearch,
   search = searchDiscordArchiveForWeb
 ) {
   const users = new Map<string, { until: number; count: number }>()
@@ -79,13 +78,13 @@ export function createArchiveWebSearch(
       throw new ArchiveWebSearchError(429, '다른 검색이 진행 중입니다. 잠시 후 다시 시도해 주세요.')
     active = true
     try {
-      // Check real Discord permissions before spending tokens or returning channel metadata.
+      // Check real Discord permissions before querying or returning channel metadata.
       await channel(userId)
       const intent = await interpret(prompt)
       if (!intent)
         throw new ArchiveWebSearchError(
           400,
-          '찾을 내용을 조금 더 구체적으로 적어 주세요. 예: 본문에 털이 들어가는 글 찾아줘'
+          '검색식을 입력해 주세요. 예: 털 AND (고양이 OR 강아지)'
         )
       const result = await search(userId, intent)
       return { ...result, intent }

@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWebServer, closeWebServer } from '../web-server.js'
 import { createWebSessionForTests, resetWebAuthForTests } from '../web-auth.js'
 import { archiveWebChannel, searchDiscordArchiveForWeb } from '../discord-archive.js'
-import { interpretArchiveSearch } from '../archive-search-ai.js'
+import {
+  ArchiveQueryError,
+  prepareArchiveSearch as interpretArchiveSearch
+} from '../archive-search-query.js'
 import { createArchiveWebSearch } from '../archive-search-web.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
@@ -15,7 +18,10 @@ vi.mock('../discord-archive.js', async (original) => ({
   archiveWebChannel: vi.fn(),
   searchDiscordArchiveForWeb: vi.fn()
 }))
-vi.mock('../archive-search-ai.js', () => ({ interpretArchiveSearch: vi.fn() }))
+vi.mock('../archive-search-query.js', async (original) => ({
+  ...(await original<typeof import('../archive-search-query.js')>()),
+  prepareArchiveSearch: vi.fn()
+}))
 let server: Server
 let origin: string
 let credentials: { cookie: string; csrfToken: string }
@@ -93,7 +99,7 @@ describe('OIDC archive web search', () => {
     expect((await fetch(`${origin}/search.css`)).status).toBe(200)
     expect(await (await fetch(`${origin}/search`, { method: 'HEAD' })).text()).toBe('')
   })
-  it('denies anonymous and non-linked sessions before querying Discord or AI', async () => {
+  it('denies anonymous and non-linked sessions before querying Discord or the parser', async () => {
     expect((await fetch(`${origin}/api/archive-search/session`)).status).toBe(401)
     expect((await search(undefined, { Cookie: '' })).status).toBe(401)
     const unlinked = createWebSessionForTests({
@@ -146,7 +152,7 @@ describe('OIDC archive web search', () => {
     }
     expect(interpretArchiveSearch).not.toHaveBeenCalled()
   })
-  it('checks current channel permissions before spending tokens and hides private channel metadata', async () => {
+  it('checks current channel permissions before query processing and hides private channel metadata', async () => {
     vi.mocked(archiveWebChannel).mockRejectedValue(
       Object.assign(new Error('private channel details'), { status: 403 })
     )
@@ -155,7 +161,13 @@ describe('OIDC archive web search', () => {
     expect(await response.text()).not.toContain('private channel details')
     expect(interpretArchiveSearch).not.toHaveBeenCalled()
   })
-  it('handles ambiguous AI output, failures and no results', async () => {
+  it('handles invalid syntax, preparation failures and no results', async () => {
+    vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(
+      new ArchiveQueryError('닫는 괄호가 필요합니다.')
+    )
+    const syntax = await search({ prompt: '(털 OR 고양이' })
+    expect(syntax.status).toBe(400)
+    expect(await syntax.text()).toContain('닫는 괄호')
     vi.mocked(interpretArchiveSearch).mockResolvedValueOnce(null)
     expect((await search()).status).toBe(400)
     expect(searchDiscordArchiveForWeb).not.toHaveBeenCalled()
@@ -166,7 +178,7 @@ describe('OIDC archive web search', () => {
     vi.mocked(searchDiscordArchiveForWeb).mockResolvedValueOnce({ ...result, matches: [] })
     expect((await search()).status).toBe(200)
   })
-  it('limits paid work per user and across concurrent requests', async () => {
+  it('limits query work per user and across concurrent requests', async () => {
     const run = createArchiveWebSearch()
     for (let i = 0; i < 6; i++) await run(userId, { prompt: '털' })
     await expect(run(userId, { prompt: '털' })).rejects.toMatchObject({ status: 429 })

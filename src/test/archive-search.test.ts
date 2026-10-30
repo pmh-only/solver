@@ -2,7 +2,10 @@ import { join } from 'node:path'
 import { Collection, MessageFlags, type Message } from 'discord.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createArchiveSearchHandler } from '../archive-search.js'
-import { interpretArchiveSearch } from '../archive-search-ai.js'
+import {
+  ArchiveQueryError,
+  prepareArchiveSearch as interpretArchiveSearch
+} from '../archive-search-query.js'
 import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings } from '../community-settings.js'
 import { clearStoredValues, setStoredValue } from '../helpers/kv-store.js'
@@ -11,7 +14,10 @@ import type { ArchiveSearchRequest, ArchiveSearchResult } from '../discord-archi
 import { clearRuntimeIssuesForTests, runtimeIssueSummary } from '../runtime-health.js'
 
 const ROLE = '444444444444444444'
-vi.mock('../archive-search-ai.js', () => ({ interpretArchiveSearch: vi.fn() }))
+vi.mock('../archive-search-query.js', async (original) => ({
+  ...(await original<typeof import('../archive-search-query.js')>()),
+  prepareArchiveSearch: vi.fn()
+}))
 const USER = '555555555555555555'
 const GUILD = '333333333333333333'
 const CHANNEL = '777777777777777777'
@@ -62,6 +68,17 @@ afterEach(() => {
 })
 
 describe('public archive role search', () => {
+  it('reports actionable query syntax errors without database work', async () => {
+    vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(
+      new ArchiveQueryError('닫는 괄호가 필요합니다.')
+    )
+    const input = message({ content: `<@&${ROLE}> (털 OR 고양이` })
+    await createArchiveSearchHandler(search)(input)
+    expect(search).not.toHaveBeenCalled()
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('닫는 괄호') })
+    )
+  })
   it.each([
     [
       new Error('Binder Error: Table messages does not have a column named deleted_at'),
@@ -87,17 +104,18 @@ describe('public archive role search', () => {
       expect(runtimeIssueSummary()).not.toContain('private response body')
     }
   )
-  it('passes unquoted natural language to AI and searches only its validated intent', async () => {
-    vi.mocked(interpretArchiveSearch).mockResolvedValueOnce({ keyword: '털', scope: 'content' })
-    await createArchiveSearchHandler(search)(
-      message({ content: `<@&${ROLE}> 본문에 털이 들어가는 글 찾아줘` })
-    )
-    expect(interpretArchiveSearch).toHaveBeenCalledWith('본문에 털이 들어가는 글 찾아줘')
+  it('passes query syntax to the shared deterministic parser', async () => {
+    vi.mocked(interpretArchiveSearch).mockResolvedValueOnce({
+      keyword: '털 AND 고양이',
+      scope: 'all'
+    })
+    await createArchiveSearchHandler(search)(message({ content: `<@&${ROLE}> 털 AND 고양이` }))
+    expect(interpretArchiveSearch).toHaveBeenCalledWith('털 AND 고양이')
     expect(search).toHaveBeenCalledWith(
-      expect.objectContaining({ keyword: '털', scope: 'content' })
+      expect.objectContaining({ keyword: '털 AND 고양이', scope: 'all' })
     )
   })
-  it('does not search when AI fails and releases concurrency for the next request', async () => {
+  it('does not search when preparation fails and releases concurrency for the next request', async () => {
     vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(new Error('private-api-detail'))
     const handle = createArchiveSearchHandler(search)
     const input = message()

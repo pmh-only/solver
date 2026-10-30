@@ -1,12 +1,12 @@
 import { escapeMarkdown, MessageFlags, type Message } from 'discord.js'
 import { loadCommunitySettings } from './community-settings.js'
-import { interpretArchiveSearch } from './archive-search-ai.js'
+import { ArchiveQueryError, prepareArchiveSearch } from './archive-search-query.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 import { searchDiscordArchive, type ArchiveSearchResult } from './discord-archive.js'
 
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
 const USAGE =
-  '검색어를 하나 지정해 주세요. 예: @검색역할 임베드나 컨텐츠에 "바나나" 들어가는 내용 찾아줘'
+  '검색식을 입력해 주세요. 예: @검색역할 털 AND (고양이 OR 강아지) · "정확한 구문"은 필수 · -제외 · 바나냐~1 · 고양*'
 
 function safeText(value: string, length: number) {
   return escapeMarkdown(value.replace(/\s+/g, ' ').trim().slice(0, length))
@@ -16,7 +16,7 @@ function safeText(value: string, length: number) {
 
 export function createArchiveSearchHandler(
   search = searchDiscordArchive,
-  interpret = interpretArchiveSearch
+  interpret = prepareArchiveSearch
 ) {
   const users = new Map<string, { count: number; until: number; notified: boolean }>()
   let window = { until: 0, count: 0, notified: false }
@@ -92,11 +92,11 @@ export function createArchiveSearchHandler(
         requestMessageId: message.id,
         ...parsed
       })
-      let body = `**아카이브 검색**\n검색어: ${safeText(parsed.keyword, 200)} · 현재 채널의 ${parsed.scope === 'all' ? '본문·임베드' : parsed.scope === 'content' ? '본문' : '임베드'}\n`
+      let body = `**아카이브 검색**\n검색식: ${safeText(parsed.keyword, 200)} · 현재 채널의 전체 필드\n`
       if (!result.matches.length) body += '\n현재 원문에서 확인 가능한 검색 결과가 없습니다.\n'
       for (const item of result.matches.slice(0, 5)) {
         if (!/^\d{17,20}$/.test(item.id)) continue
-        const line = `\n[원문](https://discord.com/channels/${message.guildId}/${message.channelId}/${item.id}) · ${safeText(item.authorName, 40)} · ${item.field === 'content' ? '본문' : '임베드'}\n> ${safeText(item.snippet, 180)}\n`
+        const line = `\n[원문](https://discord.com/channels/${message.guildId}/${message.channelId}/${item.id}) · ${safeText(item.authorName, 40)} · ${item.field === 'content' ? '본문' : item.field === 'embeds' ? '임베드' : '기타 필드'}\n> ${safeText(item.snippet, 180)}\n`
         if (body.length + line.length > 1830) break
         body += line
       }
@@ -107,6 +107,10 @@ export function createArchiveSearchHandler(
       await reply(body)
       clearRuntimeIssue('discord_archive_search')
     } catch (error) {
+      if (error instanceof ArchiveQueryError) {
+        await reply(`검색 문법 오류: ${error.message}\n${USAGE}`)
+        return true
+      }
       const detail = error instanceof Error ? error.message : ''
       const cause = error instanceof Error && error.cause ? error.cause : error
       const status =
@@ -138,7 +142,7 @@ export function createArchiveSearchHandler(
           : timeout
             ? '검색 처리 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.'
             : stage === 'interpret'
-              ? 'AI가 검색 요청을 해석하지 못했습니다. 관리자가 /a에서 OpenAI 연결·검색 모델 설정을 확인해 주세요.'
+              ? '검색식을 처리하지 못했습니다. 검색 문법을 확인해 주세요.'
               : schema
                 ? '아카이브 형식이 현재 검색과 호환되지 않습니다. 관리자가 /a에서 이 채널의 수집을 다시 시작해 주세요.'
                 : detail.includes('busy')

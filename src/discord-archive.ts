@@ -20,6 +20,12 @@ import {
   type ArchiveGatewayEvent
 } from './discord-archive-live.js'
 import { reportRuntimeIssue } from './runtime-health.js'
+import {
+  compileArchiveQuery,
+  matchArchiveQuery,
+  messageSearchParts,
+  parseArchiveQuery
+} from './archive-search-query.js'
 
 export const discordArchiveToolSchema = z.object({
   action: z.enum(['collect', 'watch', 'unwatch', 'status', 'query', 'delete']),
@@ -39,7 +45,12 @@ export interface ArchiveSearchRequest {
   scope: 'all' | 'content' | 'embeds'
 }
 export interface ArchiveSearchResult {
-  matches: { id: string; authorName: string; snippet: string; field: 'content' | 'embeds' }[]
+  matches: {
+    id: string
+    authorName: string
+    snippet: string
+    field: 'content' | 'embeds' | 'metadata'
+  }[]
   more: boolean
   historyComplete: boolean
   pendingEvents: number
@@ -49,7 +60,7 @@ const searchSchema = z.object({
   channelId: z.string().regex(/^\d{17,20}$/),
   userId: z.string().regex(/^\d{17,20}$/),
   requestMessageId: z.string().regex(/^\d{17,20}$/),
-  keyword: z.string().trim().min(1).max(200),
+  keyword: z.string().trim().min(1).max(4000),
   scope: z.enum(['all', 'content', 'embeds'])
 })
 const DB_OPTIONS = {
@@ -133,23 +144,6 @@ async function size(path: string) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
     throw error
   }
-}
-
-function findEmbedSearchText(value: unknown, keyword: string): string | null {
-  const pending = [{ value, depth: 0 }]
-  let visited = 0
-  while (pending.length && visited++ < 2048) {
-    const current = pending.pop()!
-    if (
-      typeof current.value === 'string' &&
-      current.value.toLowerCase().includes(keyword.toLowerCase())
-    )
-      return current.value
-    if (current.depth >= 12 || !current.value || typeof current.value !== 'object') continue
-    for (const child of Object.values(current.value).slice(0, 100))
-      pending.push({ value: child, depth: current.depth + 1 })
-  }
-  return null
 }
 
 export class DiscordArchiveService {
@@ -264,6 +258,8 @@ export class DiscordArchiveService {
 
   async search(raw: ArchiveSearchRequest, requireRole = true): Promise<ArchiveSearchResult> {
     const input = searchSchema.parse(raw)
+    const query = parseArchiveQuery(input.keyword)
+    const compiled = compileArchiveQuery(query)
     const settings = loadCommunitySettings().discordArchive
     if (!settings.enabled || (requireRole && !settings.searchRoleId))
       throw new Error('Archive role search is disabled')
@@ -306,14 +302,19 @@ export class DiscordArchiveService {
       signal.addEventListener('abort', interrupt, { once: true })
       try {
         const reader = await connection.runAndReadAll(
-          `SELECT m.message_id FROM messages m
+          `WITH source AS MATERIALIZED (SELECT m.message_id,m.created_at,
+            lower(coalesce((SELECT left(string_agg(value, '\n' ORDER BY id),65536) FROM (
+              SELECT e.id,left(json_extract_string(e.atom,'$'),16384) AS value
+              FROM json_tree(m.raw_json) e WHERE e.type NOT IN ('OBJECT','ARRAY','NULL')
+              ORDER BY e.id LIMIT 4096
+            ) leaves),'') ) AS search_text FROM messages m
           WHERE m.guild_id=? AND m.channel_id=? AND m.message_id<>? AND ${deletionFilter}
           AND strpos(m.content,?)=0 AND strpos(m.content,?)=0
           AND NOT (m.author_id=? AND starts_with(m.content,'**아카이브 검색**'))
-          AND ((?::BOOLEAN AND strpos(lower(m.content),lower(?))>0) OR (?::BOOLEAN AND EXISTS (
-            SELECT 1 FROM json_tree(m.raw_json,'$.embeds') e WHERE e.type='VARCHAR'
-            AND strpos(lower(json_extract_string(e.atom,'$')),lower(?))>0
-          ))) ORDER BY m.created_at DESC,m.message_id DESC LIMIT 12`,
+          ), docs AS MATERIALIZED (SELECT *,list_distinct(list_slice(regexp_extract_all(search_text,'[\\p{L}\\p{N}_]+'),1,2048)) AS search_words FROM source),
+          hits AS (SELECT d.message_id,d.created_at,${compiled.columns} FROM docs d)
+          SELECT message_id FROM hits WHERE ${compiled.predicate}
+          ORDER BY (${compiled.score}) DESC,created_at DESC,message_id DESC LIMIT 12`,
           [
             input.guildId,
             input.channelId,
@@ -321,10 +322,7 @@ export class DiscordArchiveService {
             `<@&${settings.searchRoleId}>`,
             `<&@${settings.searchRoleId}>`,
             this.client.user!.id,
-            input.scope !== 'embeds',
-            input.keyword,
-            input.scope !== 'content',
-            input.keyword
+            ...compiled.params
           ]
         )
         try {
@@ -370,22 +368,12 @@ export class DiscordArchiveService {
         typeof message.content !== 'string'
       )
         throw new Error('Invalid search message response')
-      const content =
-        input.scope !== 'embeds' &&
-        message.content.toLowerCase().includes(input.keyword.toLowerCase())
-          ? message.content
-          : null
-      const embed =
-        input.scope !== 'content' ? findEmbedSearchText(message.embeds, input.keyword) : null
-      const text = content ?? embed
-      if (text === null) continue
-      const at = text.toLowerCase().indexOf(input.keyword.toLowerCase())
-      const start = Math.max(0, at - 60)
+      const evidence = matchArchiveQuery(query, messageSearchParts(message))
+      if (!evidence) continue
       matches.push({
         id,
         authorName: message.author.global_name ?? message.author.username ?? message.author.id,
-        snippet: `${start ? '…' : ''}${text.slice(start, start + 220)}`,
-        field: content !== null ? 'content' : 'embeds'
+        ...evidence
       })
       if (matches.length === 6) break
     }

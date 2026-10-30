@@ -42,15 +42,7 @@ function render(data) {
   const results = document.querySelector('#results')
   results.replaceChildren()
   document.querySelector('#results-panel').hidden = false
-  document.querySelector('#result-meta').textContent =
-    '“' +
-    data.intent.keyword +
-    '” · ' +
-    (data.intent.scope === 'all'
-      ? '본문·임베드'
-      : data.intent.scope === 'content'
-        ? '본문'
-        : '임베드')
+  document.querySelector('#result-meta').textContent = '“' + data.intent.keyword + '” · 전체 필드'
   for (const item of data.matches.slice(0, 5)) {
     const article = document.createElement('article')
     article.className = 'result'
@@ -59,7 +51,8 @@ function render(data) {
     const author = document.createElement('strong')
     author.textContent = item.authorName
     const field = document.createElement('span')
-    field.textContent = item.field === 'content' ? '본문' : '임베드'
+    field.textContent =
+      item.field === 'content' ? '본문' : item.field === 'embeds' ? '임베드' : '기타 필드'
     header.append(author, field)
     const snippet = document.createElement('p')
     snippet.textContent = item.snippet
@@ -100,7 +93,7 @@ form.addEventListener('submit', async (event) => {
   busy = true
   controls()
   document.querySelector('#results-panel').hidden = true
-  notify('AI가 요청을 이해하고 Discord 원문을 확인하고 있습니다…')
+  notify('전체 필드에서 검색하고 Discord 원문을 확인하고 있습니다…')
   try {
     const response = await fetch('/api/archive-search', {
       method: 'POST',
