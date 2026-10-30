@@ -772,6 +772,34 @@ describe('member-accessible role search', () => {
       settings: { discordArchive: { searchRoleId: SEARCH_ROLE } }
     })
   }
+  it('searches pre-realtime snapshots without requiring an administrator to migrate them', async () => {
+    enable()
+    await collectOne()
+    await call({ action: 'unwatch' })
+    const instance = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
+    const connection = await instance.connect()
+    try {
+      await connection.run('ALTER TABLE messages DROP COLUMN deleted_at')
+      await connection.run('ALTER TABLE messages DROP COLUMN last_gateway_at')
+      await connection.run('DROP TABLE message_events')
+      await connection.run('DROP TABLE message_tombstones')
+    } finally {
+      connection.closeSync()
+      instance.closeSync()
+    }
+    get.mockResolvedValueOnce(message())
+    const result = await service.search({ ...input, keyword: 'Hello', scope: 'content' })
+    expect(result.matches).toHaveLength(1)
+    expect(result.matches[0]!.id).toBe('1000000000000000100')
+    expect(await call({ action: 'status' })).toMatchObject({
+      message_count: 1,
+      realtime_enabled: false
+    })
+    get.mockRejectedValueOnce(Object.assign(new Error('offline deleted'), { code: 10008 }))
+    expect(
+      (await service.search({ ...input, keyword: 'Hello', scope: 'content' })).matches
+    ).toEqual([])
+  })
   async function seed(records: ReturnType<typeof message>[]) {
     get.mockResolvedValueOnce(records).mockResolvedValueOnce([])
     await call({ action: 'collect' })

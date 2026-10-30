@@ -254,13 +254,24 @@ export class DiscordArchiveService {
       if (state.guild_id !== input.guildId || state.channel_id !== input.channelId)
         throw new Error('Archive channel identity mismatch')
       complete = Boolean(state.complete)
+      // Snapshot archives created before realtime tracking have no deletion column.
+      // Keep public search read-only; live message verification below still excludes deletions.
+      const columns = await connection.runAndReadAll(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='messages' AND column_name='deleted_at'"
+      )
+      let deletionFilter: string
+      try {
+        deletionFilter = columns.currentRowCount > 0 ? 'm.deleted_at IS NULL' : 'true'
+      } finally {
+        columns.closeSync()
+      }
       signal.throwIfAborted()
       const interrupt = () => connection?.interrupt()
       signal.addEventListener('abort', interrupt, { once: true })
       try {
         const reader = await connection.runAndReadAll(
           `SELECT m.message_id FROM messages m
-          WHERE m.guild_id=? AND m.channel_id=? AND m.message_id<>? AND m.deleted_at IS NULL
+          WHERE m.guild_id=? AND m.channel_id=? AND m.message_id<>? AND ${deletionFilter}
           AND strpos(m.content,?)=0 AND strpos(m.content,?)=0
           AND NOT (m.author_id=? AND starts_with(m.content,'**아카이브 검색**'))
           AND ((?::BOOLEAN AND strpos(lower(m.content),lower(?))>0) OR (?::BOOLEAN AND EXISTS (
