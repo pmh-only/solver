@@ -57,6 +57,13 @@ import {
 } from './web-ui.js'
 import { listPersonas, savePersona, deletePersona } from './personas.js'
 import { RequestTiming } from './request-timing.js'
+import { archiveWebChannel } from './discord-archive.js'
+import {
+  archiveWebFailure,
+  archiveWebSearchSchema,
+  runArchiveWebSearch
+} from './archive-search-web.js'
+import { SEARCH_HTML, SEARCH_CSS, SEARCH_JS } from './web-ui.js'
 
 const DEFAULT_PORT = 3000
 const DEFAULT_HOST = '0.0.0.0'
@@ -192,9 +199,68 @@ async function handleApiRequest(
   requestStartedAt: number
 ): Promise<boolean> {
   const method = request.method ?? 'GET'
+  if (url.pathname === '/api/archive-search/session' || url.pathname === '/api/archive-search') {
+    const session = getWebSession(request)
+    if (!session) {
+      sendJson(response, 401, { error: '로그인이 필요합니다.' })
+      return true
+    }
+    // Search is deliberately available to Discord-linked OIDC users even when assistant access is not allowed.
+    if (!session.user.discordId || !/^\d{17,20}$/.test(session.user.discordId)) {
+      sendJson(response, 403, { error: 'Discord 계정이 연결된 OIDC 로그인으로 접속해 주세요.' })
+      return true
+    }
+    const sessionRoute = url.pathname.endsWith('/session')
+    if (method !== (sessionRoute ? 'GET' : 'POST')) {
+      response.setHeader('Allow', sessionRoute ? 'GET' : 'POST')
+      sendJson(response, 405, { error: 'Method not allowed' })
+      return true
+    }
+    if (!sessionRoute && !requireCsrf(request, session)) {
+      sendJson(response, 403, {
+        error: '로그인 상태가 변경되었습니다. 새로고침 후 다시 시도해 주세요.'
+      })
+      return true
+    }
+    try {
+      if (sessionRoute) {
+        if (!consumeStoredRateLimit('web-rate:archive-metadata', 120, 60_000)) {
+          sendJson(response, 429, { error: '요청이 많습니다. 잠시 후 다시 시도해 주세요.' })
+          return true
+        }
+        sendJson(response, 200, {
+          user: { name: session.user.name },
+          csrfToken: session.csrfToken,
+          channel: await archiveWebChannel(session.user.discordId)
+        })
+      } else {
+        const body = archiveWebSearchSchema.parse(await readJson(request))
+        sendJson(response, 200, await runArchiveWebSearch(session.user.discordId, body))
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError || (error instanceof Error && error.name === 'ZodError'))
+        sendJson(response, 400, {
+          error: '검색 요청은 1–4000자로 입력해 주세요. 채널이나 사용자 ID는 지정할 수 없습니다.'
+        })
+      else {
+        const failure = archiveWebFailure(error)
+        sendJson(response, failure.status, { error: failure.message })
+      }
+    }
+    return true
+  }
   if (url.pathname === '/api/personas') {
+    const session = getWebSession(request)
+    if (!session) {
+      sendJson(response, 401, { error: '로그인이 필요합니다.' })
+      return true
+    }
+    if (!session.user.discordId || !/^\d{17,20}$/.test(session.user.discordId)) {
+      sendJson(response, 403, { error: 'Discord 계정이 연결된 OIDC 로그인으로 접속해 주세요.' })
+      return true
+    }
     if (method === 'GET') {
-      sendJson(response, 200, { personas: listPersonas() })
+      sendJson(response, 200, { personas: listPersonas(), csrfToken: session.csrfToken })
       return true
     }
     if (method !== 'PUT' && method !== 'DELETE') {
@@ -202,7 +268,11 @@ async function handleApiRequest(
       sendJson(response, 405, { error: 'Method not allowed' })
       return true
     }
-    // Public editing is intentional, but cross-site browser writes are not.
+    if (!requireCsrf(request, session)) {
+      sendJson(response, 403, { error: 'Invalid CSRF token' })
+      return true
+    }
+    // Any Discord-linked member may edit; cross-site browser writes are not allowed.
     const origin = request.headers.origin
     if (
       request.headers['x-persona-editor'] !== '1' ||
@@ -679,6 +749,9 @@ export async function handleWebRequest(
     }
     const head = method === 'HEAD'
     const personaAssets: Record<string, [string, string]> = {
+      '/search': ['text/html; charset=utf-8', SEARCH_HTML],
+      '/search.js': ['text/javascript; charset=utf-8', SEARCH_JS],
+      '/search.css': ['text/css; charset=utf-8', SEARCH_CSS],
       '/personas': ['text/html; charset=utf-8', PERSONAS_HTML],
       '/personas.js': ['text/javascript; charset=utf-8', PERSONAS_JS],
       '/personas.css': ['text/css; charset=utf-8', PERSONAS_CSS]

@@ -19,7 +19,8 @@
             session.
           </p>
           <button class="primary" id="login">Continue with OIDC</button>
-          <p><a href="/personas">Public persona editor · 로그인 없이 사용</a></p>
+          <p><a href="/personas">Persona editor · Discord 연동 로그인</a></p>
+          <p><a href="/search">Discord 메시지 검색 · 연동 계정으로 로그인</a></p>
           <p class="error" id="auth-error"></p>
         </div>
       </section>
@@ -29,6 +30,7 @@
             <span class="brand-mark" aria-hidden="true">S</span>
             <strong>Solver</strong>
             <a href="/personas">Personas</a>
+            <a href="/search">Search</a>
           </div>
           <label
             ><span>Session</span
@@ -66,10 +68,10 @@
           ><label class="debug-control"
             ><span>Tools</span
             ><input id="tools-enabled" type="checkbox" aria-label="Agent tools" /></label
-           ><label class="debug-control"
-             ><span>Debug</span><input id="debug-mode" type="checkbox" aria-label="Debug timing"
-           /></label>
-           <button class="admin-link" id="admin-prompt" hidden>Agent settings</button>
+          ><label class="debug-control"
+            ><span>Debug</span><input id="debug-mode" type="checkbox" aria-label="Debug timing"
+          /></label>
+          <button class="admin-link" id="admin-prompt" hidden>Agent settings</button>
         </header>
         <div class="message-pane">
           <div class="messages" id="messages" aria-live="polite"></div>

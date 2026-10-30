@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { isAdminUser } from './authorization.js'
-import { loadCommunitySettings } from './community-settings.js'
+import {
+  COMMUNITY_SETTINGS_KEY,
+  loadCommunitySettings,
+  manageCommunitySettings
+} from './community-settings.js'
 import {
   deleteStoredValue,
   getStoredValue,
@@ -91,6 +95,27 @@ export class DiscordArchiveLiveQueue {
         )
       }
     }
+    // Preserve an existing explicitly enrolled single channel when upgrading old settings.
+    // An explicit channelId:null is not migrated; multiple watches require an administrator's choice.
+    try {
+      const raw = JSON.parse(getStoredValue(COMMUNITY_SETTINGS_KEY) ?? '{}') as {
+        discordArchive?: Record<string, unknown>
+      }
+      const active = [...this.watches.values()].filter((watch) => watch.enabled)
+      if (
+        raw.discordArchive &&
+        !Object.hasOwn(raw.discordArchive, 'channelId') &&
+        active.length === 1
+      ) {
+        const settings = loadCommunitySettings().discordArchive
+        manageCommunitySettings({
+          action: 'update',
+          settings: { discordArchive: { ...settings, channelId: active[0]!.channelId } }
+        })
+      }
+    } catch {
+      /* Corrupt settings remain disabled by all ingestion paths. */
+    }
     const restored: { event: ArchiveGatewayEvent; bytes: number }[] = []
     for (const item of this.outbox.list()) {
       try {
@@ -131,6 +156,10 @@ export class DiscordArchiveLiveQueue {
   }
 
   watch(channelId: string, guildId: string, userId: string) {
+    for (const watch of this.watches.values()) {
+      if (watch.channelId !== channelId && watch.enabled)
+        this.saveWatch({ ...watch, enabled: false })
+    }
     const previous = this.watches.get(channelId)
     if (!previous && this.watches.size >= 500)
       throw new Error('Realtime archive channel limit reached')
@@ -162,8 +191,15 @@ export class DiscordArchiveLiveQueue {
 
   stats(channelId: string) {
     const watch = this.watches.get(channelId)
+    let enabled = false
+    try {
+      const settings = loadCommunitySettings().discordArchive
+      enabled = Boolean(watch?.enabled && settings.enabled && settings.channelId === channelId)
+    } catch {
+      /* Fail closed on corrupt settings. */
+    }
     return {
-      realtime_enabled: watch?.enabled ?? false,
+      realtime_enabled: enabled,
       queued_events: [...this.pending.values()].filter((item) => item.event.channelId === channelId)
         .length,
       last_gateway_event_at: watch?.lastEventAt ?? null,
@@ -203,7 +239,8 @@ export class DiscordArchiveLiveQueue {
       return false
     }
     try {
-      if (!loadCommunitySettings().discordArchive.enabled) return false
+      const settings = loadCommunitySettings().discordArchive
+      if (!settings.enabled || settings.channelId !== watch.channelId) return false
       const source = data as Record<string, unknown>
       const ids =
         type.data === 'MESSAGE_DELETE_BULK' ? source.ids : [source.id ?? source.message_id]
@@ -277,8 +314,11 @@ export class DiscordArchiveLiveQueue {
     if (this.flushing) return this.flushing
     if (this.closed || !this.pending.size) return Promise.resolve(0)
     let enabled = false
+    let configuredChannel: string | null = null
     try {
-      enabled = loadCommunitySettings().discordArchive.enabled
+      const settings = loadCommunitySettings().discordArchive
+      enabled = settings.enabled
+      configuredChannel = settings.channelId
     } catch {
       /* Fail closed. */
     }
@@ -288,6 +328,7 @@ export class DiscordArchiveLiveQueue {
     }
     const first = [...this.pending.values()].find(
       (item) =>
+        item.event.channelId === configuredChannel &&
         (!channelId || item.event.channelId === channelId) &&
         (this.retryAt.get(item.event.channelId) ?? 0) <= Date.now()
     )

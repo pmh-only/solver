@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Solver · 메시지 검색</title>
+    <link rel="stylesheet" href="/search.css" />
+    <script src="/search.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">Solver <span>/ 메시지 검색</span></a>
+      <span id="identity">Discord 연결 계정 전용</span>
+    </header>
+    <main>
+      <section class="intro">
+        <p class="eyebrow">DISCORD ARCHIVE SEARCH</p>
+        <h1>기억나는 말로,<br />그 메시지를 찾아보세요.</h1>
+        <p>
+          본문과 임베드에서 찾을 내용을 자연스럽게 입력하세요.<br />AI가 검색어를 이해하고, 지금
+          확인할 수 있는 원문을 찾아드립니다.
+        </p>
+      </section>
+      <section class="login-panel" id="login-panel" hidden>
+        <h2>내가 볼 수 있는 메시지만</h2>
+        <p>기존 OIDC의 Discord 로그인으로 접속하세요. 관리자나 검색 역할은 필요하지 않습니다.</p>
+        <a class="primary" href="/auth/login?returnTo=%2Fsearch">Discord 연동 계정으로 로그인</a>
+      </section>
+      <section class="search-panel" aria-label="메시지 검색">
+        <div class="channel-bar">
+          <span class="channel" id="channel">접근 권한 확인 중…</span
+          ><span class="badge">단일 채널 · 원문 확인</span>
+        </div>
+        <form id="search-form">
+          <label class="sr-only" for="query">찾을 메시지</label>
+          <textarea
+            id="query"
+            name="prompt"
+            rows="2"
+            maxlength="4000"
+            required
+            disabled
+            placeholder="본문에 털이 들어가는 글 찾아줘"
+          ></textarea>
+          <div class="form-footer">
+            <span>따옴표 없이도 검색할 수 있어요.</span
+            ><button class="primary" id="submit" type="submit" disabled>
+              메시지 검색 <span aria-hidden="true">↗</span>
+            </button>
+          </div>
+        </form>
+        <div class="examples" aria-label="검색 예시">
+          <button type="button" data-example="본문에 털이 들어가는 글 찾아줘" disabled>
+            본문에서 찾기
+          </button>
+          <button type="button" data-example="임베드에 바나나 들어간 내용 찾아줘" disabled>
+            임베드에서 찾기
+          </button>
+        </div>
+      </section>
+      <p id="status" class="status" role="status" aria-live="polite">
+        로그인 정보를 확인하는 중입니다.
+      </p>
+      <section id="results-panel" hidden aria-labelledby="results-heading">
+        <div class="results-heading">
+          <h2 id="results-heading">검색 결과</h2>
+          <span id="result-meta"></span>
+        </div>
+        <div id="results"></div>
+        <p id="result-note" class="note"></p>
+      </section>
+      <footer>
+        접근 가능한 채널만 검색합니다. 삭제되었거나 검색어가 사라진 원문은 결과에 표시하지
+        않습니다.<br />과거 기록 수집 상태에 따라 일부 결과가 빠질 수 있습니다. 검색 요청은 AI
+        서비스에서 처리됩니다.
+      </footer>
+    </main>
+  </body>
+</html>

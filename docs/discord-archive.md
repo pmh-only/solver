@@ -16,6 +16,8 @@ Use the existing `/a` command; no Discord command deployment or extra environmen
 
 ## Collection
 
+Collection is restricted to **one channel** selected by `discordArchive.channelId` through `/a`. The first `collect`/`watch` selects its channel if none is set. Changing the selected channel stops old-channel capture; existing archives are retained for administrator inspection or explicit deletion. The legacy `maxChannels` field cannot enable multi-channel capture. An existing single active watch is migrated automatically when upgrading settings that predate `channelId`.
+
 The `discord_message_archive` agent tool supports `collect`, `watch`, `unwatch`, `status`, `query`, and explicit `delete` actions. It is available only to configured Discord administrators in private Discord sessions. Both the user and bot must currently be able to view the requested channel and read its history; private-thread membership is also checked.
 
 DuckDB **2.0.0-r.1** is pinned. Each channel has its own persistent database beside the existing KV store, under `discord-archive/<channel_id>.duckdb`.
@@ -39,6 +41,14 @@ The outbox is bounded to 1000 events / 16 MiB of payload with seven-day retentio
 Realtime tracking can only record gateway events delivered while the bot is connected. Historical collection cannot recover earlier deleted messages or earlier edits; refresh history after downtime to recover available messages. Attachment **metadata** is stored, not file bytes. Existing reaction counts and poll metadata are snapshots; gateway events record individual changes observed after tracking starts, not exhaustive past reactor/voter lists. Threads must be tracked separately by their channel IDs. Missing Message Content intent or Discord permissions can limit returned fields.
 
 ## Queries and controls
+
+### Authenticated web UI
+
+Open `/search` on the existing web server. Sign in through the existing OIDC provider with a linked Discord account. The provider must include a trusted `discord_id` profile claim; the lab authentik mapping derives it from the actual Discord source connection, not an editable username or attribute. Login sessions created before this claim was added require signing in again.
+
+Any linked member can search the single configured channel without administrator status, a search role or assistant access. Current Discord membership and View Channel / Read Message History permissions are checked before AI interpretation and again before querying. Browser requests supply only natural-language text, never user IDs or channel IDs. The UI renders text safely and provides up to five verified source links, progress/errors, empty results and incomplete-history notices. Searches require session CSRF and are limited to six per user/minute, thirty globally/minute, three hundred globally/hour and one concurrent web search.
+
+The `/personas` editor now uses the same Discord-linked OIDC login for listing, creating, changing and deleting personas. Anonymous API access is rejected. Changes require CSRF; ordinary linked members do not gain assistant or administration access. No new listener, OAuth client, environment variable or Discord command deployment is needed.
 
 ### Public role-mention search
 

@@ -12,6 +12,7 @@ let personas = []
 let selected = null
 let baseline = { name: '', prompt: '' }
 let busy = false
+let csrfToken = null
 
 function draft() {
   return { name: nameInput.value.trim(), prompt: promptInput.value.trim() }
@@ -27,10 +28,23 @@ function notify(message, tone = '') {
 async function api(method = 'GET', body) {
   const response = await fetch('/api/personas', {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Persona-Editor': '1' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Persona-Editor': '1',
+      ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+    },
     ...(body ? { body: JSON.stringify(body) } : {})
   })
   const result = await response.json()
+  if (result.csrfToken) csrfToken = result.csrfToken
+  if (response.status === 401 || response.status === 403) {
+    document.querySelector('#persona-login').hidden = false
+    if (response.status === 401) {
+      csrfToken = null
+      personas = []
+      render()
+    }
+  }
   if (!response.ok)
     throw new Error(result.error || '요청에 실패했습니다. 잠시 후 다시 시도해 주세요.')
   return result.personas
@@ -51,11 +65,12 @@ function sync() {
   saveState.textContent = changed ? '미저장 변경사항' : selected ? '저장됨' : '변경 없음'
   saveState.dataset.dirty = String(changed)
   save.textContent = busy ? '처리 중…' : selected ? '수정사항 저장' : '등록'
-  save.disabled = busy || !changed || !/^[\p{L}\p{N}_-]{1,40}$/u.test(value.name) || !value.prompt
+  save.disabled =
+    !csrfToken || busy || !changed || !/^[\p{L}\p{N}_-]{1,40}$/u.test(value.name) || !value.prompt
   remove.disabled = busy || !selected
   duplicate.disabled = busy || !selected
-  document.querySelector('#editor-fields').disabled = busy
-  document.querySelector('#new').disabled = busy
+  document.querySelector('#editor-fields').disabled = busy || !csrfToken
+  document.querySelector('#new').disabled = busy || !csrfToken
   document.querySelector('#refresh').disabled = busy
   document.querySelector('#copy-usage').disabled = busy || !value.name
   list.querySelectorAll('button').forEach((button) => {

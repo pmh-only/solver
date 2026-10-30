@@ -11,7 +11,7 @@ import { chmod, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { isAdminUser } from './authorization.js'
-import { loadCommunitySettings } from './community-settings.js'
+import { loadCommunitySettings, manageCommunitySettings } from './community-settings.js'
 import { getDefaultKvStorePath } from './helpers/kv-store-path.js'
 import {
   archiveJson,
@@ -206,8 +206,8 @@ export class DiscordArchiveService {
       throw new Error('Select a guild text channel or thread, not a DM, forum parent or category')
     if (!this.client.user) throw new Error('Discord client is not ready')
     const [requester, bot] = await Promise.all([
-      channel.guild.members.fetch(userId),
-      channel.guild.members.fetch(this.client.user.id)
+      channel.guild.members.fetch({ user: userId, force: true }),
+      channel.guild.members.fetch({ user: this.client.user.id, force: true })
     ])
     if (
       !channel.permissionsFor(requester)?.has(REQUIRED_PERMISSIONS) ||
@@ -229,11 +229,47 @@ export class DiscordArchiveService {
     return channel
   }
 
-  async search(raw: ArchiveSearchRequest): Promise<ArchiveSearchResult> {
+  async webChannel(userId: string) {
+    const settings = loadCommunitySettings().discordArchive
+    if (!settings.enabled || !settings.channelId)
+      throw new Error('Archive search channel is not configured')
+    const channel = await this.authorizeChannel(settings.channelId, userId, false)
+    return { id: channel.id, guildId: channel.guild.id, name: channel.name }
+  }
+
+  async searchForWeb(
+    userId: string,
+    intent: { keyword: string; scope: ArchiveSearchRequest['scope'] }
+  ) {
+    const channel = await this.webChannel(userId)
+    const result = await this.search(
+      {
+        ...intent,
+        userId,
+        guildId: channel.guildId,
+        channelId: channel.id,
+        requestMessageId: '00000000000000000'
+      },
+      false
+    )
+    return {
+      ...result,
+      channel,
+      matches: result.matches.map((match) => ({
+        ...match,
+        url: `https://discord.com/channels/${channel.guildId}/${channel.id}/${match.id}`
+      }))
+    }
+  }
+
+  async search(raw: ArchiveSearchRequest, requireRole = true): Promise<ArchiveSearchResult> {
     const input = searchSchema.parse(raw)
     const settings = loadCommunitySettings().discordArchive
-    if (!settings.enabled || !settings.searchRoleId)
+    if (!settings.enabled || (requireRole && !settings.searchRoleId))
       throw new Error('Archive role search is disabled')
+    if (!settings.channelId) throw new Error('No archive exists; collect this channel first')
+    if (settings.channelId !== input.channelId)
+      throw new Error('Search is limited to the configured archive channel')
     await this.live.flush()
     if (this.busy) throw new Error('Discord archive is busy')
     this.busy = true
@@ -406,6 +442,7 @@ export class DiscordArchiveService {
       ).reduce((a, b) => a + b, 0)
       if (
         !settings.enabled ||
+        settings.channelId !== watch.channelId ||
         used +
           events.reduce((sum, event) => sum + Buffer.byteLength(JSON.stringify(event)) * 2, 0) >
           settings.maxStorageMiB * 1024 * 1024
@@ -432,7 +469,8 @@ export class DiscordArchiveService {
     watch: ArchiveWatch,
     events: ArchiveGatewayEvent[]
   ) {
-    if (!loadCommunitySettings().discordArchive.enabled || !isAdminUser(watch.userId))
+    const settings = loadCommunitySettings().discordArchive
+    if (!settings.enabled || settings.channelId !== watch.channelId || !isAdminUser(watch.userId))
       throw new Error('Realtime collection is disabled')
     const signal = AbortSignal.timeout(20_000)
     await connection.run('BEGIN TRANSACTION')
@@ -587,6 +625,10 @@ export class DiscordArchiveService {
       }
       const channel = await this.authorizeChannel(input.channelId, userId)
       const writing = input.action === 'collect' || input.action === 'watch'
+      if (writing && settings.channelId && settings.channelId !== input.channelId)
+        throw new Error(
+          'Archive channel limit is one; change discordArchive.channelId through /a before collecting another channel'
+        )
       signal.throwIfAborted()
       await mkdir(this.directory, { recursive: true, mode: 0o700 })
       await chmod(this.directory, 0o700)
@@ -600,13 +642,6 @@ export class DiscordArchiveService {
         (files.includes(`${input.channelId}.duckdb.wal`) ? 0 : await size(`${path}.wal`))
       const existing = await size(path)
       if (!existing && !writing) throw new Error('No archive exists; collect this channel first')
-      if (
-        !existing &&
-        files.filter((name) => name.endsWith('.duckdb')).length >= settings.maxChannels
-      )
-        throw new Error(
-          'Archive channel limit reached; delete an archive or increase discordArchive.maxChannels through /a'
-        )
       if (writing && (await storageBytes()) >= settings.maxStorageMiB * 1024 * 1024)
         throw new Error(
           'Archive storage limit reached; delete data or increase discordArchive.maxStorageMiB through /a'
@@ -635,7 +670,14 @@ export class DiscordArchiveService {
         const state = await this.status(connection)
         if (state.guild_id !== channel.guild.id || state.channel_id !== channel.id)
           throw new Error('Archive channel identity does not match Discord')
-        if (writing) this.live.watch(channel.id, channel.guild.id, userId)
+        if (writing) {
+          if (!settings.channelId)
+            manageCommunitySettings({
+              action: 'update',
+              settings: { discordArchive: { ...settings, channelId: channel.id } }
+            })
+          this.live.watch(channel.id, channel.guild.id, userId)
+        }
         if (input.action === 'query')
           return {
             ...(await this.query(connection, input, signal)),
@@ -699,6 +741,9 @@ export class DiscordArchiveService {
     try {
       while (!state.complete && pages < input.maxPages) {
         boundedSignal.throwIfAborted()
+        const settings = loadCommunitySettings().discordArchive
+        if (!settings.enabled || settings.channelId !== input.channelId)
+          throw new Error('Configured archive channel changed; collection stopped')
         const query = new URLSearchParams({
           limit: '100',
           ...(state.cursor ? { before: String(state.cursor) } : {})
@@ -899,4 +944,16 @@ export async function searchDiscordArchive(
 ): Promise<ArchiveSearchResult> {
   if (!service) throw new Error('Discord archive is not available')
   return service.search(input)
+}
+
+export async function archiveWebChannel(userId: string) {
+  if (!service) throw new Error('Discord archive is not available')
+  return service.webChannel(userId)
+}
+export async function searchDiscordArchiveForWeb(
+  userId: string,
+  intent: { keyword: string; scope: ArchiveSearchRequest['scope'] }
+) {
+  if (!service) throw new Error('Discord archive is not available')
+  return service.searchForWeb(userId, intent)
 }

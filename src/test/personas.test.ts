@@ -7,13 +7,24 @@ import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { COMMUNITY_SETTINGS_KEY, manageCommunitySettings } from '../community-settings.js'
 import { listPersonas, savePersona } from '../personas.js'
 import { closeWebServer, createWebServer } from '../web-server.js'
+import { createWebSessionForTests, resetWebAuthForTests } from '../web-auth.js'
 
 let server: Server
 let origin: string
+let credentials: { cookie: string; csrfToken: string }
 
 beforeEach(async () => {
   isolateStoredValues(join(process.cwd(), '.tmp', 'personas.test.sqlite'))
   clearStoredValues()
+  resetWebAuthForTests()
+  credentials = createWebSessionForTests({
+    id: 'web:member',
+    subject: 'member',
+    name: 'Member',
+    admin: false,
+    allowed: false,
+    discordId: '555555555555555555'
+  })
   server = createWebServer()
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -21,6 +32,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await closeWebServer(server)
   clearStoredValues()
+  resetWebAuthForTests()
 })
 
 function write(
@@ -30,12 +42,37 @@ function write(
 ) {
   return fetch(`${origin}/api/personas`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Persona-Editor': '1', ...headers },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Persona-Editor': '1',
+      Cookie: credentials.cookie,
+      'X-CSRF-Token': credentials.csrfToken,
+      ...headers
+    },
     body: JSON.stringify(body)
   })
 }
+const read = () => fetch(`${origin}/api/personas`, { headers: { Cookie: credentials.cookie } })
 
-describe('public persona editor', () => {
+describe('OIDC persona editor', () => {
+  it('requires a Discord-linked OIDC session for reads and writes, without assistant or administrator access', async () => {
+    expect((await fetch(`${origin}/api/personas`)).status).toBe(401)
+    expect((await write({ name: 'cat', prompt: 'hi' }, 'PUT', { Cookie: '' })).status).toBe(401)
+    const unlinked = createWebSessionForTests({
+      id: 'web:other',
+      subject: 'other',
+      name: 'Other',
+      admin: true,
+      allowed: true
+    })
+    expect(
+      (await fetch(`${origin}/api/personas`, { headers: { Cookie: unlinked.cookie } })).status
+    ).toBe(403)
+    expect((await write({ name: 'cat', prompt: 'hi' }, 'PUT', { 'X-CSRF-Token': '' })).status).toBe(
+      403
+    )
+    expect((await write({ name: 'cat', prompt: 'hi' })).status).toBe(200)
+  })
   it('serves a public, CSP-compatible editor and HEAD without authentication', async () => {
     const page = await fetch(`${origin}/personas`)
     expect(page.status).toBe(200)
@@ -73,7 +110,7 @@ describe('public persona editor', () => {
     expect((await write({ name: '고양이', prompt: '야옹' })).status).toBe(200)
     expect(listPersonas()).toEqual([{ name: '고양이', prompt: '야옹' }])
     await write({ name: '고양이', prompt: '냐옹' })
-    expect(await (await fetch(`${origin}/api/personas`)).json()).toEqual({
+    expect(await (await read()).json()).toMatchObject({
       personas: [{ name: '고양이', prompt: '냐옹' }]
     })
     expect(manageCommunitySettings({ action: 'get' }).anonymousName).toBe('preserve')
@@ -81,7 +118,7 @@ describe('public persona editor', () => {
       action: 'update',
       settings: { personas: [{ name: 'agent', prompt: 'hello' }] }
     })
-    expect(await (await fetch(`${origin}/api/personas`)).json()).toEqual({
+    expect(await (await read()).json()).toMatchObject({
       personas: [{ name: 'agent', prompt: 'hello' }]
     })
     expect((await write({ name: 'agent' }, 'DELETE')).status).toBe(200)
@@ -131,7 +168,12 @@ describe('public persona editor', () => {
     expect((await write({ name: 'cat', prompt: 'a'.repeat(70_000) })).status).toBe(400)
     const invalid = await fetch(`${origin}/api/personas`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Persona-Editor': '1' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Persona-Editor': '1',
+        Cookie: credentials.cookie,
+        'X-CSRF-Token': credentials.csrfToken
+      },
       body: '{'
     })
     expect(invalid.status).toBe(400)
@@ -142,7 +184,7 @@ describe('public persona editor', () => {
       expect((await write({ name: 'cat', prompt: 'hi' })).status).toBe(200)
     }
     expect((await write({ name: 'cat', prompt: 'again' })).status).toBe(429)
-    expect((await fetch(`${origin}/api/personas`)).status).toBe(200)
+    expect((await read()).status).toBe(200)
   })
   it('does not expose other settings and fails safely on corrupt persisted state', async () => {
     manageCommunitySettings({
@@ -151,11 +193,9 @@ describe('public persona editor', () => {
         roleChat: { roleId: '444444444444444444', systemPrompt: 'private system prompt' }
       }
     })
-    expect(await (await fetch(`${origin}/api/personas`)).text()).not.toContain(
-      'private system prompt'
-    )
+    expect(await (await read()).text()).not.toContain('private system prompt')
     setStoredValue(COMMUNITY_SETTINGS_KEY, '{"personas":"corrupt"}')
-    const response = await fetch(`${origin}/api/personas`)
+    const response = await read()
     expect(response.status).toBe(400)
     expect(await response.text()).not.toContain('corrupt')
   })

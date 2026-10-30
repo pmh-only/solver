@@ -56,7 +56,10 @@ async function editor(initial: Persona[] = []) {
     if (options.method === 'PUT' && body)
       saved = [...saved.filter((item) => item.name !== body.name), body]
     if (options.method === 'DELETE' && body) saved = saved.filter((item) => item.name !== body.name)
-    return { ok: true, json: async () => ({ personas: saved.map((item) => ({ ...item })) }) }
+    return {
+      ok: true,
+      json: async () => ({ personas: saved.map((item) => ({ ...item })), csrfToken: 'test-csrf' })
+    }
   })
   runInNewContext(script, {
     document: { querySelector: element, createElement: (tag: string) => new Element(tag) },

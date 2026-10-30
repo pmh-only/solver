@@ -59,8 +59,13 @@ const communitySettingsFields = {
   discordArchive: z
     .object({
       enabled: z.boolean().default(true),
+      channelId: z
+        .string()
+        .regex(/^\d{17,20}$/)
+        .nullable()
+        .default(null),
       maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
-      maxChannels: z.number().int().min(1).max(500).default(100),
+      maxChannels: z.number().int().min(1).max(500).default(1),
       searchModel: z.string().trim().min(1).max(100).default('gpt-5-mini'),
       searchRoleId: z
         .string()
@@ -132,8 +137,9 @@ export const communitySettingsSchema = z
   .object({
     discordArchive: communitySettingsFields.discordArchive.default({
       enabled: true,
+      channelId: null,
       maxStorageMiB: 1024,
-      maxChannels: 100,
+      maxChannels: 1,
       searchRoleId: null,
       searchModel: 'gpt-5-mini'
     }),

@@ -36,6 +36,7 @@ export interface WebUser {
   email?: string
   admin: boolean
   allowed: boolean
+  discordId?: string
 }
 
 interface WebSession {
@@ -279,6 +280,10 @@ export async function completeOidcLogin(
       subject,
       name,
       email,
+      discordId:
+        typeof claims.discord_id === 'string' && /^\d{17,20}$/.test(claims.discord_id)
+          ? claims.discord_id
+          : undefined,
       admin,
       allowed: admin || allowedSubjects.has(subject) || allowedSubjects.has('*')
     },

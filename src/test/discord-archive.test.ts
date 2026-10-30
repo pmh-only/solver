@@ -10,8 +10,8 @@ import {
   DiscordArchiveService,
   setDiscordArchiveClient
 } from '../discord-archive.js'
-import { manageCommunitySettings } from '../community-settings.js'
-import { clearStoredValues } from '../helpers/kv-store.js'
+import { loadCommunitySettings, manageCommunitySettings } from '../community-settings.js'
+import { clearStoredValues, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
 import { clearRuntimeIssuesForTests } from '../runtime-health.js'
 
@@ -77,7 +77,9 @@ beforeEach(async () => {
   directory = await mkdtemp(join(process.cwd(), '.tmp', 'discord-archive-'))
   vi.resetAllMocks()
   fetchChannel.mockResolvedValue(channel())
-  fetchMember.mockImplementation(async (id: string) => ({ id }))
+  fetchMember.mockImplementation(async (input: string | { user: string }) => ({
+    id: typeof input === 'string' ? input : input.user
+  }))
   permissions.mockReturnValue({ has: () => true })
   service = new DiscordArchiveService(
     { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
@@ -368,6 +370,46 @@ async function rows(sql: string) {
 }
 
 describe('realtime Discord archives', () => {
+  it('migrates one existing legacy watch to single-channel configuration after restart', async () => {
+    await call({ action: 'watch' })
+    await service.close()
+    const raw = JSON.parse(getStoredValue('community:settings')!) as {
+      discordArchive: Record<string, unknown>
+    }
+    delete raw.discordArchive.channelId
+    setStoredValue('community:settings', JSON.stringify(raw))
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    expect(loadCommunitySettings().discordArchive.channelId).toBe(CHANNEL)
+    expect(service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))).toBe(true)
+    expect(await service.flushRealtime()).toBe(1)
+  })
+  it('pins collection to one channel and stops old-channel ingestion when the target changes', async () => {
+    await collectOne()
+    expect(loadCommunitySettings().discordArchive.channelId).toBe(CHANNEL)
+    fetchChannel.mockResolvedValue(channel(OTHER))
+    await expect(call({ action: 'watch', channelId: OTHER })).rejects.toThrow(
+      'channel limit is one'
+    )
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { ...loadCommunitySettings().discordArchive, channelId: OTHER } }
+    })
+    expect(service.handleGatewayPacket(packet('MESSAGE_CREATE', message()))).toBe(false)
+    await call({ action: 'watch', channelId: OTHER })
+    expect(
+      service.handleGatewayPacket(packet('MESSAGE_CREATE', { ...message(), channel_id: OTHER }))
+    ).toBe(true)
+    expect(await service.flushRealtime()).toBe(1)
+    fetchChannel.mockResolvedValue(channel())
+    expect(await call({ action: 'status' })).toMatchObject({
+      message_count: 1,
+      realtime_enabled: false
+    })
+  })
   it('migrates existing snapshot databases without deleting history or resetting pagination', async () => {
     const db = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
     const connection = await db.connect()
@@ -772,6 +814,17 @@ describe('member-accessible role search', () => {
       settings: { discordArchive: { searchRoleId: SEARCH_ROLE } }
     })
   }
+  it('uses only the configured channel for OIDC web users and does not require a search role', async () => {
+    await collectOne()
+    get.mockResolvedValue(message())
+    const result = await service.searchForWeb(OTHER, { keyword: 'Hello', scope: 'content' })
+    expect(result.channel.id).toBe(CHANNEL)
+    expect(result.matches[0]!.url).toBe(
+      `https://discord.com/channels/${GUILD}/${CHANNEL}/1000000000000000100`
+    )
+    permissions.mockReturnValue({ has: () => false })
+    await expect(service.webChannel(OTHER)).rejects.toThrow('View Channel')
+  })
   it('searches pre-realtime snapshots without requiring an administrator to migrate them', async () => {
     enable()
     await collectOne()
@@ -837,7 +890,7 @@ describe('member-accessible role search', () => {
     await expect(
       service.run({ action: 'query', channelId: CHANNEL, sql: 'SELECT * FROM messages' }, OTHER)
     ).rejects.toThrow('administrator')
-    expect(fetchMember).toHaveBeenCalledWith(OTHER)
+    expect(fetchMember).toHaveBeenCalledWith({ user: OTHER, force: true })
   })
 
   it('treats SQL operators and wildcard characters as literal search text', async () => {
