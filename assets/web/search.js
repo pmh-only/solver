@@ -68,6 +68,19 @@ function render(data) {
     results.append(article)
   }
   const notes = []
+  if (data.collection) {
+    const { messageCount, historyCursorAt } = data.collection
+    const boundary = historyCursorAt
+      ? ' · ' + new Date(historyCursorAt).toLocaleString('ko-KR') + ' 메시지까지 과거 기록 수집'
+      : ''
+    notes.push(
+      '저장 ' +
+        messageCount.toLocaleString('ko-KR') +
+        '개 · ' +
+        (data.historyComplete ? '과거 기록 수집 완료' : '과거 기록 수집 미완료') +
+        boundary
+    )
+  }
   if (data.more) notes.push('추가 결과가 있습니다. 검색어를 더 구체적으로 입력해 보세요.')
   if (!data.historyComplete)
     notes.push('과거 기록 수집이 아직 완료되지 않아 일부 결과가 빠질 수 있습니다.')

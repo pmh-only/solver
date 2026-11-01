@@ -97,10 +97,17 @@ export function createArchiveSearchHandler(
       for (const item of result.matches.slice(0, 5)) {
         if (!/^\d{17,20}$/.test(item.id)) continue
         const line = `\n[원문](https://discord.com/channels/${message.guildId}/${message.channelId}/${item.id}) · ${safeText(item.authorName, 40)} · ${item.field === 'content' ? '본문' : item.field === 'embeds' ? '임베드' : '기타 필드'}\n> ${safeText(item.snippet, 180)}\n`
-        if (body.length + line.length > 1830) break
+        if (body.length + line.length > 1600) break
         body += line
       }
       if (result.more) body += '\n-# 추가 결과는 검색어를 구체화해 확인하세요.'
+      if (result.collection) {
+        const { messageCount, historyCursorAt } = result.collection
+        const boundary = historyCursorAt
+          ? ` · <t:${Math.floor(Date.parse(historyCursorAt) / 1000)}:f> 메시지까지 과거 기록 수집`
+          : ''
+        body += `\n-# 저장 ${messageCount.toLocaleString('ko-KR')}개 · ${result.historyComplete ? '과거 기록 수집 완료' : '과거 기록 수집 미완료'}${boundary}`
+      }
       if (!result.historyComplete)
         body += '\n-# 과거 기록 수집이 완료되지 않아 일부 결과가 빠질 수 있습니다.'
       if (result.pendingEvents) body += '\n-# 실시간 반영을 기다리는 메시지가 있습니다.'

@@ -41,6 +41,7 @@ const result = {
   ],
   more: false,
   historyComplete: false,
+  collection: { messageCount: 12345, historyCursorAt: '2026-10-01T00:00:00.000Z' },
   pendingEvents: 0
 }
 beforeEach(async () => {
@@ -96,6 +97,8 @@ describe('OIDC archive web search', () => {
     const script = await (await fetch(`${origin}/search.js`)).text()
     expect(script).not.toContain('innerHTML')
     expect(script).toContain('snippet.textContent = item.snippet')
+    expect(script).toContain('data.collection')
+    expect(script).toContain('과거 기록 수집 미완료')
     expect((await fetch(`${origin}/search.css`)).status).toBe(200)
     expect(await (await fetch(`${origin}/search`, { method: 'HEAD' })).text()).toBe('')
   })
@@ -132,6 +135,7 @@ describe('OIDC archive web search', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({
       intent: { keyword: '털', scope: 'content' },
+      collection: result.collection,
       matches: result.matches
     })
     expect(searchDiscordArchiveForWeb).toHaveBeenCalledWith(userId, {

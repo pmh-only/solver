@@ -54,6 +54,10 @@ export interface ArchiveSearchResult {
   more: boolean
   historyComplete: boolean
   pendingEvents: number
+  collection?: {
+    messageCount: number
+    historyCursorAt: string | null
+  }
 }
 const searchSchema = z.object({
   guildId: z.string().regex(/^\d{17,20}$/),
@@ -279,6 +283,7 @@ export class DiscordArchiveService {
     let connection: DuckDBConnection | undefined
     let candidates: string[] = []
     let complete = false
+    let collection: ArchiveSearchResult['collection']
     try {
       const channel = await this.authorizeChannel(input.channelId, input.userId, false)
       if (channel.guild.id !== input.guildId) throw new Error('Archive guild mismatch')
@@ -291,6 +296,13 @@ export class DiscordArchiveService {
       if (state.guild_id !== input.guildId || state.channel_id !== input.channelId)
         throw new Error('Archive channel identity mismatch')
       complete = Boolean(state.complete)
+      collection = {
+        messageCount: Number(state.message_count),
+        historyCursorAt:
+          typeof state.cursor === 'string'
+            ? new Date(Number((BigInt(state.cursor) >> 22n) + 1420070400000n)).toISOString()
+            : null
+      }
       await this.ensureSearchText(connection, signal, path, settings.maxStorageMiB * 1024 * 1024)
       // Snapshot archives created before realtime tracking have no deletion column.
       // Only derived search text is backfilled; live verification still excludes deletions.
@@ -382,6 +394,7 @@ export class DiscordArchiveService {
       matches: matches.slice(0, 5),
       more: matches.length > 5 || candidates.length === 12,
       historyComplete: complete,
+      collection,
       pendingEvents: this.live.stats(input.channelId).queued_events
     }
   }

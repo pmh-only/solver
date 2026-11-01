@@ -814,6 +814,28 @@ describe('member-accessible role search', () => {
       settings: { discordArchive: { searchRoleId: SEARCH_ROLE } }
     })
   }
+  it('reports a partial historical cursor separately from realtime messages and search hits', async () => {
+    enable()
+    get.mockResolvedValueOnce([message()])
+    await call({ action: 'collect', maxPages: 1 })
+    const result = await service.search(input)
+    expect(result.matches).toEqual([])
+    expect(result.historyComplete).toBe(false)
+    expect(result.collection).toEqual({
+      messageCount: 1,
+      historyCursorAt: new Date(
+        Number((1000000000000000100n >> 22n) + 1420070400000n)
+      ).toISOString()
+    })
+  })
+  it('reports zero messages and no cursor for an empty archive', async () => {
+    enable()
+    get.mockResolvedValueOnce([])
+    await call({ action: 'collect' })
+    const result = await service.search(input)
+    expect(result.historyComplete).toBe(true)
+    expect(result.collection).toEqual({ messageCount: 0, historyCursorAt: null })
+  })
   it('uses only the configured channel for OIDC web users and does not require a search role', async () => {
     await collectOne()
     get.mockResolvedValue(message())
@@ -1069,6 +1091,12 @@ describe('member-accessible role search', () => {
     expect(result.matches).toHaveLength(5)
     expect(result.more).toBe(true)
     expect(result.historyComplete).toBe(true)
+    expect(result.collection).toEqual({
+      messageCount: 8,
+      historyCursorAt: new Date(
+        Number((1000000000000000100n >> 22n) + 1420070400000n)
+      ).toISOString()
+    })
   })
 
   it('fails closed on failed or malformed live message verification', async () => {

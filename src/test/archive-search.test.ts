@@ -68,6 +68,40 @@ afterEach(() => {
 })
 
 describe('public archive role search', () => {
+  it.each([false, true])(
+    'shows collection count and history boundary (complete=%s)',
+    async (historyComplete) => {
+      search.mockResolvedValueOnce({
+        matches: [],
+        more: false,
+        historyComplete,
+        pendingEvents: 0,
+        collection: { messageCount: 12345, historyCursorAt: '2026-10-01T00:00:00.000Z' }
+      })
+      const input = message()
+      await createArchiveSearchHandler(search)(input)
+      const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
+      expect(payload.content).toContain('저장 12,345개')
+      expect(payload.content).toContain(
+        historyComplete ? '과거 기록 수집 완료' : '과거 기록 수집 미완료'
+      )
+      expect(payload.content).toContain('<t:1790812800:f> 메시지까지 과거 기록 수집')
+    }
+  )
+  it('shows an empty archive without inventing a history boundary', async () => {
+    search.mockResolvedValueOnce({
+      matches: [],
+      more: false,
+      historyComplete: false,
+      pendingEvents: 0,
+      collection: { messageCount: 0, historyCursorAt: null }
+    })
+    const input = message()
+    await createArchiveSearchHandler(search)(input)
+    const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
+    expect(payload.content).toContain('저장 0개 · 과거 기록 수집 미완료')
+    expect(payload.content).not.toContain('<t:')
+  })
   it('reports actionable query syntax errors without database work', async () => {
     vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(
       new ArchiveQueryError('닫는 괄호가 필요합니다.')
@@ -208,7 +242,8 @@ describe('public archive role search', () => {
       })),
       more: true,
       historyComplete: false,
-      pendingEvents: 1
+      pendingEvents: 1,
+      collection: { messageCount: 12345, historyCursorAt: '2026-10-01T00:00:00.000Z' }
     })
     const input = message()
     await createArchiveSearchHandler(search)(input)
@@ -218,6 +253,8 @@ describe('public archive role search', () => {
     expect(payload.content).not.toContain('@everyone')
     expect(payload.content).not.toContain('[fake](https://evil.example)')
     expect(payload.content).toContain('과거 기록 수집이 완료되지 않아')
+    expect(payload.content).toContain('저장 12,345개')
+    expect(payload.content).toContain('실시간 반영을 기다리는 메시지')
   })
   it('rate limits repeated requests without flooding repeated rate notices', async () => {
     const handle = createArchiveSearchHandler(search)
