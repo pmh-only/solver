@@ -105,7 +105,7 @@ describe('role mention chat', () => {
     const handler = createRoleChatHandler(generate)
     await handler(message({ content: `<@&${ROLE}> <|우주_탐험가|> 안녕` }))
     expect(generate).toHaveBeenLastCalledWith(
-      expect.stringContaining('"content":"안녕"'),
+      expect.stringContaining('"c":"안녕"'),
       expect.objectContaining({ systemPrompt: expect.stringContaining('별에 빗대어 말해.') }),
       expect.any(Function)
     )
@@ -164,7 +164,7 @@ describe('role mention chat', () => {
       const input = message({ content })
       await createRoleChatHandler(generate)(input)
       expect(generate).toHaveBeenCalledWith(
-        expect.stringContaining('"content":"안녕"'),
+        expect.stringContaining('"c":"안녕"'),
         expect.objectContaining({ roleId: ROLE }),
         expect.any(Function)
       )
@@ -207,7 +207,7 @@ describe('role mention chat', () => {
     await handler(message())
     await handler(message({ content: `<@&${USER}> 안녕` }))
     expect(generate).toHaveBeenCalledWith(
-      expect.stringContaining('"content":"안녕"'),
+      expect.stringContaining('"c":"안녕"'),
       expect.objectContaining({ model: 'custom-model' }),
       expect.any(Function)
     )
@@ -687,11 +687,11 @@ describe('replies to the bot', () => {
     })
     await handler(input)
     expect(generate).toHaveBeenCalledWith(
-      expect.stringContaining('"content":"그건 왜 그래?"'),
+      expect.stringContaining('"c":"그건 왜 그래?"'),
       expect.any(Object),
       expect.any(Function)
     )
-    expect(generate.mock.calls[0]?.[0]).toContain(`"replyToMessageId":"${reference.messageId}"`)
+    expect(generate.mock.calls[0]?.[0]).toContain(`"a":"${ROLE}"`)
     expect(random).not.toHaveBeenCalled()
     expect(fetchHistory).toHaveBeenCalledWith({ limit: 50, before: input.id, cache: false })
     expect(input.react).not.toHaveBeenCalled()
@@ -992,7 +992,7 @@ describe('random replies without reactions', () => {
       expect(input.reply).toHaveBeenCalledTimes(chance < 0.01 ? 1 : 0)
       if (chance < 0.01) {
         expect(generate).toHaveBeenCalledWith(
-          expect.stringContaining('"content":"그냥 일반 채팅"'),
+          expect.stringContaining('"c":"그냥 일반 채팅"'),
           expect.any(Object),
           expect.any(Function)
         )
@@ -1080,18 +1080,88 @@ describe('recent channel context', () => {
   function inputParts(index = 0) {
     const input = generate.mock.calls[index]![0]
     const [history, request] = input.split('\n\nCurrent user request:\n')
+    type Context = { a: string; n: string; c: string; f: string[] }
     return {
-      history: JSON.parse(history!.split('\n')[1]!) as Array<{
-        id: string
-        authorId: string
-        authorName: string
-        bot: boolean
-        content: string
-        attachments: string[]
-      }>,
-      request: JSON.parse(request!) as { id: string; authorId: string; content: string }
+      history: JSON.parse(history!.split('\n')[1]!) as Context[],
+      request: JSON.parse(request!) as Context
     }
   }
+
+  it('includes the latest unmentioned conversation even when those messages never triggered a reply', async () => {
+    configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+    const handler = createRoleChatHandler(generate)
+    const ordinary = message({
+      id: '1000000000000000098',
+      content: '오늘 저녁 뭐 먹지?',
+      member: { displayName: '별명' }
+    })
+    const latest = message({
+      id: '1000000000000000099',
+      content: '피자 먹자',
+      author: { id: TARGET_USER }
+    })
+    await handler(ordinary)
+    await handler(latest)
+    expect(generate).not.toHaveBeenCalled()
+    expect(fetchHistory).not.toHaveBeenCalled()
+    fetchHistory.mockResolvedValue(
+      new Collection([
+        [latest.id, latest],
+        [ordinary.id, ordinary]
+      ])
+    )
+    await handler(message({ content: `<@&${ROLE}> 방금 대화 요약해줘` }))
+    expect(inputParts()).toEqual({
+      history: [
+        { a: USER, n: '별명', c: '오늘 저녁 뭐 먹지?', f: [] },
+        { a: TARGET_USER, n: 'member', c: '피자 먹자', f: [] }
+      ],
+      request: { a: USER, n: 'member', c: '방금 대화 요약해줘', f: [] }
+    })
+  })
+
+  it.each([
+    [{ displayName: '서버 별명' }, '표시 이름', '서버 별명'],
+    [null, '표시 이름', '표시 이름'],
+    [null, null, 'member']
+  ])(
+    'uses the nickname, then global display name, then username',
+    async (member, globalName, expected) => {
+      configure()
+      await createRoleChatHandler(generate)(message({ member, author: { globalName } }))
+      expect(inputParts().request.n).toBe(expected)
+    }
+  )
+
+  it('passes bounded complete attachment URLs rather than filenames without downloading them', async () => {
+    configure()
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    const links = Array.from(
+      { length: 12 },
+      (_, i) => `https://cdn.discordapp.com/attachments/photo-${i}.png?ex=123&hm=456`
+    )
+    const current = message({
+      member: { displayName: 'n'.repeat(200) },
+      attachments: new Collection(
+        links.map((url, i) => [String(i), { name: `photo-${i}.png`, url }])
+      )
+    })
+    const previous = message({
+      id: '1000000000000000099',
+      content: '',
+      attachments: new Collection([
+        ['long', { name: 'long.png', url: 'https://cdn.discordapp.com/' + 'x'.repeat(2048) }],
+        ['valid', { name: 'photo.png', url: links[0] }]
+      ])
+    })
+    fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
+    await createRoleChatHandler(generate)(current)
+    const context = inputParts()
+    expect(context.request.n).toHaveLength(100)
+    expect(context.request.f).toEqual(links.slice(0, 10))
+    expect(context.history).toEqual([{ a: USER, n: 'member', c: '', f: [links[0]] }])
+    expect(fetch).not.toHaveBeenCalled()
+  })
 
   it('fetches the newest 50 previous messages on every attempt and places the request below them', async () => {
     configure()
@@ -1113,12 +1183,12 @@ describe('recent channel context', () => {
     })
     const context = inputParts()
     expect(context.history).toHaveLength(50)
-    expect(context.history.map((item) => item.content)).toEqual(
+    expect(context.history.map((item) => item.c)).toEqual(
       Array.from({ length: 50 }, (_, i) => `history-${i}`)
     )
-    expect(context.history[0]).toMatchObject({ authorId: USER, authorName: 'user-0', bot: true })
-    expect(context.request).toMatchObject({ id: current.id, authorId: USER, content: '안녕' })
-    expect(context.history.some((item) => item.id === current.id)).toBe(false)
+    expect(context.history[0]).toEqual({ a: USER, n: 'user-0', c: 'history-0', f: [] })
+    expect(context.request).toEqual({ a: USER, n: 'member', c: '안녕', f: [] })
+    expect(context.history.some((item) => item.c === '안녕')).toBe(false)
 
     fetchHistory.mockResolvedValue(
       new Collection([
@@ -1129,7 +1199,7 @@ describe('recent channel context', () => {
     expect(fetchHistory).toHaveBeenCalledTimes(1)
     await handler(message({ author: { id: ROLE, bot: false } }))
     expect(fetchHistory).toHaveBeenCalledTimes(2)
-    expect(inputParts(1).history.map((item) => item.content)).toEqual(['new context'])
+    expect(inputParts(1).history.map((item) => item.c)).toEqual(['new context'])
   })
 
   it('also includes channel history for 1% random replies', async () => {
@@ -1137,8 +1207,8 @@ describe('recent channel context', () => {
     const previous = message({ id: '1000000000000000001', content: '대화 주제' })
     fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
     await createRoleChatHandler(generate, () => 0)(message({ content: '일반 채팅' }))
-    expect(inputParts().history[0]?.content).toBe('대화 주제')
-    expect(inputParts().request.content).toBe('일반 채팅')
+    expect(inputParts().history[0]?.c).toBe('대화 주제')
+    expect(inputParts().request.c).toBe('일반 채팅')
   })
 
   it('excludes current, future, other-channel and other-guild messages and keeps at most 50', async () => {
@@ -1156,8 +1226,8 @@ describe('recent channel context', () => {
     await createRoleChatHandler(generate)(message())
     const context = inputParts()
     expect(context.history).toHaveLength(50)
-    expect(context.history[0]?.content).toBe('history-5')
-    expect(context.history.at(-1)?.content).toBe('history-54')
+    expect(context.history[0]?.c).toBe('history-5')
+    expect(context.history.at(-1)?.c).toBe('history-54')
     expect(JSON.stringify(context.history)).not.toMatch(/future|other channel|other guild/)
   })
 
@@ -1172,17 +1242,19 @@ describe('recent channel context', () => {
       message({
         id: '1000000000000000002',
         content: '',
-        attachments: new Collection([['file', { name: 'photo.png' }]])
+        attachments: new Collection([
+          ['file', { name: 'photo.png', url: 'https://cdn.discordapp.com/attachments/photo.png' }]
+        ])
       }),
       message({ id: '1000000000000000003', content: 'a'.repeat(5000) })
     ]
     fetchHistory.mockResolvedValue(new Collection(records.map((record) => [record.id, record])))
     await createRoleChatHandler(generate)(message())
     const context = inputParts()
-    expect(context.history[0]?.content).toBe(records[0]!.content)
-    expect(context.history[1]?.attachments).toEqual(['photo.png'])
-    expect(context.history[2]?.content).toHaveLength(4000)
-    expect(context.request.content).toBe('안녕')
+    expect(context.history[0]?.c).toBe(records[0]!.content)
+    expect(context.history[1]?.f).toEqual(['https://cdn.discordapp.com/attachments/photo.png'])
+    expect(context.history[2]?.c).toHaveLength(4000)
+    expect(context.request.c).toBe('안녕')
   })
 
   it('uses independent before-message snapshots for concurrent requests, even when fetches finish out of order', async () => {
@@ -1227,10 +1299,10 @@ describe('recent channel context', () => {
       ])
     )
     await first
-    expect(inputParts(0).request.content).toBe('second')
-    expect(inputParts(0).history[0]?.content).toBe('second history')
-    expect(inputParts(1).request.content).toBe('first')
-    expect(inputParts(1).history[0]?.content).toBe('first history')
+    expect(inputParts(0).request.c).toBe('second')
+    expect(inputParts(0).history[0]?.c).toBe('second history')
+    expect(inputParts(1).request.c).toBe('first')
+    expect(inputParts(1).history[0]?.c).toBe('first history')
     expect(vi.getTimerCount()).toBe(0)
   })
 
