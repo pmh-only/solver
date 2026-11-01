@@ -799,6 +799,245 @@ describe('realtime Discord archives', () => {
   })
 })
 
+describe('automatic historical collection', () => {
+  const step = () => service.resumeHistory(AbortSignal.timeout(20_000))
+  async function partial() {
+    get.mockResolvedValueOnce([message()])
+    await call({ action: 'collect', maxPages: 1 })
+  }
+  function configure(settings: Record<string, unknown>) {
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { ...loadCommunitySettings().discordArchive, ...settings } }
+    })
+  }
+
+  it('restores enrolled history after restart, advances one page per step and stops at completion', async () => {
+    await partial()
+    await service.close()
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    get.mockResolvedValueOnce([message('1000000000000000099')]).mockResolvedValueOnce([])
+    expect(await step()).toBe(true)
+    expect(get.mock.calls[1]![1].query.get('before')).toBe('1000000000000000100')
+    expect(await call({ action: 'status' })).toMatchObject({
+      complete: false,
+      message_count: 2,
+      cursor: '1000000000000000099',
+      automatic_history_enabled: true,
+      history_collection_issue: null
+    })
+    expect(await step()).toBe(true)
+    expect(await call({ action: 'status' })).toMatchObject({ complete: true, message_count: 2 })
+    get.mockClear()
+    fetchChannel.mockClear()
+    expect(await step()).toBe(false)
+    expect(get).not.toHaveBeenCalled()
+    expect(fetchChannel).not.toHaveBeenCalled()
+    // An explicit history refresh invalidates the completion cache.
+    get.mockResolvedValueOnce([message('1000000000000000101')]).mockResolvedValueOnce([])
+    await call({ action: 'collect', restart: true, maxPages: 1 })
+    expect(await step()).toBe(true)
+    expect(await call({ action: 'status' })).toMatchObject({ complete: true, message_count: 3 })
+  })
+
+  it.each([{ autoCollect: false }, { enabled: false }, { channelId: OTHER }, { channelId: null }])(
+    'honors live /a configuration changes without fetching history: %j',
+    async (settings) => {
+      await partial()
+      configure(settings)
+      get.mockClear()
+      fetchChannel.mockClear()
+      expect(await step()).toBe(false)
+      expect(get).not.toHaveBeenCalled()
+      expect(fetchChannel).not.toHaveBeenCalled()
+      configure({ autoCollect: true, enabled: true, channelId: CHANNEL })
+      get.mockResolvedValueOnce([])
+      expect(await step()).toBe(true)
+    }
+  )
+
+  it.each(['unwatch', 'delete'])(
+    'does not restart %s without explicit enrollment',
+    async (action) => {
+      await partial()
+      await call({ action })
+      get.mockClear()
+      expect(await step()).toBe(false)
+      expect(get).not.toHaveBeenCalled()
+      await call({ action: 'watch' })
+      get.mockResolvedValueOnce([])
+      expect(await step()).toBe(true)
+    }
+  )
+
+  it('does not enroll a configured channel or trust corrupt persisted watches/settings', async () => {
+    configure({ channelId: CHANNEL })
+    expect(await step()).toBe(false)
+    setStoredValue(`community:discord-archive:watch:${CHANNEL}`, 'corrupt')
+    await service.close()
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    expect(await step()).toBe(false)
+    setStoredValue('community:settings', 'corrupt')
+    await expect(step()).rejects.toThrow()
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('preserves committed progress after failure and rechecks current permissions before retrying', async () => {
+    await partial()
+    get.mockRejectedValueOnce(new Error('private-discord-body'))
+    await expect(step()).rejects.toThrow('interrupted')
+    expect(await call({ action: 'status' })).toMatchObject({
+      cursor: '1000000000000000100',
+      complete: false
+    })
+    permissions.mockReturnValue({ has: () => false })
+    get.mockClear()
+    await expect(step()).rejects.toThrow('View Channel')
+    expect(get).not.toHaveBeenCalled()
+    permissions.mockReturnValue({ has: () => true })
+    get.mockResolvedValueOnce([])
+    expect(await step()).toBe(true)
+    expect(get.mock.calls[0]![1].query.get('before')).toBe('1000000000000000100')
+  })
+
+  it('enforces quota and resumes without resetting the cursor after space is available', async () => {
+    await partial()
+    configure({ maxStorageMiB: 64 })
+    const filler = join(directory, `${OTHER}.duckdb`)
+    await writeFile(filler, '')
+    await truncate(filler, 64 * 1024 * 1024)
+    get.mockClear()
+    await expect(step()).rejects.toThrow('storage limit')
+    expect(get).not.toHaveBeenCalled()
+    await rm(filler)
+    get.mockResolvedValueOnce([])
+    expect(await step()).toBe(true)
+    expect(get.mock.calls[0]![1].query.get('before')).toBe('1000000000000000100')
+  })
+
+  it('does not use a saved owner who is no longer an administrator', async () => {
+    await partial()
+    const previous = process.env.ADMIN_USER_IDS
+    process.env.ADMIN_USER_IDS = OTHER
+    get.mockClear()
+    try {
+      await expect(step()).rejects.toThrow('configured Discord administrator')
+      expect(get).not.toHaveBeenCalled()
+    } finally {
+      process.env.ADMIN_USER_IDS = previous
+    }
+  })
+
+  it('preserves the cursor when a background request is cancelled', async () => {
+    await partial()
+    const controller = new AbortController()
+    get.mockImplementationOnce(async (_route, options) => {
+      expect(options.signal.aborted).toBe(false)
+      controller.abort()
+      options.signal.throwIfAborted()
+    })
+    await expect(service.resumeHistory(controller.signal)).rejects.toThrow('interrupted')
+    expect(await call({ action: 'status' })).toMatchObject({
+      cursor: '1000000000000000100',
+      complete: false,
+      message_count: 1
+    })
+  })
+
+  it('starts the history worker on readiness and cancels it on service shutdown', async () => {
+    await service.close()
+    vi.useFakeTimers()
+    try {
+      service = new DiscordArchiveService(
+        {
+          user: { id: BOT },
+          channels: { fetch: fetchChannel },
+          rest: { get }
+        } as unknown as Client,
+        directory
+      )
+      const resume = vi.spyOn(service, 'resumeHistory').mockResolvedValue(false)
+      service.startRealtime()
+      service.startRealtime()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(resume).toHaveBeenCalledOnce()
+      await service.close()
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(resume).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps live capture active while automatic backfill is paused', async () => {
+    await partial()
+    configure({ autoCollect: false })
+    service.handleGatewayPacket({
+      t: 'MESSAGE_CREATE',
+      s: 1,
+      d: { ...message('1000000000000000101'), guild_id: GUILD }
+    })
+    expect(await service.flushRealtime()).toBe(1)
+    expect(await step()).toBe(false)
+    expect(await call({ action: 'status' })).toMatchObject({
+      realtime_enabled: true,
+      automatic_history_enabled: false,
+      message_count: 2,
+      complete: false
+    })
+  })
+
+  it('does not reset the saved watch or hide existing realtime gap warnings', async () => {
+    await partial()
+    const key = `community:discord-archive:watch:${CHANNEL}`
+    const watch = {
+      ...JSON.parse(getStoredValue(key)!),
+      issue: 'Existing capture gap',
+      needsRefresh: true
+    }
+    setStoredValue(key, JSON.stringify(watch))
+    await service.close()
+    service = new DiscordArchiveService(
+      { user: { id: BOT }, channels: { fetch: fetchChannel }, rest: { get } } as unknown as Client,
+      directory,
+      false
+    )
+    get.mockResolvedValueOnce([])
+    await step()
+    expect(JSON.parse(getStoredValue(key)!)).toEqual(watch)
+    expect(await call({ action: 'status' })).toMatchObject({
+      needs_history_refresh: true,
+      realtime_issue: 'Existing capture gap'
+    })
+  })
+
+  it('yields to existing operations rather than racing the archive writer', async () => {
+    await partial()
+    let release!: () => void
+    fetchChannel.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(channel())
+      })
+    )
+    const foreground = call({ action: 'status' })
+    // Let the foreground operation acquire the archive lock.
+    await vi.waitFor(() => expect(fetchChannel).toHaveBeenCalledTimes(2))
+    get.mockClear()
+    expect(await step()).toBe(false)
+    expect(get).not.toHaveBeenCalled()
+    release()
+    await foreground
+  })
+})
+
 describe('member-accessible role search', () => {
   const input = {
     guildId: GUILD,

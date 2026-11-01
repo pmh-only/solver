@@ -26,6 +26,36 @@ beforeEach(() => {
 })
 
 describe('single global community configuration', () => {
+  it('defaults legacy archives to automatic history and lets /a pause and resume it', () => {
+    setStoredValue(
+      COMMUNITY_SETTINGS_KEY,
+      JSON.stringify({ discordArchive: { channelId: CHANNEL, searchRoleId: FIRST } })
+    )
+    expect(loadCommunitySettings().discordArchive.autoCollect).toBe(true)
+    const archive = loadCommunitySettings().discordArchive
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { ...archive, autoCollect: false } }
+    })
+    expect(loadCommunitySettings().discordArchive).toMatchObject({
+      autoCollect: false,
+      channelId: CHANNEL,
+      searchRoleId: FIRST
+    })
+    manageCommunitySettings({ action: 'update', settings: { anonymousName: 'preserved' } })
+    expect(loadCommunitySettings().discordArchive.autoCollect).toBe(false)
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { ...archive, autoCollect: true } }
+    })
+    expect(loadCommunitySettings().discordArchive.autoCollect).toBe(true)
+    expect(() =>
+      manageCommunitySettings({
+        action: 'update',
+        settings: { discordArchive: { autoCollect: 'yes' } }
+      })
+    ).toThrow()
+  })
   it('removes obsolete archive AI settings without losing collection, role or other configuration', () => {
     setStoredValue(
       COMMUNITY_SETTINGS_KEY,

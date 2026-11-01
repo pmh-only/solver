@@ -20,6 +20,7 @@ import {
   type ArchiveGatewayEvent
 } from './discord-archive-live.js'
 import { reportRuntimeIssue } from './runtime-health.js'
+import { DiscordArchiveHistoryWorker } from './discord-archive-history.js'
 import {
   compileArchiveQuery,
   matchArchiveQuery,
@@ -158,6 +159,8 @@ async function size(path: string) {
 export class DiscordArchiveService {
   private busy = false
   private readonly live: DiscordArchiveLiveQueue
+  private readonly history: DiscordArchiveHistoryWorker
+  private completedHistoryChannel?: string
   private readonly permissionCache = new Map<string, number>()
   constructor(
     private readonly client: Client,
@@ -167,6 +170,10 @@ export class DiscordArchiveService {
     this.live = new DiscordArchiveLiveQueue(
       (watch, events) => this.flushLiveEvents(watch, events),
       join(directory, 'realtime-outbox.sqlite'),
+      automaticRealtime
+    )
+    this.history = new DiscordArchiveHistoryWorker(
+      (signal) => this.resumeHistory(signal),
       automaticRealtime
     )
   }
@@ -193,12 +200,44 @@ export class DiscordArchiveService {
 
   startRealtime() {
     this.live.start(true)
+    this.history.start()
   }
   flushRealtime() {
     return this.live.flush()
   }
-  close() {
-    return this.live.close()
+  async close() {
+    await this.history.close()
+    await this.live.close()
+  }
+
+  async resumeHistory(signal: AbortSignal): Promise<boolean> {
+    const settings = loadCommunitySettings().discordArchive
+    if (!settings.enabled || !settings.autoCollect || !settings.channelId || this.busy) return false
+    if (this.completedHistoryChannel === settings.channelId) return false
+    const watch = this.live.historyWatch(settings.channelId)
+    if (!watch) return false
+    const result = await this.runArchive(
+      { action: 'collect', channelId: watch.channelId, maxPages: 1 },
+      watch.userId,
+      signal,
+      true
+    )
+    if ('issue' in result && result.issue)
+      throw new Error('Automatic archive collection interrupted')
+    if ('complete' in result && result.complete) this.completedHistoryChannel = watch.channelId
+    return true
+  }
+
+  private historyStats(channelId: string) {
+    const settings = loadCommunitySettings().discordArchive
+    return {
+      automatic_history_enabled:
+        settings.enabled &&
+        settings.autoCollect &&
+        settings.channelId === channelId &&
+        Boolean(this.live.historyWatch(channelId)),
+      history_collection_issue: this.history.issue
+    }
   }
 
   private async authorizeChannel(channelId: string, userId: string, requireAdministrator = true) {
@@ -657,6 +696,15 @@ export class DiscordArchiveService {
   }
 
   async run(rawInput: unknown, userId: string, signal = new AbortController().signal) {
+    return this.runArchive(rawInput, userId, signal)
+  }
+
+  private async runArchive(
+    rawInput: unknown,
+    userId: string,
+    signal: AbortSignal,
+    background = false
+  ) {
     if (!isAdminUser(userId))
       throw new Error('Discord archive requires a configured Discord administrator')
     const input = discordArchiveToolSchema.parse(rawInput)
@@ -672,6 +720,7 @@ export class DiscordArchiveService {
     try {
       const path = join(this.directory, `${input.channelId}.duckdb`)
       if (input.action === 'delete') {
+        this.completedHistoryChannel = undefined
         this.live.remove(input.channelId)
         await rm(path, { force: true })
         await rm(`${path}.wal`, { force: true })
@@ -679,7 +728,11 @@ export class DiscordArchiveService {
       }
       if (input.action === 'unwatch') {
         this.live.unwatch(input.channelId)
-        return { channelId: input.channelId, ...this.live.stats(input.channelId) }
+        return {
+          channelId: input.channelId,
+          ...this.live.stats(input.channelId),
+          ...this.historyStats(input.channelId)
+        }
       }
       const channel = await this.authorizeChannel(input.channelId, userId)
       const writing = input.action === 'collect' || input.action === 'watch'
@@ -734,7 +787,10 @@ export class DiscordArchiveService {
               action: 'update',
               settings: { discordArchive: { ...settings, channelId: channel.id } }
             })
-          this.live.watch(channel.id, channel.guild.id, userId)
+          if (!background) {
+            this.live.watch(channel.id, channel.guild.id, userId)
+            this.completedHistoryChannel = undefined
+          }
         }
         if (input.action === 'query')
           return {
@@ -742,7 +798,11 @@ export class DiscordArchiveService {
             ...this.live.stats(input.channelId)
           }
         if (input.action === 'status' || input.action === 'watch')
-          return { ...state, ...this.live.stats(input.channelId) }
+          return {
+            ...state,
+            ...this.live.stats(input.channelId),
+            ...this.historyStats(input.channelId)
+          }
         const result = await this.collect(
           connection,
           input,
@@ -750,7 +810,11 @@ export class DiscordArchiveService {
           storageBytes,
           settings.maxStorageMiB * 1024 * 1024
         )
-        return { ...result, ...this.live.stats(input.channelId) }
+        return {
+          ...result,
+          ...this.live.stats(input.channelId),
+          ...this.historyStats(input.channelId)
+        }
       } finally {
         connection?.closeSync()
         instance.closeSync()

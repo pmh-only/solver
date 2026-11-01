@@ -208,6 +208,11 @@ export class DiscordArchiveLiveQueue {
     }
   }
 
+  historyWatch(channelId: string): ArchiveWatch | undefined {
+    const watch = this.watches.get(channelId)
+    return watch?.enabled ? { ...watch } : undefined
+  }
+
   ingest(packet: unknown): boolean {
     if (
       this.closed ||

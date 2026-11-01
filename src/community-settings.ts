@@ -59,6 +59,12 @@ const communitySettingsFields = {
   discordArchive: z
     .object({
       enabled: z.boolean().default(true),
+      autoCollect: z
+        .boolean()
+        .default(true)
+        .describe(
+          'Automatically resume enrolled channel history in background; false pauses historical backfill without stopping realtime tracking'
+        ),
       channelId: z
         .string()
         .regex(/^\d{17,20}$/)
@@ -136,6 +142,7 @@ export const communitySettingsSchema = z
   .object({
     discordArchive: communitySettingsFields.discordArchive.default({
       enabled: true,
+      autoCollect: true,
       channelId: null,
       maxStorageMiB: 1024,
       maxChannels: 1,
