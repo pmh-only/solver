@@ -95,6 +95,17 @@ const communitySettingsFields = {
       roleId: z.string().regex(/^\d{17,20}$/),
       randomReplyChance: z.number().min(0).max(1).default(0.01),
       webSearch: z.boolean().default(true),
+      readImages: z
+        .boolean()
+        .default(true)
+        .describe('Read attached PNG/JPEG/WebP images in current and recent channel messages'),
+      maxImages: z
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .default(4)
+        .describe('Maximum image inputs per role-chat reply, current message first'),
       relationship: z
         .object({
           enabled: z.boolean().default(true),
