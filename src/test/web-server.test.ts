@@ -54,6 +54,52 @@ async function startServer(): Promise<string> {
 }
 
 describe('web server', () => {
+  it('enforces native allowed/admin flags before authenticated API access', async () => {
+    const origin = await startServer()
+    const setup = await fetch(`${origin}/api/admin/oidc`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: true,
+        issuerUrl: 'https://identity.example.com',
+        clientId: 'solver',
+        clientSecret: 'confidential-test-value',
+        redirectUri: 'https://solver.example.com/auth/callback',
+        scopes: 'openid profile email',
+        allowedSubjects: 'trusted-user',
+        adminSubjects: 'trusted-admin',
+        automaticLogin: false,
+        postLogoutRedirectUri: ''
+      })
+    })
+    expect(setup.status).toBe(200)
+    for (const flags of [
+      { allowed: false, admin: false },
+      { allowed: false, admin: true },
+      { allowed: true, admin: false }
+    ]) {
+      const { cookie, csrfToken } = createWebSessionForTests({
+        id: `web:issuer:restricted-${flags.allowed}-${flags.admin}`,
+        subject: 'restricted-subject',
+        name: 'Restricted user',
+        ...flags
+      })
+      const headers = { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' }
+      for (const path of ['/api/admin/oidc', '/api/admin/system-prompt', '/api/admin/openai-token']) {
+        const read = await fetch(`${origin}${path}`, { headers })
+        expect(read.status).toBe(403)
+        const write = await fetch(`${origin}${path}`, { method: 'PUT', headers, body: '{}' })
+        expect(write.status).toBe(403)
+      }
+      if (!flags.allowed) {
+        const read = await fetch(`${origin}/api/chat/sessions`, { headers })
+        expect(read.status).toBe(403)
+      }
+    }
+    expect(getStoredValue('global-system-prompt')).toBeUndefined()
+    expect(getStoredValue('openai-token')).toBeUndefined()
+  })
+
   it('serves the responsive chat application', async () => {
     const origin = await startServer()
     const response = await fetch(`${origin}/`)
@@ -348,8 +394,8 @@ describe('web server', () => {
       id: 'web:issuer:authenticated-subject',
       subject: 'authenticated-subject',
       name: 'Authenticated user',
-      admin: false,
-      allowed: false
+      admin: true,
+      allowed: true
     })
     const authenticatedLoad = await fetch(`${origin}/api/admin/oidc`, {
       headers: { Cookie: cookie }
@@ -386,13 +432,13 @@ describe('web server', () => {
     expect(getStoredValue('global-system-prompt')).toBeUndefined()
   })
 
-  it('lets any authenticated user load, persist, and reset the global system prompt', async () => {
+  it('lets an allowed administrator load, persist, and reset the global system prompt', async () => {
     const origin = await startServer()
     const { cookie, csrfToken } = createWebSessionForTests({
       id: 'web:issuer:authenticated-subject',
       subject: 'authenticated-subject',
       name: 'Authenticated user',
-      admin: false,
+      admin: true,
       allowed: true
     })
     const authenticatedHeaders = { Cookie: cookie }

@@ -143,7 +143,19 @@ function remoteId(request: IncomingMessage): string {
 
 function authenticated(request: IncomingMessage, response: ServerResponse) {
   const session = getWebSession(request)
-  if (!session) sendJson(response, 401, { error: 'Authentication required' })
+  if (!session) {
+    sendJson(response, 401, { error: 'Authentication required' })
+    return null
+  }
+  if (!session.user.allowed) {
+    sendJson(response, 403, { error: 'Web assistant access is not allowed for this identity' })
+    return null
+  }
+  const path = new URL(request.url || '/', 'http://solver.invalid').pathname
+  if (path.startsWith('/api/admin/') && !session.user.admin) {
+    sendJson(response, 403, { error: 'Administrator access required' })
+    return null
+  }
   return session
 }
 
