@@ -80,6 +80,10 @@ const communitySettingsFields = {
     })
     .strict(),
   personas: personasSchema,
+  memeSearch: z
+    .object({ roleId: z.string().regex(/^\d{17,20}$/) })
+    .strict()
+    .nullable(),
   reactionForward: z
     .object({ channelId: z.string().regex(/^\d{17,20}$/) })
     .strict()
@@ -160,6 +164,7 @@ export const communitySettingsSchema = z
       searchRoleId: null
     }),
     personas: communitySettingsFields.personas.default([]),
+    memeSearch: communitySettingsFields.memeSearch.default(null),
     reactionForward: communitySettingsFields.reactionForward.default(null),
     messageCommands: communitySettingsFields.messageCommands.default({
       enabled: true,
