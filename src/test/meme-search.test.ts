@@ -1,17 +1,14 @@
 import { join } from 'node:path'
-import { AttachmentBuilder, Collection, type Message } from 'discord.js'
+import { Collection, type Message } from 'discord.js'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { createMemeSearchHandler, findMemeImage } from '../meme-search.js'
 import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings, loadCommunitySettings } from '../community-settings.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
-import { downloadUrl } from '../commands/down-runtime.js'
-
-vi.mock('../commands/down-runtime.js', () => ({ downloadUrl: vi.fn() }))
 const ROLE = '123456789012345678'
 const ID = '08dce137-3f2d-4b75-8319-c1787d530267'
-const image = new AttachmentBuilder(Buffer.from('image'), { name: 'meme.png' })
+const image = 'https://s3.lth.so/memehub/file?signature=test'
 const fetchMock = vi.fn<typeof fetch>()
 
 function fixture() {
@@ -52,14 +49,6 @@ beforeEach(() => {
   manageCommunitySettings({ action: 'update', settings: { memeSearch: { roleId: ROLE } } })
   vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockReset()
-  vi.mocked(downloadUrl)
-    .mockReset()
-    .mockResolvedValue({
-      data: Buffer.from('image'),
-      contentType: 'image/png',
-      fileName: 'file',
-      finalUrl: 'https://s3.lth.so/file'
-    })
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -74,23 +63,24 @@ it('configures and disables meme search through persisted /a settings', () => {
   manageCommunitySettings({ action: 'update', settings: { memeSearch: null } })
   expect(loadCommunitySettings().memeSearch).toBeNull()
 })
-it('searches the real API shape and downloads an image as an attachment', async () => {
+it('returns the image URL with only two API requests and no image download', async () => {
   fetchMock
     .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
     .mockResolvedValueOnce(
       Response.json({ original: { url: 'https://s3.lth.so/memehub/file?signature=test' } })
     )
-  expect((await findMemeImage('gp2 engine'))?.name).toBe('meme.png')
+  expect(await findMemeImage('gp2 engine')).toBe(image)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
   expect(fetchMock.mock.calls[0][1]).toMatchObject({
     redirect: 'error',
     signal: expect.any(AbortSignal)
   })
 })
-it('does not download when there are no results', async () => {
+it('stops after the search request when there are no results', async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
   expect(await findMemeImage('missing')).toBeNull()
-  expect(downloadUrl).not.toHaveBeenCalled()
+  expect(fetchMock).toHaveBeenCalledOnce()
 })
 it.each(['http://s3.lth.so/file', 'https://127.0.0.1/file', 'https://s3.lth.so.evil.test/file'])(
   'rejects unsafe media %s',
@@ -99,7 +89,7 @@ it.each(['http://s3.lth.so/file', 'https://127.0.0.1/file', 'https://s3.lth.so.e
       .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
       .mockResolvedValueOnce(Response.json({ original: { url } }))
     await expect(findMemeImage('query')).rejects.toThrow()
-    expect(downloadUrl).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   }
 )
 it.each(['malformed', 'oversized', 'timeout', 'http'])('rejects %s API responses', async (kind) => {
@@ -125,7 +115,7 @@ it('reuses an owned webhook with author identity, suppresses mentions and delete
   expect(send).toHaveBeenCalledWith({
     username: 'nickname',
     avatarURL: 'https://cdn.discordapp.com/guild-avatar.png',
-    files: [image],
+    content: image,
     allowedMentions: { parse: [], repliedUser: false }
   })
   expect(channel.createWebhook).not.toHaveBeenCalled()
@@ -145,12 +135,12 @@ it('creates a webhook if needed and targets threads through their parent', async
   expect(channel.createWebhook).toHaveBeenCalledWith({ name: 'solver-meme' })
   expect(send.mock.calls[0][0]).toMatchObject({ threadId: 'thread' })
 })
-it.each(['missing', 'download', 'send'])('preserves originals on %s failure', async (kind) => {
+it.each(['missing', 'lookup', 'send'])('preserves originals on %s failure', async (kind) => {
   vi.spyOn(console, 'error').mockImplementation(() => {})
   const { message, send } = fixture()
   if (kind === 'send') send.mockRejectedValueOnce(new Error('secret'))
   const find = vi.fn().mockResolvedValue(kind === 'missing' ? null : image)
-  if (kind === 'download') find.mockRejectedValueOnce(new Error('signed URL'))
+  if (kind === 'lookup') find.mockRejectedValueOnce(new Error('signed URL'))
   await createMemeSearchHandler(find)(message as unknown as Message)
   expect(message.delete).not.toHaveBeenCalled()
 })
@@ -194,10 +184,10 @@ it('does not look up memes without webhook permission', async () => {
 
 it('deduplicates concurrent deliveries within a channel', async () => {
   const { message, send } = fixture()
-  let release!: (value: AttachmentBuilder) => void
+  let release!: (value: string) => void
   const find = vi.fn(
     () =>
-      new Promise<AttachmentBuilder>((resolve) => {
+      new Promise<string>((resolve) => {
         release = resolve
       })
   )
@@ -218,15 +208,11 @@ it('does not reuse someone else’s webhook', async () => {
   expect(channel.createWebhook).toHaveBeenCalledOnce()
 })
 
-it('rejects non-image media downloads', async () => {
+it('rejects image URLs exceeding the Discord content limit', async () => {
   fetchMock
     .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
-    .mockResolvedValueOnce(Response.json({ original: { url: 'https://s3.lth.so/file' } }))
-  vi.mocked(downloadUrl).mockResolvedValueOnce({
-    data: Buffer.from('html'),
-    contentType: 'text/html',
-    fileName: 'file',
-    finalUrl: 'https://s3.lth.so/file'
-  })
-  await expect(findMemeImage('query')).rejects.toThrow('Unsupported meme image')
+    .mockResolvedValueOnce(
+      Response.json({ original: { url: `https://s3.lth.so/${'x'.repeat(2000)}` } })
+    )
+  await expect(findMemeImage('query')).rejects.toThrow()
 })

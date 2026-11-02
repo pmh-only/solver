@@ -1,14 +1,13 @@
-import { AttachmentBuilder, PermissionFlagsBits, type Message } from 'discord.js'
+import { PermissionFlagsBits, type Message } from 'discord.js'
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
-import { downloadUrl } from './commands/down-runtime.js'
 
 const API = 'https://meme.lth.so/api/'
 const WEBHOOK_NAME = 'solver-meme'
 const resultsSchema = z.object({
   items: z.array(z.object({ id: z.string().uuid(), content_type: z.literal('image') })).max(24)
 })
-const mediaSchema = z.object({ original: z.object({ url: z.string().url().max(4096) }) })
+const mediaSchema = z.object({ original: z.object({ url: z.string().url().max(2000) }) })
 
 async function apiJson(path: string): Promise<unknown> {
   const response = await fetch(new URL(path, API), {
@@ -48,17 +47,7 @@ export async function findMemeImage(query: string) {
     url.port
   )
     throw new Error('Unexpected meme media host')
-  // Reuse bounded downloads with public-address and redirect validation.
-  const file = await downloadUrl(url.href)
-  const mime = file.contentType.split(';')[0].toLowerCase()
-  const suffix = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/webp': 'webp',
-    'image/gif': 'gif'
-  }[mime]
-  if (!suffix || !file.data.length) throw new Error('Unsupported meme image')
-  return new AttachmentBuilder(file.data, { name: `meme.${suffix}` })
+  return media.original.url
 }
 
 export function createMemeSearchHandler(findImage = findMemeImage) {
@@ -98,7 +87,7 @@ export function createMemeSearchHandler(findImage = findMemeImage) {
           message.author.username
         ).slice(0, 80),
         avatarURL: message.member?.displayAvatarURL() ?? message.author.displayAvatarURL(),
-        files: [image],
+        content: image,
         ...(channel.isThread() ? { threadId: channel.id } : {}),
         allowedMentions: { parse: [], repliedUser: false }
       })
