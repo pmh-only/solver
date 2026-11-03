@@ -53,6 +53,7 @@ export interface StoredConversation {
 }
 
 export interface GptContext {
+  archiveSearchContext?: { guildId: string; channelId: string; requestMessageId: string }
   prompt: string
   displayPrompt: string
   input: ContentBlockData[]

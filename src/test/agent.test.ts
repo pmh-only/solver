@@ -39,6 +39,7 @@ import {
 } from '../dynamic-features.js'
 import { clearRuntimeIssuesForTests, reportRuntimeIssue } from '../runtime-health.js'
 import { createAgentUtilityTools } from '../agent/mcp-runtime.js'
+import { loadGptContext } from '../agent/interaction-context.js'
 import { loadDiscordSessionMode } from '../agent/session-privacy.js'
 import {
   agentCommandJSON,
@@ -740,6 +741,77 @@ describe('/a', () => {
         (candidate) => candidate.name
       )
     ).not.toContain('discord_message_archive')
+  })
+
+  it('routes natural /a history lookup through a non-retained private session, never web/public/non-admin contexts', async () => {
+    const calls = await dispatch(
+      agentCommandJSON('예전 피자 대화 기록 찾아줘', {
+        guild_id: '333333333333333333',
+        channel: { id: '777777777777777777', type: 0 }
+      }),
+      subs
+    )
+    expect(getCallback(calls)).toMatchObject({ data: { flags: MessageFlags.Ephemeral } })
+    expect(registeredAgentTools.get('search_discord_history')).toBeDefined()
+    expect(
+      listStoredKeys().some((key) => decodeURIComponent(key).includes('__feature:archive:'))
+    ).toBe(false)
+    const scope = {
+      guildId: '333333333333333333',
+      channelId: '777777777777777777',
+      requestMessageId: '1000000000000000100'
+    }
+    const signal = new AbortController().signal
+    const privateTools = createAgentUtilityTools(signal, {
+      userId: '666666666666666666',
+      pub: false,
+      archiveSearchContext: scope
+    })
+    const lookup = privateTools.find(
+      (candidate) => candidate.name === 'search_discord_history'
+    ) as unknown as { callback: (input: unknown) => Promise<string> }
+    expect(lookup).toBeDefined()
+    const output = await lookup.callback({
+      sql: 'SELECT message_id FROM messages',
+      channelId: '888888888888888888'
+    })
+    expect(output).toContain('Supply only')
+    expect(
+      createAgentUtilityTools(signal, {
+        userId: '666666666666666666',
+        pub: true,
+        archiveSearchContext: scope
+      }).some((candidate) => candidate.name === 'search_discord_history')
+    ).toBe(false)
+    expect(
+      createAgentUtilityTools(signal, { userId: 'web:issuer:user', pub: false }).some(
+        (candidate) => candidate.name === 'search_discord_history'
+      )
+    ).toBe(false)
+    expect(
+      createAgentUtilityTools(signal, {
+        userId: '555555555555555555',
+        pub: false,
+        archiveSearchContext: scope
+      }).some((candidate) => candidate.name === 'search_discord_history')
+    ).toBe(false)
+  })
+  it('expires malformed persisted history-search scope instead of trusting stored identities', () => {
+    const key = 'gpt-ctx:invalid-history-scope'
+    setStoredValue(
+      key,
+      JSON.stringify({
+        displayPrompt: 'test',
+        userId: '666666666666666666',
+        sessionName: 'default',
+        pub: true,
+        expiresAt: Date.now() + 60000,
+        components: [],
+        archiveSearchContext: { guildId: 'bad', channelId: '777777777777777777' }
+      })
+    )
+    expect(loadGptContext('invalid-history-scope')).toBeNull()
+    expect(getStoredValue(key)).toBeUndefined()
   })
 
   it('switches /private and /public without calling the model and persists subsequent reply visibility', async () => {
@@ -2453,7 +2525,18 @@ describe('/a', () => {
         }
       ])
     })
-    const initialCalls = await dispatch(agentCommandJSON('summarize the report'), subs)
+    const initialCalls = await dispatch(
+      agentCommandJSON('summarize the report', {
+        guild_id: '333333333333333333',
+        channel: { id: '777777777777777777', type: 0 }
+      }),
+      subs
+    )
+    expect(
+      (agentMock.mock.calls.at(-1)![0] as { tools: { name: string }[] }).tools.some(
+        (candidate) => candidate.name === 'search_discord_history'
+      )
+    ).toBe(false)
     const initialEdit = initialCalls.filter((call) => call.method === 'PATCH').at(-1)?.body as {
       components: unknown[]
     }
@@ -2484,6 +2567,11 @@ describe('/a', () => {
       JSON.stringify({ type: 'discord_component', custom_id: 'format', values: ['pdf'] }),
       expect.anything()
     )
+    expect(
+      (agentMock.mock.calls.at(-1)![0] as { tools: { name: string }[] }).tools.some(
+        (candidate) => candidate.name === 'search_discord_history'
+      )
+    ).toBe(false)
     expect(agentMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         messages: expect.arrayContaining([

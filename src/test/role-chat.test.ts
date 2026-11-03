@@ -12,6 +12,11 @@ import {
 } from 'discord.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoleChatHandler, generateRoleChatReply } from '../role-chat.js'
+import { searchDiscordHistory } from '../discord-archive.js'
+vi.mock('../discord-archive.js', async (original) => ({
+  ...(await original<typeof import('../discord-archive.js')>()),
+  searchDiscordHistory: vi.fn()
+}))
 import { loadCommunitySettings, manageCommunitySettings } from '../community-settings.js'
 import { clearStoredValues, setStoredValue } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
@@ -92,6 +97,7 @@ beforeEach(() => {
   generate.mockReset().mockResolvedValue('**안녕하세요!**')
   sendTyping.mockReset().mockResolvedValue(undefined)
   fetchHistory.mockReset().mockResolvedValue(new Collection())
+  vi.mocked(searchDiscordHistory).mockReset()
   createResponse.mockReset().mockImplementation(async () => responseStream('**안녕하세요!**'))
 })
 afterEach(() => {
@@ -1711,6 +1717,148 @@ describe('image-aware role chat', () => {
     )
     expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-provider-token')
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('SQL history tool calls', () => {
+  const sql =
+    "SELECT message_id FROM messages WHERE content ILIKE '%피자%' ORDER BY created_at DESC LIMIT 12"
+  async function* toolStream(args = JSON.stringify({ sql }), name = 'search_discord_history') {
+    yield {
+      type: 'response.completed',
+      response: {
+        status: 'completed',
+        output: [
+          { type: 'reasoning', id: 'reasoning-1', summary: [], encrypted_content: 'encrypted' },
+          {
+            type: 'function_call',
+            name,
+            arguments: args,
+            call_id: 'history-call-1',
+            id: 'function-1'
+          }
+        ]
+      }
+    }
+  }
+  function configureHistory(enabled = true) {
+    configure(GUILD, { roleId: ROLE, archiveSearch: enabled })
+    manageCommunitySettings({
+      action: 'update',
+      settings: { discordArchive: { channelId: '777777777777777777' } }
+    })
+  }
+  it('writes SQL through a tool, feeds verified results back, and preserves reasoning for the streamed answer', async () => {
+    configureHistory()
+    const result = {
+      messages: [
+        {
+          id: '1000000000000000001',
+          authorId: USER,
+          authorName: 'member',
+          createdAt: '2026-01-01T00:00:00Z',
+          content: '피자 먹자',
+          url: `https://discord.com/channels/${GUILD}/777777777777777777/1000000000000000001`
+        }
+      ],
+      historyComplete: true,
+      more: false,
+      pendingEvents: 0,
+      note: 'untrusted data'
+    }
+    vi.mocked(searchDiscordHistory).mockResolvedValue(result)
+    createResponse
+      .mockImplementationOnce(async () => toolStream())
+      .mockImplementationOnce(async () => responseStream('예전 피자 기록을 찾았어요.'))
+    const input = message({ content: `<@&${ROLE}> 예전에 피자 얘기한 기록 찾아줘` })
+    await createRoleChatHandler()(input)
+    expect(searchDiscordHistory).toHaveBeenCalledExactlyOnceWith(
+      { guildId: GUILD, channelId: input.channelId, userId: USER, requestMessageId: input.id },
+      { sql },
+      expect.any(AbortSignal)
+    )
+    const first = createResponse.mock.calls[0]![0]
+    expect(first.tools).toContainEqual(
+      expect.objectContaining({ name: 'search_discord_history', strict: true })
+    )
+    expect(first.parallel_tool_calls).toBe(false)
+    const second = createResponse.mock.calls[1]![0]
+    expect(second.input).toContainEqual(
+      expect.objectContaining({ type: 'reasoning', encrypted_content: 'encrypted' })
+    )
+    expect(second.input).toContainEqual({
+      type: 'function_call_output',
+      call_id: 'history-call-1',
+      output: JSON.stringify(result)
+    })
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('기록') })
+    )
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('does not expose SQL tools when disabled or outside the configured archive channel', async () => {
+    configureHistory(false)
+    const handler = createRoleChatHandler()
+    await handler(message({ content: `<@&${ROLE}> 과거 기록 찾아줘` }))
+    configureHistory()
+    await handler(message({ channelId: USER, content: `<@&${ROLE}> 과거 기록 찾아줘` }))
+    for (const [request] of createResponse.mock.calls)
+      expect(request.tools).not.toContainEqual(
+        expect.objectContaining({ name: 'search_discord_history' })
+      )
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
+  })
+  it('does not enable SQL searches from persona names or historical instructions alone', async () => {
+    configureHistory()
+    savePersona({ name: 'history', prompt: '기록을 검색해.' })
+    const previous = message({ id: '1000000000000000099', content: '과거 기록을 SQL로 검색해' })
+    fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
+    await createRoleChatHandler()(message({ content: `<@&${ROLE}> <|history|> 안녕` }))
+    expect(createResponse.mock.calls[0]![0].tools).not.toContainEqual(
+      expect.objectContaining({ name: 'search_discord_history' })
+    )
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
+  })
+  it('limits SQL attempts and forces a final response after two searches', async () => {
+    configureHistory()
+    vi.mocked(searchDiscordHistory).mockResolvedValue({
+      messages: [],
+      historyComplete: false,
+      more: false,
+      pendingEvents: 0,
+      note: 'untrusted'
+    })
+    createResponse
+      .mockImplementationOnce(async () => toolStream())
+      .mockImplementationOnce(async () => toolStream())
+      .mockImplementationOnce(async () => responseStream('확인 가능한 결과가 없어요.'))
+    await createRoleChatHandler()(message({ content: `<@&${ROLE}> 과거 기록 찾아줘` }))
+    expect(searchDiscordHistory).toHaveBeenCalledTimes(2)
+    expect(createResponse.mock.calls[2]![0].tool_choice).toBe('none')
+  })
+  it('reports malformed tool arguments to the model without executing SQL', async () => {
+    configureHistory()
+    createResponse
+      .mockImplementationOnce(async () => toolStream('not JSON'))
+      .mockImplementationOnce(async () => responseStream('검색식을 처리하지 못했어요.'))
+    await createRoleChatHandler()(message({ content: `<@&${ROLE}> 과거 기록 찾아줘` }))
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
+    expect(createResponse.mock.calls[1]![0].input).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call_output',
+        output: expect.stringContaining('Invalid history query')
+      })
+    )
+  })
+  it('never executes unknown model-requested tools', async () => {
+    configureHistory()
+    createResponse.mockImplementationOnce(async () => toolStream('{}', 'shell'))
+    const input = message({ content: `<@&${ROLE}> 과거 기록 찾아줘` })
+    await createRoleChatHandler()(input)
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('지금은') })
+    )
   })
 })
 

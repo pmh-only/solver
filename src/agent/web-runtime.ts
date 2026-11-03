@@ -310,6 +310,7 @@ export async function runWebAgent(
         loadContextConversation(ctx)
         timing?.span('conversation load', loadStarted)
         storeGptContext(token, ctx)
+        delete ctx.archiveSearchContext
         await runGptStream(callbacks, ctx, token, controller.signal, timing)
       } finally {
         if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
@@ -566,6 +567,7 @@ export async function runWebInteraction(
           values
         })
         storeGptContext(parsed.token, ctx)
+        delete ctx.archiveSearchContext
         await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
         if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
           deleteGptContext(parsed.token)
@@ -594,6 +596,7 @@ export async function runWebInteraction(
         fields
       })
       storeGptContext(parsed.token, ctx)
+      delete ctx.archiveSearchContext
       await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
       if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
         deleteGptContext(parsed.token)

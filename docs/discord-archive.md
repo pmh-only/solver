@@ -44,6 +44,20 @@ Realtime tracking can only record gateway events delivered while the bot is conn
 
 ## Queries and controls
 
+### Natural-language SQL lookup in `/a` and role chat
+
+Natural Discord `/a` history requests use a one-off private, non-retained archive
+session with a scoped `search_discord_history` tool for current-channel lookups.
+Role chat exposes the same tool when the current user asks
+to find past conversation and `roleChat.archiveSearch` is enabled (default true).
+The model writes a restricted `SELECT message_id FROM messages WHERE ...`; the
+server compiles allowlisted filters into parameterized SQL and re-verifies candidates
+against current Discord messages before returning at most five source links/content
+records. It cannot return arbitrary archived projections, deleted text, another
+channel's messages or private agent sessions. Arbitrary read-only SQL and archive
+management remain private administrator-only. See [role-chat.md](role-chat.md) for
+supported queries, limits and `/a` configuration.
+
 ### Authenticated web UI
 
 Open `/search` on the existing web server. Sign in through the existing OIDC provider with a linked Discord account. The provider must include a trusted `discord_id` profile claim; the lab authentik mapping derives it from the actual Discord source connection, not an editable username or attribute. Login sessions created before this claim was added require signing in again.

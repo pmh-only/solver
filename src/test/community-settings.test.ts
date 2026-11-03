@@ -28,7 +28,11 @@ beforeEach(() => {
 describe('single global community configuration', () => {
   it('defaults legacy role chat to bounded vision input and keeps image settings across updates', () => {
     setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify({ roleChat: { roleId: FIRST } }))
-    expect(loadCommunitySettings().roleChat).toMatchObject({ readImages: true, maxImages: 4 })
+    expect(loadCommunitySettings().roleChat).toMatchObject({
+      readImages: true,
+      maxImages: 4,
+      archiveSearch: true
+    })
     manageCommunitySettings({
       action: 'update',
       settings: {

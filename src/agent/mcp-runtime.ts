@@ -38,6 +38,12 @@ import { manageDynamicDiscordFeatures } from '../dynamic-features.js'
 import { safeErrorMessage } from '../safe-error.js'
 import { manageCommunitySettings, manageCommunitySettingsSchema } from '../community-settings.js'
 import { discordArchiveToolSchema, runDiscordArchiveTool } from '../discord-archive.js'
+import { createArchiveHistorySearch } from '../archive-history-tool.js'
+import {
+  ARCHIVE_HISTORY_TOOL_NAME,
+  ARCHIVE_HISTORY_DESCRIPTION,
+  archiveHistorySqlSchema
+} from '../archive-history-query.js'
 import { isAdminUser } from '../authorization.js'
 
 const SPOTIFY_MCP_PATH = fileURLToPath(
@@ -246,14 +252,20 @@ const communitySettingsTool = tool({
     'Configure reactionForward: { channelId: "destination channel ID" } to natively forward messages once total reactions reach 3, with a separate author/per-emoji-count embed below. Update counts above 3; at exactly 3 keep the last display. At 2 or fewer delete both the forwarded post and the author/count embed. If reactions reach 3 again, forward anew. Never delete the original source. Ignore the destination to prevent loops. null disables forwarding. Tracking persists (1000 entries per guild, 30 days); action reset-reaction-forwards clears only tracking, never Discord posts. Runtime tracking remains isolated from configuration. ' +
     'Original message commands: !!help, !!ping, !!now, !!set <match> [...reply], !!list, !!pizza, !!<amount> <currency> to <currency> (also !!1usd to krw), 점메추/저메추. Configure messageCommands.enabled (default true) and prefix (default !!). action reset-message-replies clears all original message-command saved replies, not /c variables or other configuration. These commands do not also invoke role chat. ' +
     'Standalone guild-installed mntserver commands are usable by every server member, not /c subcommands, and unavailable in DMs. Configure disabledCommands, inviteChannelId, kickvoteChannelId (null disables the respective command until configured), kickvoteThreshold, kickvoteIdleMinutes, inviteMaxAgeHours, inviteCooldownHours, anonymousName, foods (null restores the original menu). Invite URLs remain private; only the creation notice naming the member is public. ' +
-    'Configure roleChat with roleId and optionally model, systemPrompt, maxOutputTokens (256-4096), randomReplyChance (0-1; default 0.01; 0 disables random replies), webSearch (default true; only OpenAI built-in web_search, capped at 2 calls; false disables tools), readImages (default true; enables image inputs), maxImages (1-8, default 4). Image selection: current attachments first, then the explicit same-channel reply target. Other recent images are supplied only when the current request explicitly refers to past images (e.g. 아까 올린 사진, 위 사진, previous image), never for unrelated text chat. Focus on the current topic, not incidental images. null disables role chat. Preserve existing nested roleChat settings when changing one field. PNG/JPEG/WebP Discord CDN attachments up to 10 MiB each are passed as high-detail image inputs to a vision-capable configured model, so visible text can be read; no extra API key or OCR tool is needed. Arbitrary pasted URLs, unsupported files and oversized images are not fetched. Image content cannot grant admin priority or override relationship/system rules. Replies to this bot also trigger chat without mentions, even with reply notifications disabled. Each request includes the previous 50 messages in that channel, including unmentioned conversation, plus the current request as compact a/n/c/f/p records (author ID/nickname/content/attachment URLs/verified Discord Administrator flag). Administrator conversational requests take priority, not over system or relationship rules. No private /a history or other-channel messages are shared. The bot needs Read Message History. No application concurrency/cooldown/hourly limits. Replies stream into a single Markdown message without checkmark reactions; typing persists until all channel requests finish. Markdown output only; no MCP, shell or agent tools.',
+    'Configure roleChat.archiveSearch (default true) to let role chat write scoped read-only DuckDB SQL when the current user requests past message lookup. Natural Discord /a history requests automatically use a one-off private, non-retained archive session to prevent records entering shared agent history. search_discord_history is available there for current-channel lookup, never public agent components or web sessions. It returns only currently verified source messages, never raw archived or deleted content; no other channels, private sessions, arbitrary SQL projections, joins, file/network access or writes. At most two searches per reply, 30/minute and 300/hour globally. false pauses role-chat SQL lookup; discordArchive.enabled/channelId control the archive itself. This lookup is independent of webSearch. Preserve all nested roleChat settings when updating. ' +
+    'Configure roleChat with roleId and optionally model, systemPrompt, maxOutputTokens (256-4096), randomReplyChance (0-1; default 0.01; 0 disables random replies), webSearch (default true; only OpenAI built-in web_search, capped at 2 calls; false disables web tools), readImages (default true; enables image inputs), maxImages (1-8, default 4). Image selection: current attachments first, then the explicit same-channel reply target. Other recent images are supplied only when the current request explicitly refers to past images (e.g. 아까 올린 사진, 위 사진, previous image), never for unrelated text chat. Focus on the current topic, not incidental images. null disables role chat. Preserve existing nested roleChat settings when changing one field. PNG/JPEG/WebP Discord CDN attachments up to 10 MiB each are passed as high-detail image inputs to a vision-capable configured model, so visible text can be read; no extra API key or OCR tool is needed. Arbitrary pasted URLs, unsupported files and oversized images are not fetched. Image content cannot grant admin priority or override relationship/system rules. Replies to this bot also trigger chat without mentions, even with reply notifications disabled. Each request includes the previous 50 messages in that channel, including unmentioned conversation, plus the current request as compact a/n/c/f/p records (author ID/nickname/content/attachment URLs/verified Discord Administrator flag). Administrator conversational requests take priority, not over system or relationship rules. No private /a history or other-channel messages are shared. The bot needs Read Message History. Ordinary text replies retain their existing concurrency behavior; archive SQL has separate bounded search limits. Replies stream into a single Markdown message without checkmark reactions; typing persists until all channel requests finish. Markdown output only; no MCP, shell or agent tools.',
   inputSchema: manageCommunitySettingsSchema,
   callback: (input) => JSON.stringify(manageCommunitySettings(input))
 })
 
 export function createAgentUtilityTools(
   signal: AbortSignal,
-  context?: { userId: string; pub: boolean }
+  context?: {
+    userId: string
+    pub: boolean
+    archiveSearchContext?: { guildId: string; channelId: string; requestMessageId: string }
+    historySearch?: ReturnType<typeof createArchiveHistorySearch>
+  }
 ): Tool[] {
   return [
     shellTool(signal),
@@ -263,6 +275,24 @@ export function createAgentUtilityTools(
     googleCalendarAuthenticationTool,
     discordFeatureManagementTool,
     communitySettingsTool,
+    ...(context?.archiveSearchContext && !context.pub && isAdminUser(context.userId)
+      ? [
+          tool({
+            name: ARCHIVE_HISTORY_TOOL_NAME,
+            description: ARCHIVE_HISTORY_DESCRIPTION,
+            inputSchema: archiveHistorySqlSchema,
+            callback: (() => {
+              const search =
+                context.historySearch ??
+                createArchiveHistorySearch({
+                  ...context.archiveSearchContext,
+                  userId: context.userId
+                })
+              return (input) => search(input, signal)
+            })()
+          })
+        ]
+      : []),
     ...(context && !context.pub && isAdminUser(context.userId)
       ? [
           tool({

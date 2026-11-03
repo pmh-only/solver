@@ -1038,6 +1038,93 @@ describe('automatic historical collection', () => {
   })
 })
 
+describe('member-accessible SQL history search', () => {
+  const context = {
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: OTHER,
+    requestMessageId: '1000000000000000200'
+  }
+  const query = {
+    sql: "SELECT message_id FROM messages WHERE content ILIKE '%hello%' ORDER BY created_at DESC LIMIT 12"
+  }
+  const search = (sql = query, overrides = {}) =>
+    service.searchHistory({ ...context, ...overrides }, sql, AbortSignal.timeout(10000))
+  it('lets a non-administrator find verified same-channel messages using SQL and source URLs', async () => {
+    await collectOne()
+    get.mockResolvedValue(message())
+    const result = await search()
+    expect(result.historyComplete).toBe(true)
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        id: message().id,
+        authorId: USER,
+        content: expect.stringContaining('Hello world'),
+        url: `https://discord.com/channels/${GUILD}/${CHANNEL}/${message().id}`
+      })
+    ])
+    expect(JSON.stringify(result)).not.toContain('raw_json')
+  })
+  it('does not return offline-deleted or edited-away matches', async () => {
+    await collectOne()
+    get.mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 10008 }))
+    expect((await search()).messages).toEqual([])
+    get.mockResolvedValueOnce(message(undefined, { content: 'unrelated replacement' }))
+    expect((await search()).messages).toEqual([])
+  })
+  it('searches embed/metadata text and re-evaluates it against the current message', async () => {
+    await collectOne()
+    get.mockResolvedValueOnce(message())
+    const sql = { sql: "SELECT message_id FROM messages WHERE search_text ILIKE '%An embed%'" }
+    expect((await search(sql)).messages).toHaveLength(1)
+    get.mockResolvedValueOnce(message(undefined, { embeds: [] }))
+    expect((await search(sql)).messages).toEqual([])
+  })
+  it('bounds source results and snippets even for very broad SQL searches', async () => {
+    const records = Array.from({ length: 8 }, (_, i) =>
+      message(String(1000000000000000000n + BigInt(i)), { content: 'hello ' + 'x'.repeat(5000) })
+    )
+    get.mockResolvedValueOnce(records).mockResolvedValueOnce([])
+    await call({ action: 'collect' })
+    get.mockImplementation(async (route) =>
+      records.find((record) => route.endsWith('/' + record.id))
+    )
+    const result = await search()
+    expect(result.messages).toHaveLength(5)
+    expect(result.more).toBe(true)
+    expect(result.messages.every((item) => item.content.length <= 1800)).toBe(true)
+  })
+  it('requires current requester/bot permissions and matching configured guild/channel', async () => {
+    await collectOne()
+    await expect(search(query, { channelId: OTHER })).rejects.toThrow('configured')
+    await expect(search(query, { guildId: OTHER })).rejects.toThrow('guild mismatch')
+    permissions.mockReturnValue({ has: () => false })
+    get.mockClear()
+    await expect(search()).rejects.toThrow('View Channel')
+    expect(get).not.toHaveBeenCalled()
+  })
+  it('rejects raw data projections and file SQL without fetching messages or changing state', async () => {
+    await collectOne()
+    get.mockClear()
+    for (const sql of [
+      'DELETE FROM messages',
+      'SELECT raw_json FROM messages',
+      "SELECT message_id FROM read_text('/etc/passwd')"
+    ])
+      await expect(search({ sql })).rejects.toThrow()
+    expect(get).not.toHaveBeenCalled()
+    expect(await call({ action: 'status' })).toMatchObject({ message_count: 1, complete: true })
+  })
+  it('fails closed on malformed live responses and cancellation', async () => {
+    await collectOne()
+    get.mockResolvedValueOnce(message(undefined, { channel_id: OTHER }))
+    await expect(search()).rejects.toThrow('Invalid history search')
+    const controller = new AbortController()
+    controller.abort()
+    await expect(service.searchHistory(context, query, controller.signal)).rejects.toThrow()
+  })
+})
+
 describe('member-accessible role search', () => {
   const input = {
     guildId: GUILD,

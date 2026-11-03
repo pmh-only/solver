@@ -8,6 +8,7 @@ import {
 } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { performance } from 'node:perf_hooks'
+import { createArchiveHistorySearch } from '../archive-history-tool.js'
 import { loadOpenAIApiKey, loadOpenAIEndpoint } from '../openai-config.js'
 import { loadEffectiveSystemPrompt } from '../system-prompt.js'
 import type { RequestTiming } from '../request-timing.js'
@@ -233,6 +234,10 @@ export async function runGptStream(
     })
     timing?.mark('OpenAI model configured')
 
+    const historySearch =
+      ctx.archiveSearchContext && !ctx.pub
+        ? createArchiveHistorySearch({ ...ctx.archiveSearchContext, userId: ctx.userId })
+        : undefined
     let currentAgent: Agent | undefined
     const streamAgent = async (prompt: InvokeArgs, diagnosing = false, continueCurrent = false) => {
       if (continueCurrent && currentAgent) {
@@ -243,7 +248,12 @@ export async function runGptStream(
       let agent!: Agent
       const createRuntimeTools = (getAgent: () => Agent, includeLoadedMcpTools = true) => {
         const runtimeTools = [
-          ...createAgentUtilityTools(controller.signal, { userId: ctx.userId, pub: ctx.pub }),
+          ...createAgentUtilityTools(controller.signal, {
+            userId: ctx.userId,
+            pub: ctx.pub,
+            archiveSearchContext: ctx.archiveSearchContext,
+            historySearch
+          }),
           ...createMcpRuntimeTools(getAgent, ctx.effort)
         ]
         return !includeLoadedMcpTools || !ctx.toolsEnabled || diagnosing

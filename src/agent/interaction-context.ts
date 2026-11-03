@@ -1,6 +1,7 @@
 import { ButtonStyle, ComponentType, createComponentBuilder, ModalBuilder } from 'discord.js'
 import { tool, type Tool } from '@strands-agents/sdk'
 import { z } from 'zod'
+import { archiveHistoryContextSchema } from '../archive-history-query.js'
 import { deleteStoredValue, getStoredValue, setStoredValue } from '../helpers/kv-store.js'
 import {
   GPT_ACTION_COMPONENT_ID,
@@ -79,6 +80,11 @@ export function loadGptContext(token: string): GptContext | null {
       throw new Error('Invalid sender-only component ids.')
     }
     if (!Array.isArray(parsed.modelHistory)) parsed.modelHistory = []
+    if (parsed.archiveSearchContext !== undefined) {
+      parsed.archiveSearchContext = archiveHistoryContextSchema
+        .omit({ userId: true })
+        .parse(parsed.archiveSearchContext)
+    }
     if (!Array.isArray(parsed.input)) parsed.input = []
     if (typeof parsed.toolsEnabled !== 'boolean') parsed.toolsEnabled = false
     if (!parsed.modals || typeof parsed.modals !== 'object' || Array.isArray(parsed.modals)) {
