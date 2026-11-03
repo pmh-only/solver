@@ -1498,7 +1498,7 @@ describe('image-aware role chat', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('prioritizes current images, then the newest unmentioned history, without duplicate URLs', async () => {
+  it('uses current images then newest history only when explicitly requested, without duplicate URLs', async () => {
     configure(GUILD, { roleId: ROLE, maxImages: 2 })
     const older = imageMessage({
       id: '1000000000000000097',
@@ -1525,7 +1525,9 @@ describe('image-aware role chat', () => {
     fetchHistory.mockResolvedValue(
       new Collection([older, duplicate, latest, otherChannel].map((item) => [item.id, item]))
     )
-    await createRoleChatHandler()(imageMessage())
+    await createRoleChatHandler()(
+      imageMessage({ content: `<@&${ROLE}> 아까 올린 사진과 비교해줘` })
+    )
     expect(imageInputs()).toEqual([
       { type: 'input_image', image_url: imageUrl, detail: 'high' },
       { type: 'input_image', image_url: imageUrl.replace('photo.png', 'new.png'), detail: 'high' }
@@ -1539,6 +1541,107 @@ describe('image-aware role chat', () => {
     await createRoleChatHandler()(message({ content: `<@&${ROLE}> 위 사진의 글자 읽어줘` }))
     expect(imageInputs()).toEqual([{ type: 'input_image', image_url: imageUrl, detail: 'high' }])
   })
+
+  it.each(['안녕', '오늘 저녁 뭐 먹을까?', '사진 말고 다른 이야기 하자'])(
+    'does not resend history images for unrelated chat: %s',
+    async (text) => {
+      configure()
+      const previous = imageMessage({ id: '1000000000000000099' })
+      fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
+      await createRoleChatHandler()(message({ content: `<@&${ROLE}> ${text}` }))
+      const request = createResponse.mock.calls[0]![0]
+      expect(typeof request.input).toBe('string')
+      expect(request.input).toContain(imageUrl) // Keep text history, not visual inputs.
+      expect(request.instructions).toContain(
+        'Do not describe, mention, or return to an image unless it is relevant'
+      )
+    }
+  )
+
+  it('uses the reply target instead of an unrelated newer image', async () => {
+    configure()
+    const target = imageMessage({ id: '1000000000000000097' })
+    const newer = imageMessage({
+      id: '1000000000000000099',
+      attachments: new Collection([
+        [
+          'new',
+          { url: imageUrl.replace('photo.png', 'new.png'), contentType: 'image/png', size: 1024 }
+        ]
+      ])
+    })
+    fetchHistory.mockResolvedValue(
+      new Collection([
+        [target.id, target],
+        [newer.id, newer]
+      ])
+    )
+    await createRoleChatHandler()(
+      message({
+        reference: {
+          messageId: target.id,
+          channelId: target.channelId,
+          guildId: GUILD
+        },
+        content: `<@&${ROLE}> 이거 설명해줘`
+      })
+    )
+    expect(imageInputs()).toEqual([{ type: 'input_image', image_url: imageUrl, detail: 'high' }])
+    expect(fetchHistory).toHaveBeenCalledOnce()
+  })
+
+  it('fetches an older explicit reply target outside the 50-message history', async () => {
+    configure()
+    const target = imageMessage({ id: '1000000000000000001' })
+    fetchHistory.mockResolvedValueOnce(new Collection()).mockResolvedValueOnce(target)
+    await createRoleChatHandler()(
+      message({
+        reference: {
+          messageId: target.id,
+          channelId: target.channelId,
+          guildId: GUILD
+        }
+      })
+    )
+    expect(fetchHistory).toHaveBeenLastCalledWith({ message: target.id, cache: false })
+    expect(imageInputs()).toHaveLength(1)
+  })
+
+  it('keeps text chat working when the replied image message was deleted', async () => {
+    configure()
+    fetchHistory
+      .mockResolvedValueOnce(new Collection())
+      .mockRejectedValueOnce(new Error('Unknown message'))
+    await createRoleChatHandler()(
+      message({
+        reference: {
+          messageId: '1000000000000000001',
+          channelId: '777777777777777777',
+          guildId: GUILD
+        }
+      })
+    )
+    expect(typeof createResponse.mock.calls[0]![0].input).toBe('string')
+  })
+
+  it.each(['channel', 'guild', 'forward', 'disabled'])(
+    'never fetches ineligible reply images: %s',
+    async (kind) => {
+      configure(GUILD, { roleId: ROLE, readImages: kind !== 'disabled' })
+      await createRoleChatHandler()(
+        message({
+          reference: {
+            messageId: '1000000000000000001',
+            channelId: kind === 'channel' ? USER : '777777777777777777',
+            guildId: kind === 'guild' ? USER : GUILD,
+            type: kind === 'forward' ? MessageReferenceType.Forward : MessageReferenceType.Default
+          }
+        })
+      )
+      expect(fetchHistory).toHaveBeenCalledOnce()
+      expect(typeof createResponse.mock.calls[0]![0].input).toBe('string')
+    }
+  )
 
   it('answers image-only mentions and persona requests, but not unrelated images', async () => {
     configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
