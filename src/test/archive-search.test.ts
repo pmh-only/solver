@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { MessageFlags, type Message } from 'discord.js'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { createArchiveSearchHandler } from '../archive-search.js'
-import { generateArchiveSearchReply } from '../archive-search-ai.js'
+import { generateArchiveSearchReply, renderArchiveSearchReply } from '../archive-search-ai.js'
 import { searchDiscordHistory } from '../discord-archive.js'
 import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings } from '../community-settings.js'
@@ -52,7 +52,11 @@ function tool(arguments_ = JSON.stringify({ sql }), name = 'search_discord_histo
   }
 }
 function answer(answer = '확인된 결과가 없습니다.') {
-  return { status: 'completed', output: [], output_text: JSON.stringify({ answer }) }
+  return {
+    status: 'completed',
+    output: [],
+    output_text: JSON.stringify({ title: '검색 결과', summary: answer, results: [], warnings: [] })
+  }
 }
 beforeEach(() => {
   isolateStoredValues(join(process.cwd(), '.tmp', 'archive-search.test.sqlite'))
@@ -81,8 +85,39 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('uses AI SQL tools with verified results and displays AI JSON output', async () => {
-  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce(answer())
+it('passes SQL results as JSON to the AI, parses its final JSON and renders the answer in Discord', async () => {
+  const url = `https://discord.com/channels/${context.guildId}/${context.channelId}/1000000000000000100`
+  const queryResult = {
+    messages: [
+      {
+        id: '1000000000000000100',
+        authorId: context.userId,
+        authorName: 'member',
+        createdAt: '2026-01-01T00:00:00Z',
+        content: '피자 먹자',
+        url
+      }
+    ],
+    historyComplete: false,
+    more: false,
+    pendingEvents: 0,
+    note: 'untrusted'
+  }
+  vi.mocked(searchDiscordHistory).mockResolvedValueOnce(queryResult)
+  const finalJson = {
+    title: '검색 결과',
+    summary: '피자 관련 메시지 1개',
+    results: [{ summary: '피자 먹자', url }],
+    warnings: ['과거 기록 수집 미완료']
+  }
+  const markdown = `**검색 결과**\n피자 관련 메시지 1개\n\n- [원문](${url}) — 피자 먹자\n-# 과거 기록 수집 미완료`
+  createResponse
+    .mockResolvedValueOnce(tool())
+    .mockResolvedValueOnce({
+      status: 'completed',
+      output: [],
+      output_text: JSON.stringify(finalJson)
+    })
   const input = message()
   await createArchiveSearchHandler()(input)
   expect(searchDiscordHistory).toHaveBeenCalledExactlyOnceWith(
@@ -97,18 +132,22 @@ it('uses AI SQL tools with verified results and displays AI JSON output', async 
     parallel_tool_calls: false,
     text: { format: { type: 'json_schema', strict: true } }
   })
+  expect(createResponse.mock.calls[0]![0].instructions).toContain(
+    'the server converts this JSON into Discord Markdown'
+  )
+  expect(createResponse.mock.calls[0]![0].instructions).toContain('no greetings, small talk')
   expect(createResponse.mock.calls[1]![0].input).toContainEqual(
     expect.objectContaining({
       type: 'function_call_output',
       call_id: 'call',
-      output: expect.stringContaining('historyComplete')
+      output: JSON.stringify(queryResult)
     })
   )
   expect(createResponse.mock.calls[1]![0].input).toContainEqual(
     expect.objectContaining({ type: 'reasoning', encrypted_content: 'encrypted' })
   )
   expect(input.reply).toHaveBeenCalledWith({
-    content: expect.stringContaining('```json'),
+    content: markdown,
     allowedMentions: { parse: [], repliedUser: false },
     flags: MessageFlags.SuppressEmbeds
   })
@@ -130,12 +169,15 @@ it('returns malformed arguments to the model without running SQL', async () => {
     expect.objectContaining({ output: expect.stringContaining('Invalid history query') })
   )
 })
-it('rejects unknown tools, unsearched answers, incomplete responses and malformed JSON', async () => {
+it('rejects unknown tools, unsearched answers, incomplete responses and invalid JSON answers', async () => {
   for (const responses of [
     [tool('{}', 'shell')],
     [answer()],
     [{ status: 'incomplete', output: [] }],
-    [tool(), { status: 'completed', output: [], output_text: 'not json' }]
+    [tool(), answer('   ')],
+    [tool(), answer('한'.repeat(401))],
+    [tool(), { status: 'completed', output: [], output_text: 'not JSON' }],
+    [tool(), { status: 'completed', output: [], output_text: '{"unexpected":"value"}' }]
   ]) {
     createResponse.mockReset()
     for (const response of responses) createResponse.mockResolvedValueOnce(response)
@@ -164,17 +206,34 @@ it('rechecks role-search disablement before executing a model-generated SQL call
   await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toThrow('disabled')
   expect(searchDiscordHistory).not.toHaveBeenCalled()
 })
-it('keeps model text inside a valid bounded JSON code block', async () => {
-  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce(answer('``` @everyone'))
+it('renders JSON fields as Markdown without exposing JSON keys or code-block wrapping', async () => {
+  createResponse
+    .mockResolvedValueOnce(tool())
+    .mockResolvedValueOnce(answer('피자 먹자는 메시지를 찾았습니다.'))
   const result = await generateArchiveSearchReply('찾아줘', context)
   expect(result.length).toBeLessThanOrEqual(2000)
-  expect(result.match(/```/g) ?? []).toHaveLength(2)
-  expect(JSON.parse(result.slice(8, -4))).toEqual({ answer: '``` @everyone' })
+  expect(result).toBe('**검색 결과**\n피자 먹자는 메시지를 찾았습니다.')
+  expect(result).not.toContain('```')
+  expect(result).not.toContain('"summary"')
+})
+it('rejects invented source URLs and bounds rendered output without cutting source links', () => {
+  const url = `https://discord.com/channels/${context.guildId}/${context.channelId}/1000000000000000100`
+  const data = {
+    title: '*'.repeat(80),
+    summary: '*'.repeat(400),
+    results: Array.from({ length: 5 }, () => ({ summary: '*'.repeat(160), url })),
+    warnings: ['*'.repeat(160), '*'.repeat(160), '*'.repeat(160)]
+  }
+  expect(() => renderArchiveSearchReply(data, new Set())).toThrow('Unverified')
+  const result = renderArchiveSearchReply(data, new Set([url]))
+  expect(result.length).toBeLessThanOrEqual(2000)
+  expect(result).toContain('표시 길이 제한')
+  expect(result).toContain('-# ')
 })
 it.each([`<@&${ROLE}>`, `<&@${ROLE}>`])(
   'routes %s before role chat without requiring role possession',
   async (mention) => {
-    const generate = vi.fn().mockResolvedValue('```json\n{"answer":"결과"}\n```')
+    const generate = vi.fn().mockResolvedValue('**검색 결과**\n결과')
     const chat = vi.fn()
     const handler = createMessageHandler(
       vi.fn().mockResolvedValue(false),
