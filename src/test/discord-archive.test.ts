@@ -1072,6 +1072,73 @@ describe('member-accessible SQL history search', () => {
     get.mockResolvedValueOnce(message(undefined, { content: 'unrelated replacement' }))
     expect((await search()).messages).toEqual([])
   })
+  it('counts all matching stored records and distinct authors without a source-page limit or REST fetches', async () => {
+    const records = Array.from({ length: 20 }, (_, i) =>
+      message(String(1000000000000000100n + BigInt(i)), {
+        author: { id: i % 2 ? OTHER : USER, username: 'member', bot: false }
+      })
+    )
+    get
+      .mockResolvedValueOnce([
+        ...records,
+        message(context.requestMessageId),
+        message('1000000000000000099', { content: 'not a match', embeds: [] })
+      ])
+      .mockResolvedValueOnce([])
+    await call({ action: 'collect' })
+    const instance = await DuckDBInstance.create(join(directory, `${CHANNEL}.duckdb`))
+    const connection = await instance.connect()
+    try {
+      await connection.run('UPDATE messages SET deleted_at=now() WHERE message_id=?', [
+        records[0]!.id
+      ])
+      await connection.run('UPDATE messages SET guild_id=? WHERE message_id=?', [
+        OTHER,
+        records[1]!.id
+      ])
+      await connection.run('UPDATE messages SET channel_id=? WHERE message_id=?', [
+        OTHER,
+        records[2]!.id
+      ])
+    } finally {
+      connection.closeSync()
+      instance.closeSync()
+    }
+    get.mockClear()
+    const result = await search({
+      sql: "SELECT COUNT(*) AS total FROM messages WHERE content ILIKE '%hello%' AND created_at >= '2026-10-01' LIMIT 1"
+    })
+    expect(result).toMatchObject({
+      messages: [],
+      aggregate: { operation: 'count', target: 'messages', value: '17', basis: 'archive' },
+      historyComplete: true,
+      more: false,
+      pendingEvents: 0
+    })
+    expect(result.note).toContain('not live-verified')
+    expect(
+      await search({
+        sql: "SELECT COUNT(DISTINCT author_id) FROM messages WHERE content ILIKE '%hello%'"
+      })
+    ).toMatchObject({ aggregate: { target: 'authors', value: '2' } })
+    expect(
+      await search({ sql: "SELECT COUNT(message_id) FROM messages WHERE content = 'missing'" })
+    ).toMatchObject({ aggregate: { value: '0' } })
+    expect(
+      await search({
+        sql: `SELECT COUNT(*) FROM messages WHERE author_id='${USER}' AND content ILIKE '%hello%'`
+      })
+    ).toMatchObject({ aggregate: { value: '8' } })
+    expect(get).not.toHaveBeenCalled()
+  })
+  it('marks counts from incomplete archives as incomplete', async () => {
+    get.mockResolvedValueOnce([message()])
+    await call({ action: 'collect', maxPages: 1 })
+    expect(await search({ sql: 'SELECT COUNT(*) FROM messages' })).toMatchObject({
+      aggregate: { value: '1', basis: 'archive' },
+      historyComplete: false
+    })
+  })
   it('searches embed/metadata text and re-evaluates it against the current message', async () => {
     await collectOne()
     get.mockResolvedValueOnce(message())
@@ -1101,6 +1168,7 @@ describe('member-accessible SQL history search', () => {
     permissions.mockReturnValue({ has: () => false })
     get.mockClear()
     await expect(search()).rejects.toThrow('View Channel')
+    await expect(search({ sql: 'SELECT COUNT(*) FROM messages' })).rejects.toThrow('View Channel')
     expect(get).not.toHaveBeenCalled()
   })
   it('rejects raw data projections and file SQL without fetching messages or changing state', async () => {

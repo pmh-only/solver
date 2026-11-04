@@ -32,11 +32,16 @@ const outputSchema = z
   })
   .strict()
 
-export function renderArchiveSearchReply(raw: unknown, verifiedUrls: ReadonlySet<string>) {
+export function renderArchiveSearchReply(
+  raw: unknown,
+  verifiedUrls: ReadonlySet<string>,
+  requiredWarnings: readonly string[] = []
+) {
   const result = outputSchema.parse(raw)
   const plain = (value: string) =>
     escapeMarkdown(value.replace(/\s+/g, ' ')).replace(/[[\]]/g, '\\$&')
-  const footer = result.warnings.map((warning) => `-# ${plain(warning)}`).join('\n')
+  const warnings = [...new Set([...requiredWarnings, ...result.warnings])].slice(0, 3)
+  const footer = warnings.map((warning) => `-# ${plain(warning)}`).join('\n')
   let body = `**${plain(result.title)}**\n${plain(result.summary)}`
   for (const item of result.results) {
     if (!verifiedUrls.has(item.url)) throw new Error('Unverified search result URL')
@@ -69,6 +74,7 @@ export async function generateArchiveSearchReply(prompt: string, context: Archiv
   const search = createArchiveHistorySearch(context)
   const input: ResponseInput = [{ role: 'user', content: prompt }]
   const verifiedUrls = new Set<string>()
+  const countWarnings = new Set<string>()
   let searches = 0
   for (let round = 0; round < 3; round++) {
     signal.throwIfAborted()
@@ -140,7 +146,9 @@ export async function generateArchiveSearchReply(prompt: string, context: Archiv
     const calls = response.output.filter((item) => item.type === 'function_call')
     if (!calls.length) {
       if (!searches) throw new Error('Search tool was not used')
-      return renderArchiveSearchReply(JSON.parse(response.output_text), verifiedUrls)
+      return renderArchiveSearchReply(JSON.parse(response.output_text), verifiedUrls, [
+        ...countWarnings
+      ])
     }
     if (
       round === 2 ||
@@ -167,6 +175,17 @@ export async function generateArchiveSearchReply(prompt: string, context: Archiv
       try {
         output = await search(JSON.parse(call.arguments), signal)
         const result: unknown = JSON.parse(output)
+        if (result && typeof result === 'object' && 'aggregate' in result) {
+          countWarnings.add(
+            '저장된 아카이브 기준 집계이며 현재 Discord 전체를 실시간 검증한 수치는 아닙니다.'
+          )
+          if ('historyComplete' in result && !result.historyComplete)
+            countWarnings.add(
+              '과거 기록 수집이 완료되지 않아 일부 메시지가 집계에서 빠질 수 있습니다.'
+            )
+          if ('pendingEvents' in result && Number(result.pendingEvents) > 0)
+            countWarnings.add('실시간 반영을 기다리는 메시지가 있습니다.')
+        }
         if (
           result &&
           typeof result === 'object' &&

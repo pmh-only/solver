@@ -39,6 +39,20 @@ describe('allowlisted archive SQL compiler', () => {
     expect(result.limit).toBe(12)
   })
   it.each([
+    ['COUNT(*)', 'messages'],
+    ['COUNT(*) AS total', 'messages'],
+    ['COUNT(message_id)', 'messages'],
+    ['COUNT(DISTINCT message_id)', 'messages'],
+    ['COUNT(DISTINCT author_id) AS people', 'authors']
+  ])('compiles only allowlisted counts: %s', async (projection, aggregate) => {
+    const result = await compileArchiveHistorySql(connection, {
+      sql: `SELECT ${projection} FROM messages WHERE content ILIKE '%피자%' AND created_at >= '2026-10-01' AND author_id='555555555555555555'`
+    })
+    expect(result.aggregate).toBe(aggregate)
+    expect(result.params).toEqual(['%피자%', '2026-10-01', '555555555555555555'])
+    expect(result.predicate).toContain('"content" ILIKE ?')
+  })
+  it.each([
     'DELETE FROM messages',
     'SELECT message_id FROM messages; SELECT 1',
     'SELECT * FROM messages',
@@ -60,7 +74,19 @@ describe('allowlisted archive SQL compiler', () => {
     'SELECT DISTINCT message_id FROM messages',
     'SELECT message_id FROM messages LIMIT -1',
     'SELECT message_id FROM messages LIMIT 10 OFFSET 5',
-    'SELECT message_id FROM messages WHERE content = $secret'
+    'SELECT message_id FROM messages WHERE content = $secret',
+    'SELECT SUM(attachments_count) FROM messages',
+    'SELECT COUNT(content) FROM messages',
+    'SELECT COUNT(DISTINCT content) FROM messages',
+    'SELECT COUNT(author_id) FROM messages',
+    'SELECT COUNT(*) FILTER (WHERE author_bot) FROM messages',
+    'SELECT COUNT(*) FROM messages GROUP BY author_id',
+    'SELECT COUNT(*) FROM messages HAVING COUNT(*) > 0',
+    'SELECT COUNT(*) FROM messages ORDER BY created_at DESC',
+    'SELECT COUNT(*) OVER () FROM messages',
+    'SELECT COUNT(*), content FROM messages',
+    'SELECT COUNT(*) FROM messages WHERE COUNT(*) > 0',
+    "SELECT COUNT(*) FROM read_text('/etc/passwd')"
   ])('rejects unsupported SQL rather than executing it: %s', async (sql) => {
     await expect(compileArchiveHistorySql(connection, { sql })).rejects.toThrow()
   })

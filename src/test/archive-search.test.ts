@@ -111,13 +111,11 @@ it('passes SQL results as JSON to the AI, parses its final JSON and renders the 
     warnings: ['과거 기록 수집 미완료']
   }
   const markdown = `**검색 결과**\n피자 관련 메시지 1개\n\n- [원문](${url}) — 피자 먹자\n-# 과거 기록 수집 미완료`
-  createResponse
-    .mockResolvedValueOnce(tool())
-    .mockResolvedValueOnce({
-      status: 'completed',
-      output: [],
-      output_text: JSON.stringify(finalJson)
-    })
+  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce({
+    status: 'completed',
+    output: [],
+    output_text: JSON.stringify(finalJson)
+  })
   const input = message()
   await createArchiveSearchHandler()(input)
   expect(searchDiscordHistory).toHaveBeenCalledExactlyOnceWith(
@@ -160,6 +158,41 @@ it('bounds searches and forces a final response after two SQL calls', async () =
   await generateArchiveSearchReply('찾아줘', context)
   expect(searchDiscordHistory).toHaveBeenCalledTimes(2)
   expect(createResponse.mock.calls[2]![0].tool_choice).toBe('none')
+})
+it('passes count JSON back to the AI and renders its count summary with mandatory archive warnings', async () => {
+  const sql = "SELECT COUNT(*) FROM messages WHERE content ILIKE '%피자%'"
+  const count = {
+    messages: [],
+    aggregate: {
+      operation: 'count' as const,
+      target: 'messages' as const,
+      value: '123',
+      basis: 'archive' as const
+    },
+    historyComplete: false,
+    more: false,
+    pendingEvents: 2,
+    note: 'Archive-based, not live-verified.'
+  }
+  vi.mocked(searchDiscordHistory).mockResolvedValueOnce(count)
+  createResponse
+    .mockResolvedValueOnce(tool(JSON.stringify({ sql })))
+    .mockResolvedValueOnce(answer('피자를 언급한 메시지는 123개입니다.'))
+  const input = message(`<@&${ROLE}> 피자 언급 메시지 몇 개야`)
+  await createArchiveSearchHandler()(input)
+  expect(searchDiscordHistory).toHaveBeenCalledWith(context, { sql }, expect.any(AbortSignal))
+  expect(createResponse.mock.calls[1]![0].input).toContainEqual({
+    type: 'function_call_output',
+    call_id: 'call',
+    output: JSON.stringify(count)
+  })
+  const reply = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
+  expect(reply.content).toContain('123개')
+  expect(reply.content).toContain('저장된 아카이브 기준')
+  expect(reply.content).toContain('과거 기록 수집이 완료되지 않아')
+  expect(reply.content).toContain('실시간 반영을 기다리는')
+  expect(reply.content).not.toContain('[원문]')
+  expect(reply.content).not.toContain('```json')
 })
 it('returns malformed arguments to the model without running SQL', async () => {
   createResponse.mockResolvedValueOnce(tool('not json')).mockResolvedValueOnce(answer('검색 오류'))
@@ -273,9 +306,7 @@ it('allows another search while one is pending and isolates failures without exp
   const second = message()
   await handler(second)
   expect(generate).toHaveBeenCalledTimes(2)
-  expect(second.reply).toHaveBeenCalledWith(
-    expect.objectContaining({ content: 'result' })
-  )
+  expect(second.reply).toHaveBeenCalledWith(expect.objectContaining({ content: 'result' }))
   reject(new Error('secret-token'))
   await pending
   expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-token')

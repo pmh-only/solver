@@ -476,6 +476,34 @@ export class DiscordArchiveService {
         throw new Error('Archive channel identity mismatch')
       const compiled = await compileArchiveHistorySql(connection, rawQuery)
       signal.throwIfAborted()
+      if (compiled.aggregate) {
+        const projection =
+          compiled.aggregate === 'authors' ? 'COUNT(DISTINCT author_id)' : 'COUNT(*)'
+        const reader = await connection.runAndReadAll(
+          `SELECT ${projection} AS total FROM messages WHERE guild_id=? AND channel_id=? AND message_id<>? AND deleted_at IS NULL AND (${compiled.predicate})`,
+          [context.guildId, context.channelId, context.requestMessageId, ...compiled.params]
+        )
+        let value: string
+        try {
+          value = String(reader.getRowObjectsJson()[0]?.total)
+          if (!/^\d+$/.test(value)) throw new Error('Invalid archive count')
+        } finally {
+          reader.closeSync()
+        }
+        return {
+          messages: [],
+          aggregate: {
+            operation: 'count' as const,
+            target: compiled.aggregate,
+            value,
+            basis: 'archive' as const
+          },
+          historyComplete: Boolean(state.complete),
+          more: false,
+          pendingEvents: this.live.stats(context.channelId).queued_events,
+          note: 'Count of matching stored channel records, excluding observed deletions and the current request. Archive-based, not live-verified: offline edits/deletions and incomplete collection or pending updates can change the actual Discord total. No source messages are returned.'
+        }
+      }
       const reader = await connection.runAndReadAll(
         `SELECT message_id FROM messages WHERE guild_id=? AND channel_id=? AND message_id<>? AND deleted_at IS NULL AND (${compiled.predicate}) ORDER BY ${compiled.order} LIMIT ${compiled.limit}`,
         [context.guildId, context.channelId, context.requestMessageId, ...compiled.params]
