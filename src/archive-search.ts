@@ -1,6 +1,7 @@
 import { MessageFlags, type Message } from 'discord.js'
 import { loadCommunitySettings } from './community-settings.js'
 import { generateArchiveSearchReply } from './archive-search-ai.js'
+import { archiveSearchError } from './archive-search-error.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
@@ -70,16 +71,13 @@ export function createArchiveSearchHandler(generate = generateArchiveSearchReply
         })
       )
       clearRuntimeIssue('discord_archive_search')
-    } catch {
+    } catch (error) {
+      const failure = archiveSearchError(error)
       reportRuntimeIssue(
         'discord_archive_search',
-        new Error(
-          'AI archive search failed; check model, channel access and archive settings through /a.'
-        )
+        new Error(`category=${failure.category}; status=${failure.status ?? 'unknown'}`)
       )
-      await reply(
-        '검색 응답을 생성하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 /a에서 모델·채널 권한·아카이브 설정을 확인해 달라고 요청해 주세요.'
-      )
+      await reply(failure.message)
     }
     return true
   }

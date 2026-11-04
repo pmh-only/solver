@@ -8,6 +8,7 @@ import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings } from '../community-settings.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
+import { clearRuntimeIssuesForTests, runtimeIssueSummary } from '../runtime-health.js'
 
 const { createResponse } = vi.hoisted(() => ({ createResponse: vi.fn() }))
 vi.mock('openai', () => ({
@@ -61,6 +62,7 @@ function answer(answer = '확인된 결과가 없습니다.') {
 beforeEach(() => {
   isolateStoredValues(join(process.cwd(), '.tmp', 'archive-search.test.sqlite'))
   clearStoredValues()
+  clearRuntimeIssuesForTests()
   vi.resetAllMocks()
   manageCommunitySettings({
     action: 'update',
@@ -82,6 +84,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   clearStoredValues()
+  clearRuntimeIssuesForTests()
   vi.restoreAllMocks()
 })
 
@@ -236,7 +239,9 @@ it('rechecks role-search disablement before executing a model-generated SQL call
     })
     return tool()
   })
-  await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toThrow('disabled')
+  await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toMatchObject({
+    category: 'configuration'
+  })
   expect(searchDiscordHistory).not.toHaveBeenCalled()
 })
 it('renders JSON fields as Markdown without exposing JSON keys or code-block wrapping', async () => {
@@ -257,7 +262,7 @@ it('rejects invented source URLs and bounds rendered output without cutting sour
     results: Array.from({ length: 5 }, () => ({ summary: '*'.repeat(160), url })),
     warnings: ['*'.repeat(160), '*'.repeat(160), '*'.repeat(160)]
   }
-  expect(() => renderArchiveSearchReply(data, new Set())).toThrow('Unverified')
+  expect(() => renderArchiveSearchReply(data, new Set())).toThrow('원문 링크')
   const result = renderArchiveSearchReply(data, new Set([url]))
   expect(result.length).toBeLessThanOrEqual(2000)
   expect(result).toContain('표시 길이 제한')
@@ -312,4 +317,77 @@ it('allows another search while one is pending and isolates failures without exp
   expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-token')
   await handler(message())
   expect(generate).toHaveBeenCalledTimes(3)
+})
+it('gives the default reasoning model bounded low-effort reasoning and room to complete JSON', async () => {
+  manageCommunitySettings({
+    action: 'update',
+    settings: {
+      discordArchive: {
+        channelId: context.channelId,
+        searchRoleId: ROLE,
+        searchModel: 'gpt-5-mini'
+      }
+    }
+  })
+  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce(answer())
+  await generateArchiveSearchReply('찾아줘', context)
+  expect(createResponse.mock.calls[0]![0]).toMatchObject({
+    reasoning: { effort: 'low' },
+    max_output_tokens: 4096
+  })
+  expect(createResponse).toHaveBeenCalledTimes(2)
+})
+it.each([
+  [400, 'model_request', '검색 모델이 요청을 거부'],
+  [404, 'model_request', '검색 모델이 요청을 거부'],
+  [401, 'authentication', '인증에 실패'],
+  [429, 'rate_limit', '요청 한도'],
+  [504, 'timeout', '시간이 초과'],
+  [500, 'unavailable', '검색 서비스 연결']
+])(
+  'reports API failure %s without leaking response bodies or credentials',
+  async (status, category, expected) => {
+    createResponse.mockRejectedValueOnce(
+      Object.assign(new Error('private body secret-token'), {
+        status,
+        code: 'private-secret-code',
+        param: 'private-secret-param'
+      })
+    )
+    const input = message()
+    await createArchiveSearchHandler()(input)
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining(expected) })
+    )
+    expect(runtimeIssueSummary()).toContain(`category=${category}; status=${status}`)
+    expect(runtimeIssueSummary()).not.toContain('private')
+    expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret')
+  }
+)
+it('reports token exhaustion distinctly without running SQL or treating partial JSON as a result', async () => {
+  createResponse.mockResolvedValueOnce({
+    status: 'incomplete',
+    incomplete_details: { reason: 'max_output_tokens' },
+    output: [],
+    output_text: '{"title":'
+  })
+  const input = message()
+  await createArchiveSearchHandler()(input)
+  expect(searchDiscordHistory).not.toHaveBeenCalled()
+  expect(input.reply).toHaveBeenCalledWith(
+    expect.objectContaining({ content: expect.stringContaining('토큰 한도') })
+  )
+  expect(runtimeIssueSummary()).toContain('category=output_limit')
+})
+it('reports malformed final JSON distinctly without disclosing the model output', async () => {
+  createResponse
+    .mockResolvedValueOnce(tool())
+    .mockResolvedValueOnce({ status: 'completed', output: [], output_text: 'private-model-output' })
+  const input = message()
+  await createArchiveSearchHandler()(input)
+  expect(input.reply).toHaveBeenCalledWith(
+    expect.objectContaining({ content: expect.stringContaining('최종 JSON 응답') })
+  )
+  expect(runtimeIssueSummary()).toContain('category=invalid_output')
+  expect(runtimeIssueSummary()).not.toContain('private-model-output')
 })
