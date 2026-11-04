@@ -9,7 +9,6 @@ const USAGE = '찾을 내용을 입력해 주세요. 예: @검색역할 지난�
 export function createArchiveSearchHandler(generate = generateArchiveSearchReply) {
   const users = new Map<string, { count: number; until: number; notified: boolean }>()
   let window = { until: 0, count: 0, notified: false }
-  let active = false
   return async (message: Message): Promise<boolean> => {
     if (!message.guildId || message.author.bot || message.webhookId || message.system) return false
     let roleId: string | null
@@ -60,11 +59,6 @@ export function createArchiveSearchHandler(generate = generateArchiveSearchReply
       await reply(USAGE)
       return true
     }
-    if (active) {
-      await reply('다른 검색이 진행 중입니다. 잠시 후 다시 시도해 주세요.')
-      return true
-    }
-    active = true
     try {
       if ('sendTyping' in message.channel) await message.channel.sendTyping().catch(() => {})
       await reply(
@@ -86,8 +80,6 @@ export function createArchiveSearchHandler(generate = generateArchiveSearchReply
       await reply(
         '검색 응답을 생성하지 못했습니다. 잠시 후 다시 시도하거나 관리자에게 /a에서 모델·채널 권한·아카이브 설정을 확인해 달라고 요청해 주세요.'
       )
-    } finally {
-      active = false
     }
     return true
   }

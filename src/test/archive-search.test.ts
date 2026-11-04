@@ -256,7 +256,7 @@ it('claims invalid inputs without paid requests and rate limits repeated request
   for (let i = 0; i < 8; i++) await handler(message())
   expect(generate).toHaveBeenCalledTimes(2)
 })
-it('releases concurrency after safe errors without exposing service details', async () => {
+it('allows another search while one is pending and isolates failures without exposing details', async () => {
   let reject!: (error: Error) => void
   const generate = vi
     .fn()
@@ -272,12 +272,13 @@ it('releases concurrency after safe errors without exposing service details', as
   await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce())
   const second = message()
   await handler(second)
+  expect(generate).toHaveBeenCalledTimes(2)
   expect(second.reply).toHaveBeenCalledWith(
-    expect.objectContaining({ content: expect.stringContaining('다른 검색') })
+    expect.objectContaining({ content: 'result' })
   )
   reject(new Error('secret-token'))
   await pending
   expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-token')
   await handler(message())
-  expect(generate).toHaveBeenCalledTimes(2)
+  expect(generate).toHaveBeenCalledTimes(3)
 })
