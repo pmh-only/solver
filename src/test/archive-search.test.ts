@@ -1,287 +1,224 @@
 import { join } from 'node:path'
-import { Collection, MessageFlags, type Message } from 'discord.js'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MessageFlags, type Message } from 'discord.js'
+import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { createArchiveSearchHandler } from '../archive-search.js'
-import {
-  ArchiveQueryError,
-  prepareArchiveSearch as interpretArchiveSearch
-} from '../archive-search-query.js'
+import { generateArchiveSearchReply } from '../archive-search-ai.js'
+import { searchDiscordHistory } from '../discord-archive.js'
 import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings } from '../community-settings.js'
-import { clearStoredValues, setStoredValue } from '../helpers/kv-store.js'
+import { clearStoredValues } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
-import type { ArchiveSearchRequest, ArchiveSearchResult } from '../discord-archive.js'
-import { clearRuntimeIssuesForTests, runtimeIssueSummary } from '../runtime-health.js'
 
-const ROLE = '444444444444444444'
-vi.mock('../archive-search-query.js', async (original) => ({
-  ...(await original<typeof import('../archive-search-query.js')>()),
-  prepareArchiveSearch: vi.fn()
+const { createResponse } = vi.hoisted(() => ({ createResponse: vi.fn() }))
+vi.mock('openai', () => ({
+  default: class {
+    responses = { create: createResponse }
+  }
 }))
-const USER = '555555555555555555'
-const GUILD = '333333333333333333'
-const CHANNEL = '777777777777777777'
-const search = vi.fn<(input: ArchiveSearchRequest) => Promise<ArchiveSearchResult>>()
-function message(overrides: Record<string, unknown> = {}) {
+vi.mock('../openai-config.js', () => ({
+  loadOpenAIApiKey: () => 'test',
+  loadOpenAIEndpoint: () => 'https://example.com'
+}))
+vi.mock('../discord-archive.js', async (original) => ({
+  ...(await original<typeof import('../discord-archive.js')>()),
+  searchDiscordHistory: vi.fn()
+}))
+const ROLE = '444444444444444444'
+const context = {
+  guildId: '333333333333333333',
+  channelId: '777777777777777777',
+  userId: '555555555555555555',
+  requestMessageId: '1000000000000000200'
+}
+function message(content = `<@&${ROLE}> 지난주 피자 얘기 찾아줘`) {
   return {
-    id: '1000000000000000200',
-    guildId: GUILD,
-    channelId: CHANNEL,
-    author: { id: USER, bot: false },
-    webhookId: null,
-    system: false,
-    content: `<&@${ROLE}> 임베드나 컨텐츠에 "바나나" 들어가는 내용 있으면 찾아줘`,
-    member: { roles: { cache: new Collection() } },
+    id: context.requestMessageId,
+    guildId: context.guildId,
+    channelId: context.channelId,
+    author: { id: context.userId, bot: false },
+    content,
     channel: { sendTyping: vi.fn().mockResolvedValue(undefined) },
-    reply: vi.fn().mockResolvedValue(undefined),
-    ...overrides
+    reply: vi.fn().mockResolvedValue(undefined)
   } as unknown as Message
+}
+const sql = "SELECT message_id FROM messages WHERE content ILIKE '%피자%'"
+function tool(arguments_ = JSON.stringify({ sql }), name = 'search_discord_history') {
+  return {
+    status: 'completed',
+    output: [
+      { type: 'reasoning', id: 'r', encrypted_content: 'encrypted', summary: [] },
+      { type: 'function_call', name, arguments: arguments_, call_id: 'call' }
+    ]
+  }
+}
+function answer(answer = '확인된 결과가 없습니다.') {
+  return { status: 'completed', output: [], output_text: JSON.stringify({ answer }) }
 }
 beforeEach(() => {
   isolateStoredValues(join(process.cwd(), '.tmp', 'archive-search.test.sqlite'))
   clearStoredValues()
-  clearRuntimeIssuesForTests()
   vi.resetAllMocks()
-  vi.mocked(interpretArchiveSearch).mockResolvedValue({ keyword: '바나나', scope: 'all' })
   manageCommunitySettings({
     action: 'update',
-    settings: { discordArchive: { searchRoleId: ROLE } }
-  })
-  search.mockResolvedValue({
-    matches: [
-      {
-        id: '1000000000000000100',
-        authorName: 'author',
-        snippet: '바나나 관련 내용',
-        field: 'embeds'
+    settings: {
+      discordArchive: {
+        channelId: context.channelId,
+        searchRoleId: ROLE,
+        searchModel: 'search-model'
       }
-    ],
+    }
+  })
+  vi.mocked(searchDiscordHistory).mockResolvedValue({
+    messages: [],
+    historyComplete: false,
     more: false,
-    historyComplete: true,
-    pendingEvents: 0
+    pendingEvents: 0,
+    note: 'untrusted'
   })
 })
 afterEach(() => {
-  vi.restoreAllMocks()
   clearStoredValues()
-  clearRuntimeIssuesForTests()
+  vi.restoreAllMocks()
 })
 
-describe('public archive role search', () => {
-  it.each([false, true])(
-    'shows collection count and history boundary (complete=%s)',
-    async (historyComplete) => {
-      search.mockResolvedValueOnce({
-        matches: [],
-        more: false,
-        historyComplete,
-        pendingEvents: 0,
-        collection: { messageCount: 12345, historyCursorAt: '2026-10-01T00:00:00.000Z' }
-      })
-      const input = message()
-      await createArchiveSearchHandler(search)(input)
-      const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
-      expect(payload.content).toContain('저장 12,345개')
-      expect(payload.content).toContain(
-        historyComplete ? '과거 기록 수집 완료' : '과거 기록 수집 미완료'
-      )
-      expect(payload.content).toContain('<t:1790812800:f> 메시지까지 과거 기록 수집')
-    }
+it('uses AI SQL tools with verified results and displays AI JSON output', async () => {
+  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce(answer())
+  const input = message()
+  await createArchiveSearchHandler()(input)
+  expect(searchDiscordHistory).toHaveBeenCalledExactlyOnceWith(
+    context,
+    { sql },
+    expect.any(AbortSignal)
   )
-  it('shows an empty archive without inventing a history boundary', async () => {
-    search.mockResolvedValueOnce({
-      matches: [],
-      more: false,
-      historyComplete: false,
-      pendingEvents: 0,
-      collection: { messageCount: 0, historyCursorAt: null }
+  expect(createResponse.mock.calls[0]![0]).toMatchObject({
+    model: 'search-model',
+    tool_choice: 'required',
+    store: false,
+    parallel_tool_calls: false,
+    text: { format: { type: 'json_schema', strict: true } }
+  })
+  expect(createResponse.mock.calls[1]![0].input).toContainEqual(
+    expect.objectContaining({
+      type: 'function_call_output',
+      call_id: 'call',
+      output: expect.stringContaining('historyComplete')
     })
-    const input = message()
-    await createArchiveSearchHandler(search)(input)
-    const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
-    expect(payload.content).toContain('저장 0개 · 과거 기록 수집 미완료')
-    expect(payload.content).not.toContain('<t:')
-  })
-  it('reports actionable query syntax errors without database work', async () => {
-    vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(
-      new ArchiveQueryError('닫는 괄호가 필요합니다.')
-    )
-    const input = message({ content: `<@&${ROLE}> (털 OR 고양이` })
-    await createArchiveSearchHandler(search)(input)
-    expect(search).not.toHaveBeenCalled()
-    expect(input.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('닫는 괄호') })
-    )
-  })
-  it.each([
-    [
-      new Error('Binder Error: Table messages does not have a column named deleted_at'),
-      '아카이브 형식'
-    ],
-    [
-      new Error('Could not verify current search results', {
-        cause: Object.assign(new Error('private response body'), { status: 403 })
-      }),
-      '권한'
-    ],
-    [new Error('operation timed out'), '시간이 초과']
-  ])(
-    'reports actionable query failures without disclosing raw details',
-    async (error, expected) => {
-      search.mockRejectedValueOnce(error)
-      const input = message()
-      await createArchiveSearchHandler(search)(input)
-      const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
-      expect(payload.content).toContain(expected)
-      expect(payload.content).not.toContain(error.message)
-      expect(runtimeIssueSummary()).toContain('stage=search')
-      expect(runtimeIssueSummary()).not.toContain('private response body')
-    }
   )
-  it('passes query syntax to the shared deterministic parser', async () => {
-    vi.mocked(interpretArchiveSearch).mockResolvedValueOnce({
-      keyword: '털 AND 고양이',
-      scope: 'all'
-    })
-    await createArchiveSearchHandler(search)(message({ content: `<@&${ROLE}> 털 AND 고양이` }))
-    expect(interpretArchiveSearch).toHaveBeenCalledWith('털 AND 고양이')
-    expect(search).toHaveBeenCalledWith(
-      expect.objectContaining({ keyword: '털 AND 고양이', scope: 'all' })
-    )
-  })
-  it('does not search when preparation fails and releases concurrency for the next request', async () => {
-    vi.mocked(interpretArchiveSearch).mockRejectedValueOnce(new Error('private-api-detail'))
-    const handle = createArchiveSearchHandler(search)
-    const input = message()
-    await handle(input)
-    expect(search).not.toHaveBeenCalled()
-    expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('private-api-detail')
-    await handle(message())
-    expect(search).toHaveBeenCalledOnce()
-  })
-  it.each([`<&@${ROLE}>`, `<@&${ROLE}>`])(
-    'allows non-administrators without the role to invoke %s',
-    async (mention) => {
-      const input = message({
-        content: `${mention} 임베드나 컨텐츠에 "바나나" 들어가는 내용 찾아줘`
-      })
-      expect(process.env.ADMIN_USER_IDS).not.toContain(USER)
-      await createArchiveSearchHandler(search)(input)
-      expect(search).toHaveBeenCalledWith({
-        guildId: GUILD,
-        channelId: CHANNEL,
-        userId: USER,
-        requestMessageId: input.id,
-        keyword: '바나나',
-        scope: 'all'
-      })
-      expect(input.reply).toHaveBeenCalledWith({
-        content: expect.stringContaining(
-          `https://discord.com/channels/${GUILD}/${CHANNEL}/1000000000000000100`
-        ),
-        allowedMentions: { parse: [], repliedUser: false },
-        flags: MessageFlags.SuppressEmbeds
-      })
-    }
+  expect(createResponse.mock.calls[1]![0].input).toContainEqual(
+    expect.objectContaining({ type: 'reasoning', encrypted_content: 'encrypted' })
   )
-  it.each([
-    { guildId: null },
-    { author: { id: USER, bot: true } },
-    { webhookId: 'webhook' },
-    { system: true },
-    { content: '바나나' },
-    { content: `<@&${USER}> "바나나"` }
-  ])('ignores unrelated or unsupported messages %j', async (overrides) => {
-    const input = message(overrides)
-    expect(await createArchiveSearchHandler(search)(input)).toBe(false)
-    expect(search).not.toHaveBeenCalled()
-    expect(input.reply).not.toHaveBeenCalled()
+  expect(input.reply).toHaveBeenCalledWith({
+    content: expect.stringContaining('```json'),
+    allowedMentions: { parse: [], repliedUser: false },
+    flags: MessageFlags.SuppressEmbeds
   })
-  it('applies configuration updates and disablement immediately and fails closed on corrupt settings', async () => {
-    const handle = createArchiveSearchHandler(search)
+})
+it('bounds searches and forces a final response after two SQL calls', async () => {
+  createResponse
+    .mockResolvedValueOnce(tool())
+    .mockResolvedValueOnce(tool())
+    .mockResolvedValueOnce(answer())
+  await generateArchiveSearchReply('찾아줘', context)
+  expect(searchDiscordHistory).toHaveBeenCalledTimes(2)
+  expect(createResponse.mock.calls[2]![0].tool_choice).toBe('none')
+})
+it('returns malformed arguments to the model without running SQL', async () => {
+  createResponse.mockResolvedValueOnce(tool('not json')).mockResolvedValueOnce(answer('검색 오류'))
+  await generateArchiveSearchReply('찾아줘', context)
+  expect(searchDiscordHistory).not.toHaveBeenCalled()
+  expect(createResponse.mock.calls[1]![0].input).toContainEqual(
+    expect.objectContaining({ output: expect.stringContaining('Invalid history query') })
+  )
+})
+it('rejects unknown tools, unsearched answers, incomplete responses and malformed JSON', async () => {
+  for (const responses of [
+    [tool('{}', 'shell')],
+    [answer()],
+    [{ status: 'incomplete', output: [] }],
+    [tool(), { status: 'completed', output: [], output_text: 'not json' }]
+  ]) {
+    createResponse.mockReset()
+    for (const response of responses) createResponse.mockResolvedValueOnce(response)
+    await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toThrow()
+  }
+})
+it('fails closed outside the configured channel and after disablement', async () => {
+  await expect(
+    generateArchiveSearchReply('찾아줘', { ...context, channelId: ROLE })
+  ).rejects.toThrow()
+  manageCommunitySettings({
+    action: 'update',
+    settings: { discordArchive: { searchRoleId: null } }
+  })
+  await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toThrow()
+  expect(createResponse).not.toHaveBeenCalled()
+})
+it('rechecks role-search disablement before executing a model-generated SQL call', async () => {
+  createResponse.mockImplementationOnce(async () => {
     manageCommunitySettings({
       action: 'update',
       settings: { discordArchive: { searchRoleId: null } }
     })
-    expect(await handle(message())).toBe(false)
-    setStoredValue('community:settings', 'broken')
-    expect(await handle(message())).toBe(false)
-    expect(search).not.toHaveBeenCalled()
+    return tool()
   })
-  it('claims invalid search requests and returns usage without invoking role chat or the database', async () => {
-    vi.mocked(interpretArchiveSearch).mockResolvedValueOnce(null)
-    const commands = vi.fn().mockResolvedValue(false)
-    const chat = vi.fn().mockResolvedValue(undefined)
-    const handle = createMessageHandler(commands, chat, createArchiveSearchHandler(search))
-    const input = message({ content: `<@&${ROLE}> 찾아줘` })
-    await handle(input)
-    expect(input.reply).toHaveBeenCalled()
+  await expect(generateArchiveSearchReply('찾아줘', context)).rejects.toThrow('disabled')
+  expect(searchDiscordHistory).not.toHaveBeenCalled()
+})
+it('keeps model text inside a valid bounded JSON code block', async () => {
+  createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce(answer('``` @everyone'))
+  const result = await generateArchiveSearchReply('찾아줘', context)
+  expect(result.length).toBeLessThanOrEqual(2000)
+  expect(result.match(/```/g) ?? []).toHaveLength(2)
+  expect(JSON.parse(result.slice(8, -4))).toEqual({ answer: '``` @everyone' })
+})
+it.each([`<@&${ROLE}>`, `<&@${ROLE}>`])(
+  'routes %s before role chat without requiring role possession',
+  async (mention) => {
+    const generate = vi.fn().mockResolvedValue('```json\n{"answer":"결과"}\n```')
+    const chat = vi.fn()
+    const handler = createMessageHandler(
+      vi.fn().mockResolvedValue(false),
+      chat,
+      createArchiveSearchHandler(generate)
+    )
+    await handler(message(`${mention} 피자 찾아줘`))
+    expect(generate).toHaveBeenCalledWith('피자 찾아줘', context)
     expect(chat).not.toHaveBeenCalled()
-    expect(search).not.toHaveBeenCalled()
-  })
-  it('routes commands first, search before role chat, and keeps ordinary chat unchanged', async () => {
-    const commands = vi.fn().mockResolvedValue(false)
-    const chat = vi.fn().mockResolvedValue(undefined)
-    const handle = createMessageHandler(commands, chat, createArchiveSearchHandler(search))
-    await handle(message())
-    expect(search).toHaveBeenCalledOnce()
-    expect(chat).not.toHaveBeenCalled()
-    await handle(message({ content: 'ordinary chat' }))
+    await handler(message('일반 대화'))
     expect(chat).toHaveBeenCalledOnce()
-    commands.mockResolvedValueOnce(true)
-    await handle(message())
-    expect(search).toHaveBeenCalledOnce()
-  })
-  it('bounds replies, prevents mentions and escapes source formatting', async () => {
-    search.mockResolvedValue({
-      matches: Array.from({ length: 100 }, (_, i) => ({
-        id: String(1000000000000000000n + BigInt(i)),
-        authorName: '@everyone **spoof**',
-        snippet: '[fake](https://evil.example) @everyone ' + '한'.repeat(10000),
-        field: 'content' as const
-      })),
-      more: true,
-      historyComplete: false,
-      pendingEvents: 1,
-      collection: { messageCount: 12345, historyCursorAt: '2026-10-01T00:00:00.000Z' }
-    })
-    const input = message()
-    await createArchiveSearchHandler(search)(input)
-    const payload = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
-    expect(payload.content.length).toBeLessThanOrEqual(2000)
-    expect((payload.content.match(/\[원문\]/g) ?? []).length).toBeLessThanOrEqual(5)
-    expect(payload.content).not.toContain('@everyone')
-    expect(payload.content).not.toContain('[fake](https://evil.example)')
-    expect(payload.content).toContain('과거 기록 수집이 완료되지 않아')
-    expect(payload.content).toContain('저장 12,345개')
-    expect(payload.content).toContain('실시간 반영을 기다리는 메시지')
-  })
-  it('rate limits repeated requests without flooding repeated rate notices', async () => {
-    const handle = createArchiveSearchHandler(search)
-    const inputs = Array.from({ length: 8 }, () => message())
-    for (const input of inputs) await handle(input)
-    expect(search).toHaveBeenCalledTimes(3)
-    expect(inputs.filter((input) => vi.mocked(input.reply).mock.calls.length)).toHaveLength(4)
-  })
-  it('bounds concurrent work and releases it after failure', async () => {
-    let reject!: (error: Error) => void
-    search.mockReturnValueOnce(
+  }
+)
+it('claims invalid inputs without paid requests and rate limits repeated requests', async () => {
+  const generate = vi.fn().mockResolvedValue('result')
+  const handler = createArchiveSearchHandler(generate)
+  const empty = message(`<@&${ROLE}>`)
+  expect(await handler(empty)).toBe(true)
+  expect(generate).not.toHaveBeenCalled()
+  for (let i = 0; i < 8; i++) await handler(message())
+  expect(generate).toHaveBeenCalledTimes(2)
+})
+it('releases concurrency after safe errors without exposing service details', async () => {
+  let reject!: (error: Error) => void
+  const generate = vi
+    .fn()
+    .mockReturnValueOnce(
       new Promise((_, no) => {
         reject = no
       })
     )
-    const handle = createArchiveSearchHandler(search)
-    const first = handle(message())
-    await vi.waitFor(() => expect(search).toHaveBeenCalledOnce())
-    const second = message({ author: { id: '888888888888888888', bot: false } })
-    await handle(second)
-    expect(second.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('다른 검색') })
-    )
-    reject(new Error('secret-token'))
-    await first
-    const next = message({ author: { id: '888888888888888888', bot: false } })
-    await handle(next)
-    expect(search).toHaveBeenCalledTimes(2)
-  })
+    .mockResolvedValue('result')
+  const handler = createArchiveSearchHandler(generate)
+  const input = message()
+  const pending = handler(input)
+  await vi.waitFor(() => expect(generate).toHaveBeenCalledOnce())
+  const second = message()
+  await handler(second)
+  expect(second.reply).toHaveBeenCalledWith(
+    expect.objectContaining({ content: expect.stringContaining('다른 검색') })
+  )
+  reject(new Error('secret-token'))
+  await pending
+  expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-token')
+  await handler(message())
+  expect(generate).toHaveBeenCalledTimes(2)
 })

@@ -72,6 +72,7 @@ const communitySettingsFields = {
         .default(null),
       maxStorageMiB: z.number().int().min(64).max(20480).default(1024),
       maxChannels: z.number().int().min(1).max(500).default(1),
+      searchModel: z.string().trim().min(1).max(100).default('gpt-5-mini'),
       searchRoleId: z
         .string()
         .regex(/^\d{17,20}$/)
@@ -103,7 +104,7 @@ const communitySettingsFields = {
         .boolean()
         .default(true)
         .describe(
-          'Allow role chat to write read-only SQL to find currently verified messages in the current configured archive channel'
+          'Legacy compatibility setting; role chat no longer has archive SQL tools. Use discordArchive.searchRoleId instead.'
         ),
       readImages: z
         .boolean()
@@ -167,6 +168,7 @@ export const communitySettingsSchema = z
       channelId: null,
       maxStorageMiB: 1024,
       maxChannels: 1,
+      searchModel: 'gpt-5-mini',
       searchRoleId: null
     }),
     personas: communitySettingsFields.personas.default([]),
@@ -227,7 +229,6 @@ function parseCommunitySettings(raw: string): CommunitySettings {
       !Array.isArray(fields.discordArchive)
     ) {
       const archive = { ...fields.discordArchive } as Record<string, unknown>
-      delete archive.searchModel
       fields.discordArchive = archive
     }
     if (fields.roleChat && typeof fields.roleChat === 'object' && !Array.isArray(fields.roleChat)) {

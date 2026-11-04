@@ -1720,7 +1720,7 @@ describe('image-aware role chat', () => {
   })
 })
 
-describe('SQL history tool calls', () => {
+describe('role chat has no SQL history tools', () => {
   const sql =
     "SELECT message_id FROM messages WHERE content ILIKE '%피자%' ORDER BY created_at DESC LIMIT 12"
   async function* toolStream(args = JSON.stringify({ sql }), name = 'search_discord_history') {
@@ -1748,7 +1748,7 @@ describe('SQL history tool calls', () => {
       settings: { discordArchive: { channelId: '777777777777777777' } }
     })
   }
-  it('writes SQL through a tool, feeds verified results back, and preserves reasoning for the streamed answer', async () => {
+  it('does not expose SQL tools even for explicit history requests and rejects unexpected calls', async () => {
     configureHistory()
     const result = {
       messages: [
@@ -1772,27 +1772,14 @@ describe('SQL history tool calls', () => {
       .mockImplementationOnce(async () => responseStream('예전 피자 기록을 찾았어요.'))
     const input = message({ content: `<@&${ROLE}> 예전에 피자 얘기한 기록 찾아줘` })
     await createRoleChatHandler()(input)
-    expect(searchDiscordHistory).toHaveBeenCalledExactlyOnceWith(
-      { guildId: GUILD, channelId: input.channelId, userId: USER, requestMessageId: input.id },
-      { sql },
-      expect.any(AbortSignal)
-    )
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
     const first = createResponse.mock.calls[0]![0]
-    expect(first.tools).toContainEqual(
+    expect(first.tools).not.toContainEqual(
       expect.objectContaining({ name: 'search_discord_history', strict: true })
     )
-    expect(first.parallel_tool_calls).toBe(false)
-    const second = createResponse.mock.calls[1]![0]
-    expect(second.input).toContainEqual(
-      expect.objectContaining({ type: 'reasoning', encrypted_content: 'encrypted' })
-    )
-    expect(second.input).toContainEqual({
-      type: 'function_call_output',
-      call_id: 'history-call-1',
-      output: JSON.stringify(result)
-    })
+    expect(createResponse).toHaveBeenCalledOnce()
     expect(input.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('기록') })
+      expect.objectContaining({ content: expect.stringContaining('지금은') })
     )
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -1819,7 +1806,7 @@ describe('SQL history tool calls', () => {
     )
     expect(searchDiscordHistory).not.toHaveBeenCalled()
   })
-  it('limits SQL attempts and forces a final response after two searches', async () => {
+  it('rejects SQL calls before any archive access', async () => {
     configureHistory()
     vi.mocked(searchDiscordHistory).mockResolvedValue({
       messages: [],
@@ -1833,22 +1820,17 @@ describe('SQL history tool calls', () => {
       .mockImplementationOnce(async () => toolStream())
       .mockImplementationOnce(async () => responseStream('확인 가능한 결과가 없어요.'))
     await createRoleChatHandler()(message({ content: `<@&${ROLE}> 과거 기록 찾아줘` }))
-    expect(searchDiscordHistory).toHaveBeenCalledTimes(2)
-    expect(createResponse.mock.calls[2]![0].tool_choice).toBe('none')
+    expect(searchDiscordHistory).not.toHaveBeenCalled()
+    expect(createResponse).toHaveBeenCalledOnce()
   })
-  it('reports malformed tool arguments to the model without executing SQL', async () => {
+  it('rejects malformed function calls without executing SQL', async () => {
     configureHistory()
     createResponse
       .mockImplementationOnce(async () => toolStream('not JSON'))
       .mockImplementationOnce(async () => responseStream('검색식을 처리하지 못했어요.'))
     await createRoleChatHandler()(message({ content: `<@&${ROLE}> 과거 기록 찾아줘` }))
     expect(searchDiscordHistory).not.toHaveBeenCalled()
-    expect(createResponse.mock.calls[1]![0].input).toContainEqual(
-      expect.objectContaining({
-        type: 'function_call_output',
-        output: expect.stringContaining('Invalid history query')
-      })
-    )
+    expect(createResponse).toHaveBeenCalledOnce()
   })
   it('never executes unknown model-requested tools', async () => {
     configureHistory()

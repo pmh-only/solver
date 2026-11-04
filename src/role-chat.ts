@@ -6,12 +6,6 @@ import type {
   ResponseOutputItem,
   Tool
 } from 'openai/resources/responses/responses'
-import { createArchiveHistorySearch } from './archive-history-tool.js'
-import {
-  ARCHIVE_HISTORY_TOOL_NAME,
-  ARCHIVE_HISTORY_DESCRIPTION,
-  requestsArchiveHistory
-} from './archive-history-query.js'
 import { collectRoleChatImages, type RoleChatImage } from './role-chat-images.js'
 import { loadCommunitySettings, type CommunitySettings } from './community-settings.js'
 import { loadOpenAIApiKey, loadOpenAIEndpoint } from './openai-config.js'
@@ -36,7 +30,6 @@ type ChatSettings = NonNullable<CommunitySettings['roleChat']> & {
   relationshipState?: RelationshipScores
   relationshipOverrideTargets?: RelationshipTarget[]
   imageInputs?: RoleChatImage[]
-  historySearch?: (query: unknown, signal: AbortSignal) => Promise<string>
 }
 const TIMEOUT_MS = 30_000
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
@@ -204,26 +197,11 @@ export async function generateRoleChatReply(
       { type: 'input_image', image_url: image.url, detail: 'high' }
     )
   }
-  const historySearch = settings.archiveSearch ? settings.historySearch : undefined
   const tools: Tool[] = settings.webSearch ? [{ type: 'web_search' }] : []
-  if (historySearch)
-    tools.push({
-      type: 'function',
-      name: ARCHIVE_HISTORY_TOOL_NAME,
-      description: ARCHIVE_HISTORY_DESCRIPTION,
-      strict: true,
-      parameters: {
-        type: 'object',
-        properties: { sql: { type: 'string' } },
-        required: ['sql'],
-        additionalProperties: false
-      }
-    })
   const signal = AbortSignal.timeout(TIMEOUT_MS)
-  let input: string | ResponseInput = images.length
+  const input: string | ResponseInput = images.length
     ? [{ role: 'user', content: inputContent }]
     : prompt
-  let searches = 0
   let webSearches = 0
   for (let round = 0; round < 3; round++) {
     signal.throwIfAborted()
@@ -238,11 +216,7 @@ export async function generateRoleChatReply(
           settings.webSearch
             ? 'You may use the provided OpenAI web search tool for current public information. Cite sources with Markdown links.'
             : 'Web search is unavailable.',
-          historySearch
-            ? `${ARCHIVE_HISTORY_DESCRIPTION} Current UTC date: ${new Date().toISOString().slice(0, 10)}. Do not claim you searched unless the tool succeeded. No other archive-management, MCP, shell or agent tools are available.`
-            : settings.webSearch
-              ? 'No other tools are available.'
-              : 'No tools are available.',
+          settings.webSearch ? 'No other tools are available.' : 'No tools are available.',
           ...(settings.relationshipState
             ? [
                 relationshipInstructions(
@@ -256,9 +230,6 @@ export async function generateRoleChatReply(
         input,
         tools: tools.filter((tool) => tool.type !== 'web_search' || webSearches < 2),
         tool_choice: tools.length && round < 2 ? 'auto' : 'none',
-        ...(historySearch
-          ? { parallel_tool_calls: false, include: ['reasoning.encrypted_content' as const] }
-          : {}),
         ...(tools.length
           ? { max_tool_calls: settings.webSearch && webSearches < 2 ? 2 - webSearches : 2 }
           : {}),
@@ -290,42 +261,7 @@ export async function generateRoleChatReply(
     webSearches += output.filter((item) => item.type === 'web_search_call').length
     if (webSearches > 2) throw new Error('Web search tool budget exceeded')
     const calls = output.filter((item) => item.type === 'function_call')
-    if (completed && calls.length) {
-      if (
-        !historySearch ||
-        round >= 2 ||
-        searches + calls.length > 2 ||
-        calls.some(
-          (call) => call.name !== ARCHIVE_HISTORY_TOOL_NAME || call.arguments.length > 5000
-        )
-      )
-        throw new Error('History tool budget exceeded')
-      searches += calls.length
-      const results: ResponseInput = []
-      for (const call of calls) {
-        let result: string
-        try {
-          result = await historySearch(JSON.parse(call.arguments), signal)
-        } catch {
-          result = JSON.stringify({
-            error: 'Invalid history query. Supply a supported SQL search.'
-          })
-        }
-        results.push({ type: 'function_call_output', call_id: call.call_id, output: result })
-      }
-      input = [
-        ...(typeof input === 'string' ? [{ role: 'user' as const, content: input }] : input),
-        ...output.filter(
-          (item) =>
-            item.type === 'function_call' ||
-            item.type === 'reasoning' ||
-            item.type === 'message' ||
-            item.type === 'web_search_call'
-        ),
-        ...results
-      ]
-      continue
-    }
+    if (calls.length) throw new Error('Unexpected function call')
     if (!completed || !content.trim()) {
       throw new Error('No complete text response')
     }
@@ -432,26 +368,6 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
       }
     }
 
-    const archive = loadCommunitySettings().discordArchive
-    if (
-      settings.archiveSearch &&
-      requestsArchiveHistory(prompt) &&
-      archive.enabled &&
-      archive.channelId === message.channelId
-    ) {
-      settings = {
-        ...settings,
-        historySearch: createArchiveHistorySearch(
-          {
-            guildId: message.guildId,
-            channelId: message.channelId,
-            userId: message.author.id,
-            requestMessageId: message.id
-          },
-          true
-        )
-      }
-    }
     const targetIds = new Set([message.author.id])
     if (canOverride) {
       // Actual direct user mentions only: not role/everyone mentions, replies, history or raw IDs.
