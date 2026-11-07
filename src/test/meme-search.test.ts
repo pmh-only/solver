@@ -9,6 +9,7 @@ import { isolateStoredValues } from '../helpers/kv-store-test.js'
 const ROLE = '123456789012345678'
 const ID = '08dce137-3f2d-4b75-8319-c1787d530267'
 const image = 'https://s3.lth.so/memehub/file?signature=test'
+const imageResult = { type: 'image' as const, content: image }
 const fetchMock = vi.fn<typeof fetch>()
 
 function fixture() {
@@ -69,7 +70,7 @@ it('returns the image URL with only two API requests and no image download', asy
     .mockResolvedValueOnce(
       Response.json({ original: { url: 'https://s3.lth.so/memehub/file?signature=test' } })
     )
-  expect(await findMemeContent('gp2 engine')).toBe(image)
+  expect(await findMemeContent('gp2 engine')).toEqual(imageResult)
   expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
   expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('content_type')).toBe(false)
@@ -108,15 +109,64 @@ it('sends text bodies verbatim without a media request or mention notifications'
   })
   expect(message.delete).toHaveBeenCalledOnce()
 })
+it('plays audio in voice without sending a webhook and deduplicates completed requests', async () => {
+  const { message, send, channel } = fixture()
+  channel.permissionsFor = () => ({ has: () => false })
+  Object.assign(message.member, { voice: { channelId: 'voice' } })
+  const play = vi.fn(async () => {
+    expect(message.delete).not.toHaveBeenCalled()
+    return true
+  })
+  const handle = createMemeSearchHandler(async () => ({ type: 'audio', content: image }), play)
+  await handle(message as unknown as Message)
+  expect(play).toHaveBeenCalledWith(message, image)
+  expect(send).not.toHaveBeenCalled()
+  expect(channel.fetchWebhooks).not.toHaveBeenCalled()
+  expect(message.delete).toHaveBeenCalledOnce()
+  await handle(message as unknown as Message)
+  expect(play).toHaveBeenCalledOnce()
+})
+it('falls back to an audio webhook when voice playback is unavailable', async () => {
+  const { message, send } = fixture()
+  const play = vi.fn().mockResolvedValue(false)
+  await createMemeSearchHandler(
+    async () => ({ type: 'audio', content: image }),
+    play
+  )(message as unknown as Message)
+  expect(play).toHaveBeenCalledOnce()
+  expect(send.mock.calls[0][0]).toMatchObject({ content: image })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('preserves the original if both voice and webhook delivery are unavailable', async () => {
+  const { message, send, channel } = fixture()
+  channel.permissionsFor = () => ({ has: () => false })
+  Object.assign(message.member, { voice: { channelId: 'voice' } })
+  await createMemeSearchHandler(
+    async () => ({ type: 'audio', content: image }),
+    async () => false
+  )(message as unknown as Message)
+  expect(send).not.toHaveBeenCalled()
+  expect(message.delete).not.toHaveBeenCalled()
+})
+it.each(['image', 'text'] as const)('never plays %s results in voice', async (type) => {
+  const { message } = fixture()
+  const play = vi.fn()
+  await createMemeSearchHandler(
+    async () => ({ type, content: image }),
+    play
+  )(message as unknown as Message)
+  expect(play).not.toHaveBeenCalled()
+})
 it.each([2000, 2001, 10_000])(
   'bounds %i-character text to the Discord content limit',
   async (size) => {
     fetchMock.mockResolvedValueOnce(
       Response.json({ items: [{ id: ID, content_type: 'text', body_text: '가'.repeat(size) }] })
     )
-    expect(await findMemeContent('query')).toBe(
-      size > 2000 ? `${'가'.repeat(1999)}…` : '가'.repeat(size)
-    )
+    expect(await findMemeContent('query')).toEqual({
+      type: 'text',
+      content: size > 2000 ? `${'가'.repeat(1999)}…` : '가'.repeat(size)
+    })
     expect(fetchMock).toHaveBeenCalledOnce()
   }
 )
@@ -160,7 +210,7 @@ it('reuses an owned webhook with author identity, suppresses mentions and delete
   send.mockImplementation(async () => {
     expect(message.delete).not.toHaveBeenCalled()
   })
-  const find = vi.fn().mockResolvedValue(image)
+  const find = vi.fn().mockResolvedValue(imageResult)
   const handle = createMemeSearchHandler(find)
   expect(await handle(message as unknown as Message)).toBe(true)
   expect(find).toHaveBeenCalledWith('gp2 engine')
@@ -183,7 +233,7 @@ it('creates a webhook if needed and targets threads through their parent', async
     isThread: () => true,
     parent: channel
   } as unknown as typeof channel
-  await createMemeSearchHandler(async () => image)(message as unknown as Message)
+  await createMemeSearchHandler(async () => imageResult)(message as unknown as Message)
   expect(channel.createWebhook).toHaveBeenCalledWith({ name: 'solver-meme' })
   expect(send.mock.calls[0][0]).toMatchObject({ threadId: 'thread' })
 })
@@ -191,7 +241,7 @@ it.each(['missing', 'lookup', 'send'])('preserves originals on %s failure', asyn
   vi.spyOn(console, 'error').mockImplementation(() => {})
   const { message, send } = fixture()
   if (kind === 'send') send.mockRejectedValueOnce(new Error('secret'))
-  const find = vi.fn().mockResolvedValue(kind === 'missing' ? null : image)
+  const find = vi.fn().mockResolvedValue(kind === 'missing' ? null : imageResult)
   if (kind === 'lookup') find.mockRejectedValueOnce(new Error('signed URL'))
   await createMemeSearchHandler(find)(message as unknown as Message)
   expect(message.delete).not.toHaveBeenCalled()
@@ -236,17 +286,17 @@ it('does not look up memes without webhook permission', async () => {
 
 it('deduplicates concurrent deliveries within a channel', async () => {
   const { message, send } = fixture()
-  let release!: (value: string) => void
+  let release!: (value: typeof imageResult) => void
   const find = vi.fn(
     () =>
-      new Promise<string>((resolve) => {
+      new Promise<typeof imageResult>((resolve) => {
         release = resolve
       })
   )
   const handle = createMemeSearchHandler(find)
   const first = handle(message as unknown as Message)
   expect(await handle(message as unknown as Message)).toBe(true)
-  release(image)
+  release(imageResult)
   await first
   expect(find).toHaveBeenCalledOnce()
   expect(send).toHaveBeenCalledOnce()
@@ -256,7 +306,7 @@ it('does not reuse someone else’s webhook', async () => {
   const { message, channel } = fixture()
   const hooks = await channel.fetchWebhooks()
   hooks.first()!.owner.id = 'someone-else'
-  await createMemeSearchHandler(async () => image)(message as unknown as Message)
+  await createMemeSearchHandler(async () => imageResult)(message as unknown as Message)
   expect(channel.createWebhook).toHaveBeenCalledOnce()
 })
 

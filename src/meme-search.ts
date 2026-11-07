@@ -1,6 +1,12 @@
 import { PermissionFlagsBits, type Message } from 'discord.js'
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
+import { playMemeAudio } from './meme-voice.js'
+
+export interface MemeContent {
+  type: 'image' | 'audio' | 'text'
+  content: string
+}
 
 const API = 'https://meme.lth.so/api/'
 const WEBHOOK_NAME = 'solver-meme'
@@ -47,12 +53,16 @@ async function apiJson(path: string): Promise<unknown> {
   return JSON.parse((Buffer.concat(chunks) as Buffer).toString('utf8'))
 }
 
-export async function findMemeContent(query: string) {
+export async function findMemeContent(query: string): Promise<MemeContent | null> {
   const params = new URLSearchParams({ q: query, limit: '1' })
   const result = resultsSchema.parse(await apiJson(`memes?${params}`)).items[0]
   if (!result) return null
   if (result.content_type === 'text') {
-    return result.body_text.length > 2000 ? `${result.body_text.slice(0, 1999)}…` : result.body_text
+    return {
+      type: 'text',
+      content:
+        result.body_text.length > 2000 ? `${result.body_text.slice(0, 1999)}…` : result.body_text
+    }
   }
   const media = mediaSchema.parse(await apiJson(`memes/${result.id}/media`))
   const url = new URL(media.original.url)
@@ -64,10 +74,10 @@ export async function findMemeContent(query: string) {
     url.port
   )
     throw new Error('Unexpected meme media host')
-  return media.original.url
+  return { type: result.content_type, content: media.original.url }
 }
 
-export function createMemeSearchHandler(findContent = findMemeContent) {
+export function createMemeSearchHandler(findContent = findMemeContent, playAudio = playMemeAudio) {
   const activeChannels = new Set<string>()
   const sent = new Set<string>()
   return async (message: Message): Promise<boolean> => {
@@ -85,13 +95,22 @@ export function createMemeSearchHandler(findContent = findMemeContent) {
     const parent = channel.isThread() ? channel.parent : channel
     if (!parent || !('fetchWebhooks' in parent) || !('createWebhook' in parent)) return true
     const bot = message.client.user
-    if (!bot || !parent.permissionsFor(bot)?.has(PermissionFlagsBits.ManageWebhooks)) return true
+    if (!bot) return true
+    const canWebhook = parent.permissionsFor(bot)?.has(PermissionFlagsBits.ManageWebhooks)
+    if (!canWebhook && !message.member?.voice?.channelId) return true
     if (sent.has(message.id) || activeChannels.has(parent.id) || activeChannels.size >= 2)
       return true
     activeChannels.add(parent.id)
     try {
       const content = await findContent(query)
       if (!content || loadCommunitySettings().memeSearch?.roleId !== settings.roleId) return true
+      if (content.type === 'audio' && (await playAudio(message, content.content))) {
+        sent.add(message.id)
+        if (sent.size > 500) sent.delete(sent.values().next().value!)
+        await message.delete()
+        return true
+      }
+      if (!canWebhook) return true
       const hooks = await parent.fetchWebhooks()
       const hook =
         hooks.find(
@@ -104,7 +123,7 @@ export function createMemeSearchHandler(findContent = findMemeContent) {
           message.author.username
         ).slice(0, 80),
         avatarURL: message.member?.displayAvatarURL() ?? message.author.displayAvatarURL(),
-        content,
+        content: content.content,
         ...(channel.isThread() ? { threadId: channel.id } : {}),
         allowedMentions: { parse: [], repliedUser: false }
       })

@@ -17,7 +17,7 @@ WORKDIR /app
 ENV NODE_ENV=production \
     HOME=/home/agent
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates chromium curl gosu iputils-ping sudo \
+    && apt-get install -y --no-install-recommends ca-certificates chromium curl ffmpeg gosu iputils-ping sudo \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
