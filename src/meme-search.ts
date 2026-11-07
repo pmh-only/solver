@@ -5,7 +5,21 @@ import { loadCommunitySettings } from './community-settings.js'
 const API = 'https://meme.lth.so/api/'
 const WEBHOOK_NAME = 'solver-meme'
 const resultsSchema = z.object({
-  items: z.array(z.object({ id: z.string().uuid(), content_type: z.literal('image') })).max(24)
+  items: z
+    .array(
+      z.discriminatedUnion('content_type', [
+        z.object({ id: z.string().uuid(), content_type: z.enum(['image', 'audio']) }),
+        z.object({
+          id: z.string().uuid(),
+          content_type: z.literal('text'),
+          body_text: z
+            .string()
+            .max(10_000)
+            .refine((value) => value.trim().length > 0)
+        })
+      ])
+    )
+    .max(24)
 })
 const mediaSchema = z.object({ original: z.object({ url: z.string().url().max(2000) }) })
 
@@ -33,10 +47,13 @@ async function apiJson(path: string): Promise<unknown> {
   return JSON.parse((Buffer.concat(chunks) as Buffer).toString('utf8'))
 }
 
-export async function findMemeImage(query: string) {
-  const params = new URLSearchParams({ q: query, content_type: 'image', limit: '1' })
+export async function findMemeContent(query: string) {
+  const params = new URLSearchParams({ q: query, limit: '1' })
   const result = resultsSchema.parse(await apiJson(`memes?${params}`)).items[0]
   if (!result) return null
+  if (result.content_type === 'text') {
+    return result.body_text.length > 2000 ? `${result.body_text.slice(0, 1999)}…` : result.body_text
+  }
   const media = mediaSchema.parse(await apiJson(`memes/${result.id}/media`))
   const url = new URL(media.original.url)
   if (
@@ -50,7 +67,7 @@ export async function findMemeImage(query: string) {
   return media.original.url
 }
 
-export function createMemeSearchHandler(findImage = findMemeImage) {
+export function createMemeSearchHandler(findContent = findMemeContent) {
   const activeChannels = new Set<string>()
   const sent = new Set<string>()
   return async (message: Message): Promise<boolean> => {
@@ -73,8 +90,8 @@ export function createMemeSearchHandler(findImage = findMemeImage) {
       return true
     activeChannels.add(parent.id)
     try {
-      const image = await findImage(query)
-      if (!image || loadCommunitySettings().memeSearch?.roleId !== settings.roleId) return true
+      const content = await findContent(query)
+      if (!content || loadCommunitySettings().memeSearch?.roleId !== settings.roleId) return true
       const hooks = await parent.fetchWebhooks()
       const hook =
         hooks.find(
@@ -87,7 +104,7 @@ export function createMemeSearchHandler(findImage = findMemeImage) {
           message.author.username
         ).slice(0, 80),
         avatarURL: message.member?.displayAvatarURL() ?? message.author.displayAvatarURL(),
-        content: image,
+        content,
         ...(channel.isThread() ? { threadId: channel.id } : {}),
         allowedMentions: { parse: [], repliedUser: false }
       })

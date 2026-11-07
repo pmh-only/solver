@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { Collection, type Message } from 'discord.js'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
-import { createMemeSearchHandler, findMemeImage } from '../meme-search.js'
+import { createMemeSearchHandler, findMemeContent } from '../meme-search.js'
 import { createMessageHandler } from '../message-handler.js'
 import { manageCommunitySettings, loadCommunitySettings } from '../community-settings.js'
 import { clearStoredValues } from '../helpers/kv-store.js'
@@ -69,9 +69,10 @@ it('returns the image URL with only two API requests and no image download', asy
     .mockResolvedValueOnce(
       Response.json({ original: { url: 'https://s3.lth.so/memehub/file?signature=test' } })
     )
-  expect(await findMemeImage('gp2 engine')).toBe(image)
+  expect(await findMemeContent('gp2 engine')).toBe(image)
   expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('content_type')).toBe(false)
   expect(fetchMock.mock.calls[0][1]).toMatchObject({
     redirect: 'error',
     signal: expect.any(AbortSignal)
@@ -79,16 +80,67 @@ it('returns the image URL with only two API requests and no image download', asy
 })
 it('stops after the search request when there are no results', async () => {
   fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
-  expect(await findMemeImage('missing')).toBeNull()
+  expect(await findMemeContent('missing')).toBeNull()
   expect(fetchMock).toHaveBeenCalledOnce()
 })
+it('returns audio URLs without downloading or re-uploading media', async () => {
+  fetchMock
+    .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'audio' }] }))
+    .mockResolvedValueOnce(Response.json({ original: { url: image } }))
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(String(fetchMock.mock.calls[1][0])).toBe(`https://meme.lth.so/api/memes/${ID}/media`)
+  expect(send.mock.calls[0][0]).toMatchObject({ content: image })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('sends text bodies verbatim without a media request or mention notifications', async () => {
+  const body = '첫 줄\n@everyone <@123456789012345678> **밈**'
+  fetchMock.mockResolvedValueOnce(
+    Response.json({ items: [{ id: ID, content_type: 'text', body_text: body }] })
+  )
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledOnce()
+  expect(send.mock.calls[0][0]).toMatchObject({
+    content: body,
+    allowedMentions: { parse: [], repliedUser: false }
+  })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it.each([2000, 2001, 10_000])(
+  'bounds %i-character text to the Discord content limit',
+  async (size) => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'text', body_text: '가'.repeat(size) }] })
+    )
+    expect(await findMemeContent('query')).toBe(
+      size > 2000 ? `${'가'.repeat(1999)}…` : '가'.repeat(size)
+    )
+    expect(fetchMock).toHaveBeenCalledOnce()
+  }
+)
+it.each([undefined, null, '', ' \n ', 123, 'x'.repeat(10_001)])(
+  'preserves the original when text body is invalid (case %#)',
+  async (body) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'text', body_text: body }] })
+    )
+    const { message, send } = fixture()
+    await createMemeSearchHandler()(message as unknown as Message)
+    expect(send).not.toHaveBeenCalled()
+    expect(message.delete).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  }
+)
 it.each(['http://s3.lth.so/file', 'https://127.0.0.1/file', 'https://s3.lth.so.evil.test/file'])(
   'rejects unsafe media %s',
   async (url) => {
     fetchMock
       .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
       .mockResolvedValueOnce(Response.json({ original: { url } }))
-    await expect(findMemeImage('query')).rejects.toThrow()
+    await expect(findMemeContent('query')).rejects.toThrow()
     expect(fetchMock).toHaveBeenCalledTimes(2)
   }
 )
@@ -101,7 +153,7 @@ it.each(['malformed', 'oversized', 'timeout', 'http'])('rejects %s API responses
         ? new Response('', { status: 503 })
         : new Response(kind === 'oversized' ? 'x'.repeat(256 * 1024 + 1) : '{}')
     )
-  await expect(findMemeImage('query')).rejects.toThrow()
+  await expect(findMemeContent('query')).rejects.toThrow()
 })
 it('reuses an owned webhook with author identity, suppresses mentions and deletes only after send', async () => {
   const { message, channel, send } = fixture()
@@ -214,5 +266,5 @@ it('rejects image URLs exceeding the Discord content limit', async () => {
     .mockResolvedValueOnce(
       Response.json({ original: { url: `https://s3.lth.so/${'x'.repeat(2000)}` } })
     )
-  await expect(findMemeImage('query')).rejects.toThrow()
+  await expect(findMemeContent('query')).rejects.toThrow()
 })
