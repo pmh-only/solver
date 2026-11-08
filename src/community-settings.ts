@@ -100,6 +100,12 @@ const communitySettingsFields = {
       roleId: z.string().regex(/^\d{17,20}$/),
       randomReplyChance: z.number().min(0).max(1).default(0.01),
       webSearch: z.boolean().default(true),
+      mail: z
+        .boolean()
+        .default(true)
+        .describe(
+          'Allow shared gpt@pmh.codes mail tools using the existing /a-managed Mail API key'
+        ),
       generateImages: z
         .boolean()
         .default(true)

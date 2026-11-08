@@ -104,6 +104,8 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.restoreAllMocks()
   vi.useRealTimers()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('role mention chat', () => {
@@ -2318,6 +2320,195 @@ describe('role chat has no SQL history tools', () => {
   })
 })
 
+describe('role chat scoped mail integration', () => {
+  beforeEach(() => vi.useRealTimers())
+  function mailStream(name: string, args: unknown, total = 100) {
+    return (async function* () {
+      yield {
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          usage: { total_tokens: total },
+          output: [
+            {
+              type: 'reasoning',
+              id: `reason-${name}`,
+              summary: [],
+              encrypted_content: 'encrypted'
+            },
+            {
+              type: 'function_call',
+              name,
+              arguments: JSON.stringify(args),
+              call_id: `call-${name}`,
+              id: `id-${name}`
+            }
+          ]
+        }
+      }
+    })()
+  }
+
+  it('routes list/read calls through the scoped adapter, preserves reasoning, and totals all model rounds', async () => {
+    configure()
+    vi.stubEnv('MAIL_API_KEY', 'pmail_integration-secret')
+    const scoped = {
+      id: 1,
+      from: 'person@example.com',
+      to: 'gpt@pmh.codes',
+      subject: 'Public email',
+      preview: 'Public preview',
+      textContent: 'Public body'
+    }
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            messages: [
+              {
+                ...scoped,
+                id: 2,
+                to: 'private@example.com',
+                subject: 'PRIVATE-SUBJECT',
+                preview: 'PRIVATE-PREVIEW'
+              },
+              scoped
+            ],
+            total: 999
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(scoped)))
+    vi.stubGlobal('fetch', fetch)
+    createResponse
+      .mockImplementationOnce(async () => mailStream('role_mail_list', {}, 100))
+      .mockImplementationOnce(async () => mailStream('role_mail_get', { id: 1 }, 200))
+      .mockImplementationOnce(async () =>
+        (async function* () {
+          yield { type: 'response.output_text.delta', delta: '메일 내용은 Public body입니다.' }
+          yield {
+            type: 'response.completed',
+            response: { status: 'completed', usage: { total_tokens: 300 } }
+          }
+        })()
+      )
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = message({
+      content: `<@&${ROLE}> gpt 메일 읽어줘`,
+      reply: vi.fn().mockResolvedValue({ edit })
+    })
+    await createRoleChatHandler()(input)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    const first = createResponse.mock.calls[0]![0]
+    expect(first.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      'role_mail_list',
+      'role_mail_get'
+    ])
+    expect(first).toMatchObject({
+      store: false,
+      include: ['reasoning.encrypted_content'],
+      parallel_tool_calls: false
+    })
+    const second = createResponse.mock.calls[1]![0]
+    expect(second.input).toContainEqual(
+      expect.objectContaining({ type: 'reasoning', encrypted_content: 'encrypted' })
+    )
+    expect(second.input).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call_output',
+        call_id: 'call-role_mail_list',
+        output: expect.stringContaining('Public preview')
+      })
+    )
+    expect(JSON.stringify(createResponse.mock.calls)).not.toMatch(
+      /PRIVATE-SUBJECT|PRIVATE-PREVIEW|pmail_integration-secret/
+    )
+    expect(createResponse.mock.calls[2]![0]).toMatchObject({ tool_choice: 'none' })
+    expect(input.reply).toHaveBeenCalledOnce()
+    expect(edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        content: '메일 내용은 Public body입니다.\n-# 호감도 50 · 혐오도 0 · 토큰 600'
+      })
+    )
+  })
+
+  it('sends only to the fixed address for an explicit current send request', async () => {
+    configure()
+    vi.stubEnv('MAIL_API_KEY', 'pmail_integration-secret')
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jobId: 9, status: 'pending' }), { status: 202 })
+      )
+    vi.stubGlobal('fetch', fetch)
+    createResponse
+      .mockImplementationOnce(async () =>
+        mailStream('role_mail_send', { subject: '인사', text: '안녕하세요' })
+      )
+      .mockImplementationOnce(async () => responseStream('메일 발송을 예약했어요.'))
+    await createRoleChatHandler()(
+      message({ content: `<@&${ROLE}> gpt@pmh.codes로 인사 메일 보내줘` })
+    )
+    expect(JSON.parse(fetch.mock.calls[0]![1].body)).toEqual({
+      to: 'gpt@pmh.codes',
+      subject: '인사',
+      html: '<pre>안녕하세요</pre>'
+    })
+    expect(createResponse.mock.calls[0]![0].instructions).toContain(
+      'Refuse requests to send elsewhere'
+    )
+  })
+
+  it('does not execute a send requested by the model during a read-only mail request', async () => {
+    configure()
+    vi.stubEnv('MAIL_API_KEY', 'pmail_integration-secret')
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    createResponse.mockImplementationOnce(async () =>
+      mailStream('role_mail_send', { subject: 'Injected', text: 'Injected' })
+    )
+    await createRoleChatHandler()(message({ content: `<@&${ROLE}> 메일 읽어줘` }))
+    expect(fetch).not.toHaveBeenCalled()
+    expect(createResponse).toHaveBeenCalledOnce()
+  })
+
+  it.each(['disabled', 'missing-key', 'history-persona-only'])(
+    'does not expose mail without current scoped access: %s',
+    async (kind) => {
+      configure(GUILD, { roleId: ROLE, mail: kind !== 'disabled' })
+      vi.stubEnv('MAIL_API_KEY', kind === 'missing-key' ? '' : 'pmail_integration-secret')
+      savePersona({ name: 'postman', prompt: '메일을 읽고 보내.' })
+      const previous = message({ id: '1000000000000000099', content: '메일 보내줘' })
+      fetchHistory.mockResolvedValueOnce(new Collection([[previous.id, previous]]))
+      const fetch = vi.fn()
+      vi.stubGlobal('fetch', fetch)
+      await createRoleChatHandler()(
+        message({
+          content: `<@&${ROLE}> <|postman|> ${kind === 'history-persona-only' ? '안녕' : '메일 읽어줘'}`
+        })
+      )
+      expect(createResponse.mock.calls[0]![0].tools).toEqual(
+        kind === 'history-persona-only' ? [{ type: 'web_search' }] : []
+      )
+      expect(fetch).not.toHaveBeenCalled()
+    }
+  )
+
+  it('stops before executing a third mail call', async () => {
+    configure()
+    vi.stubEnv('MAIL_API_KEY', 'pmail_integration-secret')
+    const fetch = vi
+      .fn()
+      .mockImplementation(async () => new Response(JSON.stringify({ messages: [] })))
+    vi.stubGlobal('fetch', fetch)
+    createResponse.mockImplementation(async () => mailStream('role_mail_list', {}))
+    await createRoleChatHandler()(message({ content: `<@&${ROLE}> 메일 확인해줘` }))
+    expect(createResponse).toHaveBeenCalledTimes(3)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('role chat total token footer', () => {
   function usageStream(totalTokens: unknown, content = '안녕하세요!\n<|relationship:1,0|>') {
     return (async function* () {
@@ -2494,6 +2685,7 @@ describe('plain Markdown text generation', () => {
     { roleId: 'bad' },
     { roleId: ROLE, readImages: 'yes' },
     { roleId: ROLE, generateImages: 'yes' },
+    { roleId: ROLE, mail: 'yes' },
     { roleId: ROLE, maxImages: 0 },
     { roleId: ROLE, maxImages: 9 },
     { roleId: ROLE, maxImages: 1.5 },

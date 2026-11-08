@@ -30,6 +30,7 @@ describe('single global community configuration', () => {
     setStoredValue(COMMUNITY_SETTINGS_KEY, JSON.stringify({ roleChat: { roleId: FIRST } }))
     expect(loadCommunitySettings().roleChat).toMatchObject({
       readImages: true,
+      mail: true,
       generateImages: true,
       maxImages: 4,
       archiveSearch: true
@@ -40,6 +41,7 @@ describe('single global community configuration', () => {
         roleChat: {
           ...loadCommunitySettings().roleChat!,
           readImages: false,
+          mail: false,
           generateImages: false,
           maxImages: 2
         }
@@ -48,6 +50,7 @@ describe('single global community configuration', () => {
     manageCommunitySettings({ action: 'update', settings: { anonymousName: 'preserve' } })
     expect(loadCommunitySettings().roleChat).toMatchObject({
       readImages: false,
+      mail: false,
       generateImages: false,
       maxImages: 2,
       roleId: FIRST
