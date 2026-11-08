@@ -46,6 +46,8 @@ const TYPING_INTERVAL_MS = 8000
 const HISTORY_LIMIT = 50
 const HISTORY_TIMEOUT_MS = 10_000
 const STREAM_UPDATE_MS = 1000
+const CONTEXT_REPLY_PROMPT =
+  '역할 멘션만으로 호출했습니다. 답장 대상이 있으면 그 메시지를, 없으면 최근 채널 대화의 주제와 흐름을 바탕으로 자연스럽게 대화에 참여해 주세요. 요약이나 사용법 안내 대신 상황에 어울리는 답변을 해 주세요. 참고할 대화가 없다면 짧게 인사하고, 없는 맥락은 지어내지 마세요.'
 
 function boundedReply(content: string) {
   return content.length > 2000 ? `${content.slice(0, 1999)}…` : content
@@ -364,7 +366,10 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
       settings.readImages && collectRoleChatImages([message], 1).length
         ? '첨부한 이미지를 살펴보고 내용을 설명해 주세요.'
         : ''
-    let prompt = message.content.replace(mention, '').trim() || imagePrompt
+    let prompt =
+      message.content.replace(mention, '').trim() ||
+      imagePrompt ||
+      (mentioned ? CONTEXT_REPLY_PROMPT : '')
     if (!prompt || prompt.length > 4000) return
     const reference = message.reference
     // Discord supplies the referenced author even when reply notifications are disabled.

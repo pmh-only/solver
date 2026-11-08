@@ -189,7 +189,7 @@ describe('role mention chat', () => {
     { system: true },
     { content: '안녕' },
     { content: `<@&${USER}> 안녕` },
-    { content: `<@&${ROLE}>` },
+    { content: '' },
     { content: `<@&${ROLE}> ${'a'.repeat(4001)}` }
   ])('ignores unrelated or unsafe messages %j', async (overrides) => {
     configure()
@@ -200,6 +200,67 @@ describe('role mention chat', () => {
     expect(input.react).not.toHaveBeenCalled()
     expect(sendTyping).not.toHaveBeenCalled()
     expect(fetchHistory).not.toHaveBeenCalled()
+  })
+  it.each([`<@&${ROLE}>`, `  <@&${ROLE}> \n `, `<&@${ROLE}>`, `<@&${ROLE}> <@&${ROLE}>`])(
+    'responds naturally to recent conversation when only the role is mentioned: %s',
+    async (content) => {
+      configure(GUILD, { roleId: ROLE, randomReplyChance: 0 })
+      const previous = message({ id: '1000000000000000099', content: '오늘 저녁은 피자 어때?' })
+      fetchHistory.mockResolvedValueOnce(new Collection([[previous.id, previous]]))
+      const random = vi.fn(() => 1)
+      const input = message({ content })
+      await createRoleChatHandler(generate, random)(input)
+      expect(generate).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining('오늘 저녁은 피자 어때?'),
+        expect.objectContaining({ roleId: ROLE }),
+        expect.any(Function)
+      )
+      const request = JSON.parse(
+        generate.mock.calls[0]![0].split('\n\nCurrent user request:\n')[1]!
+      )
+      expect(request.c).toContain('최근 채널 대화의 주제와 흐름을 바탕으로 자연스럽게 대화에 참여')
+      expect(request.c).toContain('요약이나 사용법 안내 대신')
+      expect(request.c).not.toContain(`<@&${ROLE}>`)
+      expect(random).not.toHaveBeenCalled()
+      expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+        content: '**안녕하세요!**\n-# 호감도 50 · 혐오도 0',
+        allowedMentions: { parse: [], repliedUser: false }
+      })
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+  it('uses the normal generation path with a greeting fallback when a bare mention has no history', async () => {
+    configure()
+    const input = message({ content: `<@&${ROLE}>` })
+    await createRoleChatHandler()(input)
+    expect(createResponse).toHaveBeenCalledOnce()
+    const request = createResponse.mock.calls[0]![0]
+    expect(request.input).toContain(
+      '참고할 대화가 없다면 짧게 인사하고, 없는 맥락은 지어내지 마세요'
+    )
+    expect(request.tools).toEqual([{ type: 'web_search' }])
+    expect(input.reply).toHaveBeenCalledOnce()
+  })
+  it('preserves the specific reply target when invoking by bare role mention', async () => {
+    configure()
+    const target = message({
+      id: '1000000000000000099',
+      content: '제주도 여행 얘기',
+      author: { id: BOT, bot: true }
+    })
+    fetchHistory.mockResolvedValueOnce(new Collection([[target.id, target]]))
+    await createRoleChatHandler(generate)(
+      message({
+        content: `<@&${ROLE}>`,
+        reference: { messageId: target.id, channelId: target.channelId },
+        mentions: { repliedUser: { id: BOT } }
+      })
+    )
+    const prompt = generate.mock.calls[0]![0]
+    const request = JSON.parse(prompt.split('\n\nCurrent user request:\n')[1]!)
+    expect(request.replyTo).toEqual({ id: target.id, authorId: BOT, isSelf: true })
+    expect(request.c).toContain('답장 대상이 있으면 그 메시지를')
+    expect(prompt).toContain('제주도 여행 얘기')
   })
   it('is disabled by default and fails closed on corrupt settings', async () => {
     const handler = createRoleChatHandler(generate)
@@ -2051,7 +2112,7 @@ describe('image-aware role chat', () => {
     expect(createResponse.mock.calls[1]![0].instructions).toContain('고양이처럼 말해.')
   })
 
-  it('does not start paid image-only requests for unsupported or oversized attachments', async () => {
+  it('treats bare mentions with unsupported or oversized attachments as text context requests without reading images', async () => {
     configure()
     const handler = createRoleChatHandler()
     for (const properties of [
@@ -2067,8 +2128,13 @@ describe('image-aware role chat', () => {
         })
       )
     }
-    expect(createResponse).not.toHaveBeenCalled()
-    expect(fetchHistory).not.toHaveBeenCalled()
+    expect(createResponse).toHaveBeenCalledTimes(2)
+    expect(fetchHistory).toHaveBeenCalledTimes(2)
+    for (const [request] of createResponse.mock.calls) {
+      expect(typeof request.input).toBe('string')
+      expect(request.input).toContain('최근 채널 대화의 주제와 흐름')
+      expect(request.tools).toEqual([{ type: 'web_search' }])
+    }
   })
 
   it('allows /a to disable image inputs without disabling text chat and applies changes immediately', async () => {
@@ -2078,10 +2144,12 @@ describe('image-aware role chat', () => {
     expect(typeof createResponse.mock.calls[0]![0].input).toBe('string')
     expect(createResponse.mock.calls[0]![0].input).toContain(`"f":["${imageUrl}"]`)
     await handler(imageMessage({ content: `<@&${ROLE}>` }))
-    expect(createResponse).toHaveBeenCalledOnce()
+    expect(createResponse).toHaveBeenCalledTimes(2)
+    expect(typeof createResponse.mock.calls[1]![0].input).toBe('string')
+    expect(createResponse.mock.calls[1]![0].input).toContain('최근 채널 대화의 주제와 흐름')
     configure(GUILD, { roleId: ROLE, readImages: true })
     await handler(imageMessage())
-    expect(createResponse.mock.calls[1]![0].input[0].content).toContainEqual({
+    expect(createResponse.mock.calls[2]![0].input[0].content).toContainEqual({
       type: 'input_image',
       image_url: imageUrl,
       detail: 'high'
