@@ -109,6 +109,12 @@ async function handleGptSelect(
   if (!value) return
 
   const updatedCtx: GptContext = { ...ctx, [key]: value }
+  if (key === 'model' || key === 'effort') {
+    storeSessionSettings(ctx.userId, ctx.sessionName, {
+      ...loadSessionSettings(ctx.userId, ctx.sessionName),
+      [key]: value
+    })
+  }
   delete updatedCtx.archiveSearchContext
   storeGptContext(token, updatedCtx)
   await interaction.deferUpdate()

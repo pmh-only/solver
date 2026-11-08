@@ -2407,7 +2407,8 @@ describe('/a', () => {
       }),
       subs
     )
-    await dispatch(agentCommandJSON('reuse custom model', {}, 'custom'), subs)
+    resetStoredValueConnection()
+    await dispatch(agentCommandJSON('reuse custom model after reopening storage'), subs)
 
     expect(modelMock).toHaveBeenNthCalledWith(
       1,
@@ -2418,6 +2419,51 @@ describe('/a', () => {
       expect.objectContaining({ modelId: 'vendor/custom-model-preview' })
     )
     expect(getStoredValue('gpt-settings:custom')).toContain('"model":"vendor/custom-model-preview"')
+    expect(loadWebSessionState('shared-user').settings.model).toBe('vendor/custom-model-preview')
+  })
+
+  it.each([
+    ['model', 'vendor/selected-model'],
+    ['effort', 'high']
+  ])('persists a selected %s across a storage restart', async (key, value) => {
+    componentActions.push({
+      action: 'set',
+      components_json: JSON.stringify([
+        {
+          type: 1,
+          components: [{ type: 2, custom_id: 'continue', label: 'Continue', style: 1 }]
+        }
+      ])
+    })
+    const initialCalls = await dispatch(
+      agentCommandJSON('configure settings', {}, 'selected settings', {
+        model: 'vendor/original-model',
+        effort: 'low',
+        tokens: 2048,
+        tools: false
+      }),
+      subs
+    )
+    const contextKey = listStoredKeys().find((storedKey) => storedKey.startsWith('gpt-ctx:'))!
+    const token = contextKey.slice('gpt-ctx:'.length)
+    const initialEdit = getEdit(initialCalls) as { components: unknown[] }
+
+    await dispatch(selectJSON(initialEdit.components, `gpt-${key}:${token}`, value), subs)
+    resetStoredValueConnection()
+    await dispatch(
+      agentCommandJSON('reuse selected settings', {}, undefined, { tools: null }),
+      subs
+    )
+
+    const settings = {
+      model: 'vendor/original-model',
+      effort: 'low',
+      maxTokens: 2048,
+      toolsEnabled: false,
+      [key]: value
+    }
+    expect(loadWebSessionState('shared-user').settings).toEqual(settings)
+    expect(modelMock).toHaveBeenLastCalledWith(expect.objectContaining({ modelId: settings.model }))
   })
 
   it('retains full conversation history in the selected session', async () => {
