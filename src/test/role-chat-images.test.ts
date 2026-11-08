@@ -1,6 +1,12 @@
 import { Collection, type Attachment, type Message } from 'discord.js'
-import { describe, expect, it } from 'vitest'
-import { collectRoleChatImages, roleChatImageUrl } from '../role-chat-images.js'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  collectRoleChatImages,
+  createRoleChatImageBudget,
+  decodeRoleChatImage,
+  requestsRoleChatImage,
+  roleChatImageUrl
+} from '../role-chat-images.js'
 
 const URL =
   'https://cdn.discordapp.com/attachments/777777777777777777/888888888888888888/photo.png?ex=123&is=456&hm=789'
@@ -16,6 +22,43 @@ function message(id: string, files: Attachment[]): Message {
 }
 
 describe('bounded role-chat image selection', () => {
+  it('bounds image concurrency and hourly attempts and releases reservations idempotently', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      const reserve = createRoleChatImageBudget()
+      const first = reserve('guild/user1')
+      const second = reserve('guild/user2')
+      expect(() => reserve('guild/user3')).toThrow('budget')
+      first()
+      first()
+      const third = reserve('guild/user3')
+      expect(() => reserve('guild/user4')).toThrow('budget')
+      second()
+      third()
+      expect(() => reserve('guild/user1')).toThrow('budget')
+      for (let i = 3; i < 20; i++) reserve(`guild/extra${i}`)()
+      expect(() => reserve('guild/last')).toThrow('budget')
+      clock.mockReturnValue(4_600_000)
+      reserve('guild/user1')()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+  it('rejects oversized generated images before decoding', () => {
+    expect(() => decodeRoleChatImage('A'.repeat(14 * 1024 * 1024))).toThrow('Invalid')
+    expect(() => decodeRoleChatImage(null)).toThrow('Invalid')
+  })
+  it.each(['고양이 그려줘', '사진 생성해줘', '이미지 만들어줘', 'create an image', 'draw a cat'])(
+    'recognizes image creation requests: %s',
+    (prompt) => {
+      expect(requestsRoleChatImage(prompt, false)).toBe(true)
+    }
+  )
+  it('allows edits with a supplied image without mistaking text correction for image edits', () => {
+    expect(requestsRoleChatImage('배경 지워줘', true)).toBe(true)
+    expect(requestsRoleChatImage('이 문장 수정해줘', false)).toBe(false)
+    expect(requestsRoleChatImage('사진에 뭐라고 써 있어?', true)).toBe(false)
+  })
   it.each(['image/png', 'image/jpeg', 'image/webp', 'IMAGE/PNG; charset=binary', null])(
     'accepts supported image attachments (%s) without stripping signed query parameters',
     (contentType) => {

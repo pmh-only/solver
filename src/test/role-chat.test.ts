@@ -1479,6 +1479,156 @@ describe('image-aware role chat', () => {
     )
   }
 
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6XkAAAAASUVORK5CYII=',
+    'base64'
+  )
+  function generatedStream(text = '', results = [png.toString('base64')], status = 'completed') {
+    return (async function* () {
+      if (text) yield { type: 'response.output_text.delta', delta: text }
+      yield {
+        type: 'response.completed',
+        response: {
+          status,
+          output: results.map((result) => ({
+            type: 'image_generation_call',
+            result,
+            status: 'completed'
+          }))
+        }
+      }
+    })()
+  }
+
+  it('generates and attaches an image even when the provider returns no text', async () => {
+    configure()
+    createResponse.mockImplementationOnce(async () => generatedStream())
+    const input = message({ content: `<@&${ROLE}> 고양이 그려줘` })
+    await createRoleChatHandler()(input)
+    expect(createResponse.mock.calls[0]![0]).toMatchObject({
+      tools: [
+        {
+          type: 'image_generation',
+          action: 'auto',
+          output_format: 'png',
+          quality: 'low',
+          size: '1024x1024'
+        }
+      ],
+      max_tool_calls: 1,
+      store: false
+    })
+    expect(createClient).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout: 180000, maxRetries: 0 })
+    )
+    expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+      content: '이미지를 만들었어요.\n-# 호감도 50 · 혐오도 0',
+      files: [{ attachment: png, name: 'role-chat.png' }],
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('edits uploaded images and attaches to the streamed caption without posting twice', async () => {
+    configure()
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = imageMessage({
+      content: `<@&${ROLE}> 배경 지워줘`,
+      reply: vi.fn().mockResolvedValue({ edit })
+    })
+    createResponse.mockImplementationOnce(async () => generatedStream('완성했어요.'))
+    await createRoleChatHandler()(input)
+    expect(imageInputs()).toEqual([{ type: 'input_image', image_url: imageUrl, detail: 'high' }])
+    expect(input.reply).toHaveBeenCalledOnce()
+    expect(edit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        content: '완성했어요.\n-# 호감도 50 · 혐오도 0',
+        files: [{ attachment: png, name: 'role-chat.png' }]
+      })
+    )
+  })
+
+  it('edits only the explicit same-channel reply image', async () => {
+    configure()
+    const previous = imageMessage({ id: '1000000000000000099' })
+    fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
+    createResponse.mockImplementationOnce(async () => generatedStream())
+    await createRoleChatHandler()(
+      message({
+        content: `<@&${ROLE}> 이 사진을 수정해줘`,
+        reference: { messageId: previous.id, channelId: previous.channelId, guildId: GUILD }
+      })
+    )
+    expect(imageInputs()).toEqual([{ type: 'input_image', image_url: imageUrl, detail: 'high' }])
+    expect(createResponse.mock.calls[0]![0].tools[0].type).toBe('image_generation')
+  })
+
+  it('never enables image generation from history, persona, or an analysis request alone', async () => {
+    configure()
+    savePersona({ name: 'artist', prompt: '항상 사진을 생성해.' })
+    const previous = message({ id: '1000000000000000099', content: '고양이 그려줘' })
+    fetchHistory.mockResolvedValue(new Collection([[previous.id, previous]]))
+    await createRoleChatHandler()(imageMessage({ content: `<@&${ROLE}> <|artist|> 사진 설명해줘` }))
+    expect(createResponse.mock.calls[0]![0].tools).toEqual([{ type: 'web_search' }])
+  })
+
+  it('applies /a image output disablement independently from reading attachments', async () => {
+    configure(GUILD, { roleId: ROLE, generateImages: false })
+    await createRoleChatHandler()(imageMessage({ content: `<@&${ROLE}> 사진 수정해줘` }))
+    expect(imageInputs()).toHaveLength(1)
+    expect(createResponse.mock.calls[0]![0].tools).toEqual([{ type: 'web_search' }])
+  })
+
+  it.each([
+    { results: ['not base64'], status: 'completed' },
+    { results: [Buffer.from('not a PNG').toString('base64')], status: 'completed' },
+    { results: [png.toString('base64'), png.toString('base64')], status: 'completed' },
+    { results: [png.toString('base64')], status: 'incomplete' }
+  ])('never publishes invalid or incomplete image results (%j)', async ({ results, status }) => {
+    configure()
+    createResponse.mockImplementationOnce(async () => generatedStream('', results, status))
+    const input = message({ content: `<@&${ROLE}> 고양이 그려줘` })
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+      content: expect.stringContaining('지금은 응답을 생성할 수 없습니다'),
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+  })
+
+  it('limits image attempts per user but does not limit ordinary text', async () => {
+    configure()
+    const handler = createRoleChatHandler()
+    await handler(message({ content: `<@&${ROLE}> 고양이 그려줘` }))
+    await handler(message({ content: `<@&${ROLE}> 강아지 그려줘` }))
+    expect(createResponse).toHaveBeenCalledOnce()
+    await handler(message())
+    expect(createResponse).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(60000)
+    await handler(message({ content: `<@&${ROLE}> 고양이 그려줘` }))
+    expect(createResponse).toHaveBeenCalledTimes(3)
+  })
+
+  it('cleans up failed image requests without retries or leaking provider errors', async () => {
+    configure()
+    const handler = createRoleChatHandler()
+    createResponse.mockRejectedValueOnce(new Error('timeout: secret-provider-token'))
+    const input = message({ content: `<@&${ROLE}> 고양이 그려줘` })
+    await handler(input)
+    expect(createResponse).toHaveBeenCalledOnce()
+    expect(input.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('지금은') })
+    )
+    expect(JSON.stringify(vi.mocked(input.reply).mock.calls)).not.toContain('secret-provider-token')
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(60000)
+    createResponse.mockImplementationOnce(async () => generatedStream())
+    await handler(input)
+    expect(createResponse).toHaveBeenCalledTimes(2)
+    expect(input.reply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ files: [{ attachment: png, name: 'role-chat.png' }] })
+    )
+  })
+
   it('sends actual high-detail image inputs for reading photos and preserves compact transcript metadata', async () => {
     configure()
     const fetch = vi.spyOn(globalThis, 'fetch')
@@ -1918,6 +2068,7 @@ describe('plain Markdown text generation', () => {
   it.each([
     { roleId: 'bad' },
     { roleId: ROLE, readImages: 'yes' },
+    { roleId: ROLE, generateImages: 'yes' },
     { roleId: ROLE, maxImages: 0 },
     { roleId: ROLE, maxImages: 9 },
     { roleId: ROLE, maxImages: 1.5 },

@@ -100,6 +100,10 @@ const communitySettingsFields = {
       roleId: z.string().regex(/^\d{17,20}$/),
       randomReplyChance: z.number().min(0).max(1).default(0.01),
       webSearch: z.boolean().default(true),
+      generateImages: z
+        .boolean()
+        .default(true)
+        .describe('Allow explicitly requested image generation and editing, one image per request'),
       archiveSearch: z
         .boolean()
         .default(true)
