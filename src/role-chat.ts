@@ -38,7 +38,7 @@ type ChatSettings = NonNullable<CommunitySettings['roleChat']> & {
   imageInputs?: RoleChatImage[]
   imageGenerationRequested?: boolean
 }
-type RoleChatReply = string | { text: string; image: Buffer }
+type RoleChatReply = string | { text: string; image?: Buffer; totalTokens?: number }
 const TIMEOUT_MS = 30_000
 const IMAGE_TIMEOUT_MS = 180_000
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
@@ -304,6 +304,7 @@ export async function generateRoleChatReply(
     )
     let content = ''
     let completed = false
+    let totalTokens: number | undefined
     const output: ResponseOutputItem[] = []
     for await (const event of stream) {
       if (event.type === 'response.output_text.delta') {
@@ -312,6 +313,13 @@ export async function generateRoleChatReply(
         if (visible.trim()) await onText?.(boundedReply(visible))
       } else if (event.type === 'response.completed') {
         completed = event.response.status === 'completed'
+        const reportedTokens = event.response.usage?.total_tokens
+        if (
+          typeof reportedTokens === 'number' &&
+          Number.isSafeInteger(reportedTokens) &&
+          reportedTokens >= 0
+        )
+          totalTokens = reportedTokens
         output.push(...(event.response.output ?? []))
       } else if (
         event.type === 'response.failed' ||
@@ -335,12 +343,14 @@ export async function generateRoleChatReply(
     if (!completed || !content.trim()) {
       throw new Error('No complete text response')
     }
+    let text = boundedReply(content)
     if (settings.relationshipState) {
       const parsed = parseRelationshipReply(content)
-      const text = boundedReply(parsed.text) + parsed.control
-      return image ? { text, image } : text
+      text = boundedReply(parsed.text) + parsed.control
     }
-    return image ? { text: boundedReply(content), image } : boundedReply(content)
+    return image || totalTokens !== undefined
+      ? { text, ...(image ? { image } : {}), ...(totalTokens !== undefined ? { totalTokens } : {}) }
+      : text
   }
   throw new Error('History tool budget exceeded')
 }
@@ -477,9 +487,10 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
       let lastContent = ''
       let lastUpdate = 0
       let generatedImage: Buffer | undefined
+      let totalTokens: number | undefined
       const publish = async (content: string, final = false) => {
         content = relationship.enabled
-          ? relationshipReply(content, scores, footerTarget)
+          ? relationshipReply(content, scores, footerTarget, final ? totalTokens : undefined)
           : boundedReply(content)
         if (!content.trim() || (content === lastContent && !(final && generatedImage))) return
         if (!final && reply && Date.now() - lastUpdate < STREAM_UPDATE_MS) return
@@ -513,6 +524,7 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
         )
         content = typeof result === 'string' ? result : result.text
         generatedImage = typeof result === 'string' ? undefined : result.image
+        totalTokens = typeof result === 'string' ? undefined : result.totalTokens
         if (relationship.enabled) {
           const parsed = parseRelationshipReply(content)
           if (!parsed.text.trim()) throw new Error('Empty reply')
@@ -536,6 +548,7 @@ export function createRoleChatHandler(generate = generateRoleChatReply, random =
         if (!content.trim()) throw new Error('Empty reply')
       } catch {
         generatedImage = undefined
+        totalTokens = undefined
         content = '지금은 응답을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요.'
       } finally {
         releaseImage?.()

@@ -1780,13 +1780,19 @@ describe('image-aware role chat', () => {
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6XkAAAAASUVORK5CYII=',
     'base64'
   )
-  function generatedStream(text = '', results = [png.toString('base64')], status = 'completed') {
+  function generatedStream(
+    text = '',
+    results = [png.toString('base64')],
+    status = 'completed',
+    totalTokens?: number
+  ) {
     return (async function* () {
       if (text) yield { type: 'response.output_text.delta', delta: text }
       yield {
         type: 'response.completed',
         response: {
           status,
+          usage: totalTokens === undefined ? null : { total_tokens: totalTokens },
           output: results.map((result) => ({
             type: 'image_generation_call',
             result,
@@ -1843,6 +1849,20 @@ describe('image-aware role chat', () => {
         files: [{ attachment: png, name: 'role-chat.png' }]
       })
     )
+  })
+
+  it('shows total tokens alongside the relationship footer for generated images too', async () => {
+    configure()
+    createResponse.mockImplementationOnce(async () =>
+      generatedStream('', [png.toString('base64')], 'completed', 4321)
+    )
+    const input = message({ content: `<@&${ROLE}> 고양이 그려줘` })
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+      content: '이미지를 만들었어요.\n-# 호감도 50 · 혐오도 0 · 토큰 4321',
+      files: [{ attachment: png, name: 'role-chat.png' }],
+      allowedMentions: { parse: [], repliedUser: false }
+    })
   })
 
   it('edits only the explicit same-channel reply image', async () => {
@@ -2295,6 +2315,94 @@ describe('role chat has no SQL history tools', () => {
     expect(input.reply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('지금은') })
     )
+  })
+})
+
+describe('role chat total token footer', () => {
+  function usageStream(totalTokens: unknown, content = '안녕하세요!\n<|relationship:1,0|>') {
+    return (async function* () {
+      yield { type: 'response.output_text.delta', delta: content }
+      yield {
+        type: 'response.completed',
+        response: {
+          status: 'completed',
+          usage: { input_tokens: 100, output_tokens: 20, total_tokens: totalTokens }
+        }
+      }
+    })()
+  }
+
+  it('adds only the reported total beside aversion after streaming completes', async () => {
+    configure()
+    createResponse.mockImplementationOnce(async () => usageStream(1234))
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = message({ reply: vi.fn().mockResolvedValue({ edit }) })
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+      content: '안녕하세요!\n-# 호감도 50 · 혐오도 0',
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(edit).toHaveBeenCalledExactlyOnceWith({
+      content: '안녕하세요!\n-# 호감도 51 · 혐오도 0 · 토큰 1234',
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps usage separate from generated text and relationship controls', async () => {
+    const settings = configure().roleChat!
+    createResponse.mockImplementationOnce(async () => usageStream(0))
+    expect(
+      await generateRoleChatReply('hi', {
+        ...settings,
+        relationshipState: { affinity: 50, aversion: 0 }
+      })
+    ).toEqual({ text: '안녕하세요!\n<|relationship:1,0|>', totalTokens: 0 })
+  })
+
+  it.each([undefined, null, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '1234'])(
+    'does not estimate or print missing/invalid usage (%s)',
+    async (totalTokens) => {
+      const settings = configure().roleChat!
+      createResponse.mockImplementationOnce(async () => usageStream(totalTokens, '안녕'))
+      expect(await generateRoleChatReply('hi', settings)).toBe('안녕')
+    }
+  )
+
+  it('does not retain token counts across requests', async () => {
+    configure()
+    const edits = [vi.fn().mockResolvedValue(undefined), vi.fn().mockResolvedValue(undefined)]
+    createResponse
+      .mockImplementationOnce(async () => usageStream(1234))
+      .mockImplementationOnce(async () => usageStream(567))
+    const handler = createRoleChatHandler()
+    for (let i = 0; i < 2; i++) {
+      await handler(
+        message({
+          id: String(1000000000000000100n + BigInt(i)),
+          reply: vi.fn().mockResolvedValue({ edit: edits[i] })
+        })
+      )
+    }
+    expect(edits[0]).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('· 토큰 1234') })
+    )
+    expect(edits[1]).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('· 토큰 567') })
+    )
+  })
+
+  it('does not introduce a footer when relationship display is disabled', async () => {
+    configure(GUILD, { roleId: ROLE, relationship: { enabled: false } })
+    createResponse.mockImplementationOnce(async () => usageStream(1234, '안녕'))
+    const edit = vi.fn().mockResolvedValue(undefined)
+    const input = message({ reply: vi.fn().mockResolvedValue({ edit }) })
+    await createRoleChatHandler()(input)
+    expect(input.reply).toHaveBeenCalledExactlyOnceWith({
+      content: '안녕',
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    expect(edit).not.toHaveBeenCalled()
   })
 })
 

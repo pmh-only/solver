@@ -167,9 +167,14 @@ export function visibleRelationshipText(content: string) {
 export function relationshipReply(
   content: string,
   scores: RelationshipScores,
-  targetUserId?: string
+  targetUserId?: string,
+  totalTokens?: number
 ) {
-  const footer = `\n-# ${targetUserId ? `<@${targetUserId}> · ` : ''}호감도 ${scores.affinity} · 혐오도 ${scores.aversion}`
+  const tokens =
+    typeof totalTokens === 'number' && Number.isSafeInteger(totalTokens) && totalTokens >= 0
+      ? ` · 토큰 ${totalTokens}`
+      : ''
+  const footer = `\n-# ${targetUserId ? `<@${targetUserId}> · ` : ''}호감도 ${scores.affinity} · 혐오도 ${scores.aversion}${tokens}`
   const limit = 2000 - footer.length
   const visible = visibleRelationshipText(content)
   let body = visible.length > limit ? `${visible.slice(0, limit - 1)}…` : visible

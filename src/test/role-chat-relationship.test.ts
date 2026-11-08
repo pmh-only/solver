@@ -147,6 +147,27 @@ describe('relationship state and formatting', () => {
       'const a = 1\n```\n-#'
     )
   })
+  it('keeps the total token count beside aversion within the message limit, including target mentions and code fences', () => {
+    for (const body of ['x'.repeat(4000), '```ts\n' + 'x'.repeat(4000)]) {
+      const reply = relationshipReply(
+        body,
+        { affinity: 100, aversion: 100 },
+        '555555555555555555',
+        12345
+      )
+      expect(reply.length).toBeLessThanOrEqual(2000)
+      expect(reply).toMatch(/\n-# <@555555555555555555> · 호감도 100 · 혐오도 100 · 토큰 12345$/)
+      if (body.startsWith('```')) expect(reply).toContain('\n```\n-#')
+    }
+  })
+  it.each([undefined, -1, 1.5, NaN, Infinity])(
+    'omits an unavailable or invalid total (%s)',
+    (totalTokens) => {
+      expect(relationshipReply('안녕', { affinity: 50, aversion: 0 }, undefined, totalTokens)).toBe(
+        '안녕\n-# 호감도 50 · 혐오도 0'
+      )
+    }
+  )
 })
 
 describe('score-based response reactions', () => {
