@@ -28,9 +28,12 @@ const resultsSchema = z.object({
     .max(24)
 })
 const mediaSchema = z.object({ original: z.object({ url: z.string().url().max(2000) }) })
+const giphySchema = z.object({
+  data: z.array(z.object({ images: mediaSchema })).max(1)
+})
 
-async function apiJson(path: string): Promise<unknown> {
-  const response = await fetch(new URL(path, API), {
+async function apiJson(url: URL): Promise<unknown> {
+  const response = await fetch(url, {
     signal: AbortSignal.timeout(10_000),
     redirect: 'error'
   })
@@ -53,10 +56,36 @@ async function apiJson(path: string): Promise<unknown> {
   return JSON.parse((Buffer.concat(chunks) as Buffer).toString('utf8'))
 }
 
+async function findGiphyContent(query: string): Promise<MemeContent | null> {
+  const apiKey = loadCommunitySettings().memeSearch?.giphyApiKey
+  if (!apiKey) return null
+  const url = new URL('https://api.giphy.com/v1/gifs/search')
+  url.search = new URLSearchParams({
+    api_key: apiKey,
+    q: query,
+    limit: '1',
+    rating: 'pg-13',
+    lang: 'ko',
+    fields: 'images.original.url'
+  }).toString()
+  const result = giphySchema.parse(await apiJson(url)).data[0]
+  if (!result) return null
+  const media = new URL(result.images.original.url)
+  if (
+    media.protocol !== 'https:' ||
+    !/^media\d*\.giphy\.com$/.test(media.hostname) ||
+    media.username ||
+    media.password ||
+    media.port
+  )
+    throw new Error('Unexpected GIPHY media host')
+  return { type: 'image', content: result.images.original.url }
+}
+
 export async function findMemeContent(query: string): Promise<MemeContent | null> {
   const params = new URLSearchParams({ q: query, limit: '1' })
-  const result = resultsSchema.parse(await apiJson(`memes?${params}`)).items[0]
-  if (!result) return null
+  const result = resultsSchema.parse(await apiJson(new URL(`memes?${params}`, API))).items[0]
+  if (!result) return findGiphyContent(query)
   if (result.content_type === 'text') {
     return {
       type: 'text',
@@ -64,7 +93,7 @@ export async function findMemeContent(query: string): Promise<MemeContent | null
         result.body_text.length > 2000 ? `${result.body_text.slice(0, 1999)}…` : result.body_text
     }
   }
-  const media = mediaSchema.parse(await apiJson(`memes/${result.id}/media`))
+  const media = mediaSchema.parse(await apiJson(new URL(`memes/${result.id}/media`, API)))
   const url = new URL(media.original.url)
   if (
     url.protocol !== 'https:' ||

@@ -82,7 +82,19 @@ const communitySettingsFields = {
     .strict(),
   personas: personasSchema,
   memeSearch: z
-    .object({ roleId: z.string().regex(/^\d{17,20}$/) })
+    .object({
+      roleId: z.string().regex(/^\d{17,20}$/),
+      giphyApiKey: z
+        .string()
+        .trim()
+        .min(1)
+        .max(256)
+        .nullable()
+        .optional()
+        .describe(
+          'GIPHY API key for fallback when Memehub has no results; configure privately through /a'
+        )
+    })
     .strict()
     .nullable(),
   reactionForward: z
