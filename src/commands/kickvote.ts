@@ -13,9 +13,11 @@ import {
   commandReferenceReply,
   deferCommandResponse,
   errorContainer,
+  separator,
   scheduleEphemeralMessageDelete,
   sendCommandReply,
-  summarySection
+  summarySection,
+  text
 } from '../components.js'
 import { loadCommunitySettings } from '../community-settings.js'
 import {
@@ -69,12 +71,17 @@ function votePayload(token: string, state: Vote, result?: string) {
     new Map([['pub', true]]),
     summarySection('추방 투표', [
       '누군가가 추방 투표를 시작했습니다!',
-      `대상: <@${state.targetId}>`,
-      state.reason,
-      `${state.votes.length}/${state.threshold}표 · 공개 찬성, 취소 불가 · ban이 아닌 kick`,
-      result ??
-        `마지막 투표 후 ${state.idleMinutes}분 동안 투표가 없으면 만료됩니다. (<t:${Math.floor(state.expiresAt / 1000)}:R>)`
-    ])
+      `대상: <@${state.targetId}>`
+    ]),
+    separator(),
+    summarySection('추방 사유', [state.reason]),
+    separator(),
+    text(
+      [
+        `${state.votes.length}/${state.threshold}표`,
+        result ?? `투표 마감: <t:${Math.floor(state.expiresAt / 1000)}:R>`
+      ].join('\n')
+    )
   )
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -84,7 +91,7 @@ function votePayload(token: string, state: Vote, result?: string) {
       .setDisabled(Boolean(result)),
     new ButtonBuilder()
       .setCustomId(`${KICKVOTE_BUTTON_ID}:${token}:cancel`)
-      .setLabel('투표 취소 (개설자/관리자)')
+      .setEmoji('🗑️')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(Boolean(result))
   )

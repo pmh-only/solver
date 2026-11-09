@@ -170,10 +170,30 @@ function notices(calls: Awaited<ReturnType<typeof dispatch>>) {
 }
 
 describe('public kickvote agreement replies', () => {
+  it('separates the reason from the heading and uses an emoji-only cancellation button', async () => {
+    const components = await startVote()
+    const body = (components[0] as { components: Array<{ type: number; content?: string }> })
+      .components
+    expect(body[0]!.content).toContain('추방 투표')
+    expect(body[0]!.content).not.toContain('반복적인 스팸')
+    expect(body).toContainEqual(expect.objectContaining({ content: '## 추방 사유\n반복적인 스팸' }))
+    expect(body.filter((component) => component.type === 14)).toHaveLength(2)
+    const row = components[1] as {
+      components: Array<{ custom_id: string; emoji?: { name: string }; label?: string }>
+    }
+    const cancel = row.components.find((component) => component.custom_id.endsWith(':cancel'))!
+    expect(cancel.emoji).toEqual({ id: undefined, name: '🗑️', animated: false })
+    expect(cancel).not.toHaveProperty('label')
+    expect(JSON.stringify(components)).not.toContain('개설자/관리자')
+  })
   it('identifies each accepted voter in a reply to the original poll without pinging anyone', async () => {
     const components = await startVote()
-    expect(JSON.stringify(components)).toContain('공개 찬성')
+    expect(JSON.stringify(components)).toContain('투표 마감: <t:')
+    expect(JSON.stringify(components)).not.toContain('공개 찬성')
     expect(JSON.stringify(components)).not.toContain('무기명 찬성')
+    expect(JSON.stringify(components)).not.toContain('취소 불가')
+    expect(JSON.stringify(components)).not.toContain('ban이 아닌 kick')
+    expect(JSON.stringify(components)).not.toContain('마지막 투표 후')
     const calls = await vote(components)
     expect(getCallback(calls)).toMatchObject({ type: 6 })
     expect(JSON.stringify(getEdit(calls))).toContain('1/7')
@@ -187,6 +207,19 @@ describe('public kickvote agreement replies', () => {
     expect(JSON.stringify(payload)).toContain(`<@${VOTER}>님이 추방에 찬성했습니다.`)
     expect(JSON.stringify(payload)).toContain('1/7표')
     expect(notices(await vote(components))).toHaveLength(0)
+  })
+  it('shows only the deadline label and keeps it in sync with accepted votes', async () => {
+    const components = await startVote()
+    const deadline = Math.floor((Date.now() + 30 * 60_000) / 1000)
+    expect(JSON.stringify(components)).toContain(`투표 마감: <t:${deadline}:R>`)
+    await vi.advanceTimersByTimeAsync(60_000)
+    const calls = await vote(components)
+    const updated = JSON.stringify(getEdit(calls))
+    expect(updated).toContain(`투표 마감: <t:${deadline + 60}:R>`)
+    expect(updated).toContain('1/7표')
+    expect(updated).not.toContain('마지막 투표 후')
+    expect(updated).not.toContain('취소 불가')
+    expect(updated).not.toContain('ban이 아닌 kick')
   })
   it('announces the quorum vote and kicks once, without duplicate final announcements', async () => {
     manageCommunitySettings({ action: 'update', settings: { kickvoteThreshold: 2 } })
