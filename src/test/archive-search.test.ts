@@ -56,7 +56,7 @@ function answer(answer = '확인된 결과가 없습니다.') {
   return {
     status: 'completed',
     output: [],
-    output_text: JSON.stringify({ title: '검색 결과', summary: answer, results: [], warnings: [] })
+    output_text: JSON.stringify({ title: '검색 결과', summary: answer, results: [] })
   }
 }
 beforeEach(() => {
@@ -113,7 +113,7 @@ it('passes SQL results as JSON to the AI, parses its final JSON and renders the 
     results: [{ summary: '피자 먹자', url }],
     warnings: ['과거 기록 수집 미완료']
   }
-  const markdown = `**검색 결과**\n피자 관련 메시지 1개\n\n- [원문](${url}) — 피자 먹자\n-# 과거 기록 수집 미완료`
+  const markdown = `**검색 결과**\n피자 관련 메시지 1개\n\n- [원문](${url}) — 피자 먹자`
   createResponse.mockResolvedValueOnce(tool()).mockResolvedValueOnce({
     status: 'completed',
     output: [],
@@ -137,6 +137,15 @@ it('passes SQL results as JSON to the AI, parses its final JSON and renders the 
     'the server converts this JSON into Discord Markdown'
   )
   expect(createResponse.mock.calls[0]![0].instructions).toContain('no greetings, small talk')
+  expect(createResponse.mock.calls[0]![0].text.format.schema.properties).not.toHaveProperty(
+    'warnings'
+  )
+  expect(createResponse.mock.calls[0]![0].text.format.schema.required).toEqual([
+    'title',
+    'summary',
+    'results'
+  ])
+  expect(createResponse.mock.calls[0]![0].instructions).toContain('omit warning text and footers')
   expect(createResponse.mock.calls[1]![0].input).toContainEqual(
     expect.objectContaining({
       type: 'function_call_output',
@@ -162,7 +171,7 @@ it('bounds searches and forces a final response after two SQL calls', async () =
   expect(searchDiscordHistory).toHaveBeenCalledTimes(2)
   expect(createResponse.mock.calls[2]![0].tool_choice).toBe('none')
 })
-it('passes count JSON back to the AI and renders its count summary with mandatory archive warnings', async () => {
+it('passes count metadata back to the AI without adding warning text to the result', async () => {
   const sql = "SELECT COUNT(*) FROM messages WHERE content ILIKE '%피자%'"
   const count = {
     messages: [],
@@ -191,9 +200,9 @@ it('passes count JSON back to the AI and renders its count summary with mandator
   })
   const reply = vi.mocked(input.reply).mock.calls[0]![0] as { content: string }
   expect(reply.content).toContain('123개')
-  expect(reply.content).toContain('저장된 아카이브 기준')
-  expect(reply.content).toContain('과거 기록 수집이 완료되지 않아')
-  expect(reply.content).toContain('실시간 반영을 기다리는')
+  expect(reply.content).not.toContain('저장된 아카이브 기준')
+  expect(reply.content).not.toContain('과거 기록 수집이 완료되지 않아')
+  expect(reply.content).not.toContain('실시간 반영을 기다리는')
   expect(reply.content).not.toContain('[원문]')
   expect(reply.content).not.toContain('```json')
 })
@@ -265,8 +274,8 @@ it('rejects invented source URLs and bounds rendered output without cutting sour
   expect(() => renderArchiveSearchReply(data, new Set())).toThrow('원문 링크')
   const result = renderArchiveSearchReply(data, new Set([url]))
   expect(result.length).toBeLessThanOrEqual(2000)
-  expect(result).toContain('표시 길이 제한')
-  expect(result).toContain('-# ')
+  expect(result).not.toContain('표시 길이 제한')
+  expect(result).not.toContain('-# ')
 })
 it.each([`<@&${ROLE}>`, `<&@${ROLE}>`])(
   'routes %s before role chat without requiring role possession',

@@ -352,9 +352,7 @@ export function createModerationReactionHandler(recheck = createChatModerationHa
                   })
                   .join('\n')
               )
-              .setFooter({
-                text: `OpenAI 감지 점수이며 위반 확정 확률이 아닙니다. 오탐 가능 · 안내는 1분에 한 번${record.incomplete ? ' · 일부 첨부파일 검사 불가' : ''}`
-              })
+              .setFooter(record.incomplete ? { text: '일부 첨부파일 검사 불가' } : null)
           ],
           allowedMentions: { parse: [], repliedUser: false }
         })

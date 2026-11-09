@@ -82,9 +82,6 @@ function render(data) {
     )
   }
   if (data.more) notes.push('추가 결과가 있습니다. 검색어를 더 구체적으로 입력해 보세요.')
-  if (!data.historyComplete)
-    notes.push('과거 기록 수집이 아직 완료되지 않아 일부 결과가 빠질 수 있습니다.')
-  if (data.pendingEvents) notes.push('실시간 반영을 기다리는 메시지가 있습니다.')
   document.querySelector('#result-note').textContent = notes.join(' ')
   notify(
     data.matches.length

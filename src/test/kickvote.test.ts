@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { manageCommunitySettings } from '../community-settings.js'
 import { clearStoredValues, listStoredKeys } from '../helpers/kv-store.js'
 import { isolateStoredValues } from '../helpers/kv-store-test.js'
+import { clearRuntimeIssuesForTests, runtimeIssueSummary } from '../runtime-health.js'
+import { KICKVOTE_BUTTON_ID } from '../commands/kickvote.js'
 import {
+  buttonJSON,
   commandJSON,
   dispatch,
   getCallback,
@@ -20,6 +23,9 @@ const TARGET = '444444444444444444'
 const PUBLIC_MESSAGE = '1000000000000000001'
 const publicRoute = `/channels/${CHANNEL}/messages`
 const subs = makeSubcommands()
+const VOTER = '666666666666666666'
+const kick = vi.fn()
+let voterBot = false
 
 function configureClient(client: Client) {
   const guild = (client.guilds as unknown as { _add(data: unknown): Guild })._add({
@@ -37,12 +43,13 @@ function configureClient(client: Client) {
     },
     guild
   )
-  vi.spyOn(guild.members, 'fetch').mockResolvedValue({
-    id: TARGET,
-    user: { id: TARGET, bot: false },
+  vi.spyOn(guild.members, 'fetch').mockImplementation((async (id: string) => ({
+    id,
+    user: { id, bot: id !== TARGET && voterBot },
     kickable: true,
-    permissions: new PermissionsBitField()
-  } as never)
+    permissions: new PermissionsBitField(),
+    kick
+  })) as never)
 }
 
 function launch(options: DispatchOptions = {}) {
@@ -99,10 +106,151 @@ beforeEach(() => {
   vi.useFakeTimers()
   isolateStoredValues(join(process.cwd(), '.tmp', 'kickvote.test.sqlite'))
   clearStoredValues()
+  clearRuntimeIssuesForTests()
+  voterBot = false
+  kick.mockReset().mockResolvedValue(undefined)
   manageCommunitySettings({
     action: 'update',
     guildId: GUILD,
     settings: { kickvoteChannelId: CHANNEL }
+  })
+})
+
+async function startVote() {
+  const calls = await launch()
+  const published = calls.find((call) => call.method === 'POST' && call.route === publicRoute)!
+  return (published.body as { components: unknown[] }).components
+}
+function vote(
+  components: unknown[],
+  userId = VOTER,
+  extra: DispatchOptions = {},
+  customId = KICKVOTE_BUTTON_ID
+) {
+  const user = { id: userId, username: 'voter', discriminator: '0', avatar: null }
+  const raw = buttonJSON(
+    components,
+    customId,
+    {
+      guild_id: GUILD,
+      channel: { id: CHANNEL },
+      user,
+      member: { user, permissions: '0', roles: [] }
+    },
+    MessageFlags.IsComponentsV2
+  )
+  raw.message = { ...(raw.message as Record<string, unknown>), id: PUBLIC_MESSAGE, guild_id: GUILD }
+  return dispatch(raw, subs, {
+    configureClient,
+    postResult: (route) =>
+      route === publicRoute
+        ? {
+            id: '1000000000000000002',
+            type: 0,
+            channel_id: CHANNEL,
+            content: '',
+            embeds: [],
+            components: [],
+            attachments: [],
+            flags: MessageFlags.IsComponentsV2,
+            author: {
+              id: '999999999999999999',
+              username: 'solver',
+              discriminator: '0',
+              avatar: null,
+              bot: true
+            }
+          }
+        : {},
+    ...extra
+  })
+}
+function notices(calls: Awaited<ReturnType<typeof dispatch>>) {
+  return calls.filter((call) => call.method === 'POST' && call.route === publicRoute)
+}
+
+describe('public kickvote agreement replies', () => {
+  it('identifies each accepted voter in a reply to the original poll without pinging anyone', async () => {
+    const components = await startVote()
+    expect(JSON.stringify(components)).toContain('공개 찬성')
+    expect(JSON.stringify(components)).not.toContain('무기명 찬성')
+    const calls = await vote(components)
+    expect(getCallback(calls)).toMatchObject({ type: 6 })
+    expect(JSON.stringify(getEdit(calls))).toContain('1/7')
+    expect(notices(calls)).toHaveLength(1)
+    const payload = notices(calls)[0]!.body
+    expect(payload).toMatchObject({
+      flags: MessageFlags.IsComponentsV2,
+      message_reference: { message_id: PUBLIC_MESSAGE },
+      allowed_mentions: { parse: [], replied_user: false }
+    })
+    expect(JSON.stringify(payload)).toContain(`<@${VOTER}>님이 추방에 찬성했습니다.`)
+    expect(JSON.stringify(payload)).toContain('1/7표')
+    expect(notices(await vote(components))).toHaveLength(0)
+  })
+  it('announces the quorum vote and kicks once, without duplicate final announcements', async () => {
+    manageCommunitySettings({ action: 'update', settings: { kickvoteThreshold: 2 } })
+    const components = await startVote()
+    await vote(components)
+    const final = await vote(components, OWNER)
+    expect(notices(final)).toHaveLength(1)
+    expect(JSON.stringify(notices(final)[0]!.body)).toContain(
+      `<@${OWNER}>님이 추방에 찬성했습니다. (2/2표)`
+    )
+    expect(kick).toHaveBeenCalledTimes(1)
+    expect(notices(await vote(components, OWNER))).toHaveLength(0)
+    expect(kick).toHaveBeenCalledTimes(1)
+  })
+  it('announces only once for overlapping duplicate clicks', async () => {
+    const components = await startVote()
+    const calls = await Promise.all([vote(components), vote(components)])
+    expect(calls.flatMap(notices)).toHaveLength(1)
+  })
+  it('announces an accepted vote even if updating the poll display fails', async () => {
+    const components = await startVote()
+    const calls = await vote(components, VOTER, {
+      patchError: () => new Error('poll edit failed')
+    })
+    expect(notices(calls)).toHaveLength(1)
+    expect(notices(await vote(components))).toHaveLength(0)
+    expect(kick).not.toHaveBeenCalled()
+  })
+  it('announces the final accepted vote even if the kick fails', async () => {
+    manageCommunitySettings({ action: 'update', settings: { kickvoteThreshold: 2 } })
+    const components = await startVote()
+    await vote(components)
+    kick.mockRejectedValueOnce(new Error('missing permissions'))
+    const calls = await vote(components, OWNER)
+    expect(notices(calls)).toHaveLength(1)
+    expect(JSON.stringify(getEdit(calls))).toContain('추방에 실패')
+    expect(notices(await vote(components, OWNER))).toHaveLength(0)
+    expect(kick).toHaveBeenCalledTimes(1)
+  })
+  it('does not announce target votes, bot votes, cancellations or expired votes', async () => {
+    const components = await startVote()
+    expect(notices(await vote(components, TARGET))).toHaveLength(0)
+    voterBot = true
+    expect(notices(await vote(components))).toHaveLength(0)
+    voterBot = false
+    const cancelId = JSON.stringify(components).match(/community-kickvote:[a-f0-9]{32}:cancel/)![0]
+    expect(notices(await vote(components, OWNER, {}, cancelId))).toHaveLength(0)
+    const another = await startVote()
+    await vi.advanceTimersByTimeAsync(30 * 60_000)
+    expect(notices(await vote(another))).toHaveLength(0)
+  })
+  it('keeps accepted votes when a notice fails, never reannounces them or prevents quorum', async () => {
+    manageCommunitySettings({ action: 'update', settings: { kickvoteThreshold: 2 } })
+    const components = await startVote()
+    const failNotice = {
+      postError: (route: string) => (route === publicRoute ? new Error('notice failed') : undefined)
+    }
+    const first = await vote(components, VOTER, failNotice)
+    expect(JSON.stringify(getEdit(first))).toContain('1/2')
+    expect(runtimeIssueSummary()).toContain('kickvote_vote_notice')
+    expect(notices(await vote(components))).toHaveLength(0)
+    const final = await vote(components, OWNER, failNotice)
+    expect(JSON.stringify(getEdit(final))).toContain('추방했습니다')
+    expect(kick).toHaveBeenCalledTimes(1)
   })
 })
 afterEach(() => {

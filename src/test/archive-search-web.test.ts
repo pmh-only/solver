@@ -99,6 +99,8 @@ describe('OIDC archive web search', () => {
     expect(script).toContain('snippet.textContent = item.snippet')
     expect(script).toContain('data.collection')
     expect(script).toContain('과거 기록 수집 미완료')
+    expect(script).not.toContain('일부 결과가 빠질 수 있습니다')
+    expect(script).not.toContain('실시간 반영을 기다리는 메시지가 있습니다')
     expect((await fetch(`${origin}/search.css`)).status).toBe(200)
     expect(await (await fetch(`${origin}/search`, { method: 'HEAD' })).text()).toBe('')
   })

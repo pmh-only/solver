@@ -26,6 +26,7 @@ import {
   saveCommunityState
 } from './community-state.js'
 import { parseMemberId, requireCommunityGuild, sendCommunityNotice } from './community-guild.js'
+import { reportRuntimeIssue } from '../runtime-health.js'
 
 export const KICKVOTE_BUTTON_ID = 'community-kickvote'
 const voteSchema = z
@@ -70,7 +71,7 @@ function votePayload(token: string, state: Vote, result?: string) {
       '누군가가 추방 투표를 시작했습니다!',
       `대상: <@${state.targetId}>`,
       state.reason,
-      `${state.votes.length}/${state.threshold}표 · 무기명 찬성, 취소 불가 · ban이 아닌 kick`,
+      `${state.votes.length}/${state.threshold}표 · 공개 찬성, 취소 불가 · ban이 아닌 kick`,
       result ??
         `마지막 투표 후 ${state.idleMinutes}분 동안 투표가 없으면 만료됩니다. (<t:${Math.floor(state.expiresAt / 1000)}:R>)`
     ])
@@ -181,6 +182,25 @@ export async function handleKickvoteButton(interaction: ButtonInteraction) {
       }
     } else {
       saveVote(token, current)
+    }
+    // The vote is already committed. A notice failure must never undo it or
+    // prevent a quorum kick, and duplicate clicks must not announce it again.
+    try {
+      const notice = errorContainer(
+        'kickvote',
+        new Map([['pub', true]]),
+        `<@${interaction.user.id}>님이 추방에 찬성했습니다. (${current.votes.length}/${current.threshold}표)`
+      )
+      await interaction.message.reply({
+        components: notice.components,
+        flags: MessageFlags.IsComponentsV2,
+        allowedMentions: { parse: [], repliedUser: false }
+      })
+    } catch {
+      reportRuntimeIssue(
+        'kickvote_vote_notice',
+        new Error('Could not announce an accepted kick vote')
+      )
     }
     await interaction.editReply({
       components: votePayload(token, current, result).components,
