@@ -61,7 +61,10 @@ export type TopLevelComponent =
   | MediaGalleryBuilder
 
 interface CommandReplyOptions {
-  subcommand?: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>
+  subcommand?: Pick<
+    Subcommand,
+    'name' | 'description' | 'flags' | 'usage' | 'examples' | 'hideInput'
+  >
   private?: boolean
   controls?: boolean
 }
@@ -353,7 +356,7 @@ function buildContainer(
     options.subcommand && !isStandaloneContext(flags)
       ? serializeCommandInput(args, flags)
       : undefined
-  const footer = footerText(args, flags)
+  const footer = footerText(options.subcommand?.hideInput ? options.subcommand.name : args, flags)
   const last = resolved.at(-1)
 
   if (last instanceof TextDisplayBuilder) {
@@ -398,7 +401,10 @@ export function container(args: string, flags: Flags, ...components: TopLevelCom
 }
 
 export function commandContainer(
-  subcommand: Pick<Subcommand, 'name' | 'description' | 'flags' | 'usage' | 'examples'>,
+  subcommand: Pick<
+    Subcommand,
+    'name' | 'description' | 'flags' | 'usage' | 'examples' | 'hideInput'
+  >,
   args: string,
   flags: Flags,
   ...components: TopLevelComponent[]

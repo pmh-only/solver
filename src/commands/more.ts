@@ -14,6 +14,8 @@ import {
   summarySection
 } from '../components.js'
 import { poll } from './more-poll.js'
+import { qr } from './more-qr.js'
+export { qr } from './more-qr.js'
 import { getStoredValue, listStoredKeys, setStoredValue } from '../helpers/kv-store.js'
 import { formatAgentDateTime, getAgentTimeZone } from '../helpers/timezone.js'
 import { loadOpenAIApiKey, openAIEndpointUrl } from '../openai-config.js'
@@ -382,33 +384,6 @@ export const trace = simpleRerunnable(
   ['trace example.com'],
   runTrace
 )
-
-export const qr: Subcommand = {
-  name: 'qr',
-  description: 'make qr link',
-  usage: 'qr <text> [--pub]',
-  examples: ['qr https://example.com', 'qr hello world'],
-  async execute(interaction, args, flags) {
-    const value = restArgs(args)
-    if (!value) {
-      await sendCommandReply(
-        interaction,
-        commandReferenceReply(qr, args, flags, 'usage', 'no text')
-      )
-      return
-    }
-    const url = `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(value)}`
-    await sendCommandReply(
-      interaction,
-      commandContainer(
-        qr,
-        args,
-        flags,
-        summarySection('QR code', [`-# ${truncate(value, 120)}`], { label: 'Open QR', url })
-      )
-    )
-  }
-}
 
 export const short: Subcommand = {
   name: 'short',

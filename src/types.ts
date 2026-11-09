@@ -33,6 +33,7 @@ export interface Subcommand {
   description: string
   usage?: string
   examples?: string[]
+  hideInput?: boolean
   pubtab?: {
     label: string
     args: string
