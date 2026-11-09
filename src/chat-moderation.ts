@@ -1,7 +1,9 @@
 import {
-  MessageFlags,
+  EmbedBuilder,
   MessageType,
+  Routes,
   type Message,
+  type PartialMessage,
   type MessageReaction,
   type PartialMessageReaction,
   type User,
@@ -10,10 +12,15 @@ import {
 import OpenAI from 'openai'
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
-import { container, text } from './components.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
 import { loadOpenAIApiKey, loadOpenAIEndpoint } from './openai-config.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
+import {
+  buildModerationInput,
+  moderationSnapshot,
+  type ModerationInput,
+  type ModerationSnapshot
+} from './chat-moderation-input.js'
 
 export const MODERATION_WARNING = '⚠️'
 const KEY = 'community:chat-moderation'
@@ -39,13 +46,20 @@ const categorySchema = z.enum(
 )
 const resultSchema = z.object({
   flagged: z.boolean(),
-  categories: z.record(z.string(), z.boolean().nullable())
+  categories: z.record(z.string(), z.boolean().nullable()),
+  category_scores: z.record(z.string(), z.number().min(0).max(1)).optional()
 })
 const recordSchema = z
   .object({
     categories: z.array(categorySchema).min(1).max(13),
     createdAt: z.number().int().positive(),
-    shownAt: z.number().int().nonnegative()
+    shownAt: z.number().int().nonnegative(),
+    signature: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    scores: z.partialRecord(categorySchema, z.number().min(0).max(1)).optional(),
+    incomplete: z.boolean().optional()
   })
   .strict()
 const recordsSchema = z
@@ -82,7 +96,15 @@ function saveRecord(key: string, record: z.infer<typeof recordSchema>) {
   )
 }
 
-async function classify(input: string) {
+function deleteRecord(key: string) {
+  const records = readRecords()
+  if (records[key]) {
+    delete records[key]
+    setStoredValue(KEY, JSON.stringify(records))
+  }
+}
+
+async function classify(input: ModerationInput) {
   const apiKey = loadOpenAIApiKey()
   if (!apiKey)
     throw new Error('Configure the OpenAI credential privately through /a for chat moderation')
@@ -96,57 +118,146 @@ async function classify(input: string) {
   return response.results[0]
 }
 
-// No message content, author IDs, credentials or scores are persisted.
+// Persist only message-scoped results and a content fingerprint, never original inputs or URLs.
 export function createChatModerationHandler(
-  moderate: (input: string) => Promise<unknown> = classify
+  moderate: (input: ModerationInput) => Promise<unknown> = classify
 ) {
   let active = 0
   let windowStart = Date.now()
   let attempts = 0
-  const inFlight = new Set<string>()
-  return async (message: Message): Promise<void> => {
-    if (
-      !message.guildId ||
-      message.author.bot ||
-      message.webhookId ||
-      ![MessageType.Default, MessageType.Reply].includes(message.type) ||
-      !message.content.trim()
-    )
+  const jobs = new Map<string, { snapshot: ModerationSnapshot; promise: Promise<void> }>()
+  const completed = new Map<string, string>()
+  async function check(snapshot: ModerationSnapshot, isCurrent: () => boolean) {
+    const { message, signature } = snapshot
+    const key = `${message.guildId}:${message.channelId}:${message.id}`
+    const previous = readRecords()[key]
+    if (previous?.signature === signature || completed.get(key) === signature) return
+    completed.delete(key)
+    // Invalidate immediately: an old detection must never describe an edited message.
+    if (previous) deleteRecord(key)
+    if (Date.now() - windowStart >= 60_000) {
+      windowStart = Date.now()
+      attempts = 0
+    }
+    if (active >= 4 || attempts >= loadCommunitySettings().chatModeration.requestsPerMinute) {
+      reportRuntimeIssue(
+        'chat_moderation_capacity',
+        new Error('Chat moderation capacity exceeded; some messages were not checked')
+      )
       return
+    }
+    active++
+    attempts++
     try {
-      const settings = loadCommunitySettings().chatModeration
-      if (!settings.enabled) return
-      const key = `${message.guildId}:${message.channelId}:${message.id}`
-      if (inFlight.has(key) || readRecords()[key]) return
-      if (Date.now() - windowStart >= 60_000) {
-        windowStart = Date.now()
-        attempts = 0
+      const { input, incomplete } = await buildModerationInput(snapshot)
+      if (incomplete)
+        reportRuntimeIssue(
+          'chat_moderation_attachments',
+          new Error(
+            'Some attachments could not be checked: unsupported format, size limit or download failure'
+          )
+        )
+      if (!isCurrent() || !loadCommunitySettings().chatModeration.enabled) return
+      if (input === undefined) {
+        if (incomplete) return
       }
-      if (active >= 4 || attempts >= settings.requestsPerMinute) {
+      const result =
+        input === undefined
+          ? { flagged: false, categories: {}, category_scores: undefined }
+          : resultSchema.parse(await moderate(input))
+      if (!isCurrent() || !loadCommunitySettings().chatModeration.enabled) return
+      const categories = categorySchema.options.filter(
+        (category) => result.categories[category] === true
+      )
+      if (result.flagged && categories.length) {
+        const scores = result.category_scores
+          ? Object.fromEntries(
+              categories.flatMap((category) => {
+                const score = result.category_scores?.[category]
+                return score === undefined ? [] : [[category, score]]
+              })
+            )
+          : undefined
+        saveRecord(key, {
+          categories,
+          scores,
+          signature,
+          incomplete,
+          createdAt: Date.now(),
+          shownAt: 0
+        })
+        await message.react(MODERATION_WARNING)
+      } else if (
+        !incomplete &&
+        (previous ||
+          message.reactions.cache.some(
+            (item) => item.me && item.emoji.name?.replace(/\uFE0F/g, '') === '⚠'
+          ))
+      ) {
+        await message.client.rest.delete(
+          Routes.channelMessageOwnReaction(
+            message.channelId,
+            message.id,
+            encodeURIComponent(MODERATION_WARNING)
+          )
+        )
+      }
+      if (!result.flagged && !incomplete && isCurrent()) {
+        completed.delete(key)
+        completed.set(key, signature)
+        if (completed.size > MAX_RECORDS) completed.delete(completed.keys().next().value!)
+      }
+      clearRuntimeIssue('chat_moderation')
+    } finally {
+      active--
+    }
+  }
+  return async (partial: Message | PartialMessage): Promise<void> => {
+    if (!partial.guildId) return
+    try {
+      if (!loadCommunitySettings().chatModeration.enabled) return
+      const message = partial.partial ? await partial.fetch() : partial
+      if (
+        !message.guildId ||
+        message.author.bot ||
+        message.webhookId ||
+        ![MessageType.Default, MessageType.Reply].includes(message.type)
+      )
+        return
+      const key = `${message.guildId}:${message.channelId}:${message.id}`
+      const snapshot = moderationSnapshot(message)
+      const existing = jobs.get(key)
+      if (existing) {
+        existing.snapshot = snapshot
+        await existing.promise
+        return
+      }
+      if (jobs.size >= 250) {
         reportRuntimeIssue(
           'chat_moderation_capacity',
-          new Error('Chat moderation capacity exceeded; some messages were not checked')
+          new Error('Too many pending moderation checks')
         )
         return
       }
-      active++
-      attempts++
-      inFlight.add(key)
-      try {
-        const result = resultSchema.parse(await moderate(message.content.slice(0, 4000)))
-        if (!loadCommunitySettings().chatModeration.enabled) return
-        const categories = categorySchema.options.filter(
-          (category) => result.categories[category] === true
-        )
-        if (result.flagged && categories.length) {
-          saveRecord(key, { categories, createdAt: Date.now(), shownAt: 0 })
-          await message.react(MODERATION_WARNING)
+      const job = { snapshot, promise: Promise.resolve() }
+      jobs.set(key, job)
+      job.promise = (async () => {
+        try {
+          let checked: string
+          do {
+            const current = job.snapshot
+            checked = current.signature
+            try {
+              await check(current, () => job.snapshot.signature === checked)
+            } catch (error) {
+              if (job.snapshot.signature === checked) throw error
+            }
+          } while (job.snapshot.signature !== checked)
+        } finally {
+          jobs.delete(key)
         }
-        clearRuntimeIssue('chat_moderation')
-      } finally {
-        active--
-        inFlight.delete(key)
-      }
+      })()
+      await job.promise
     } catch {
       // Provider/Discord errors may contain submitted text or secrets.
       reportRuntimeIssue(
@@ -192,19 +303,32 @@ export function createModerationReactionHandler() {
         )
           return
         if (!loadCommunitySettings().chatModeration.enabled) return
+        if (record.signature && moderationSnapshot(source).signature !== record.signature) return
+        const latest = readRecords()[key]
+        if (!latest || latest.signature !== record.signature) return
         await source.reply({
-          components: container(
-            'chat moderation',
-            new Map(),
-            text(
-              `### ⚠️ 채팅 검토 결과\n${record.categories.map((category) => `- ${labels[category]} (${category})`).join('\n')}\n-# OpenAI 자동 감지 결과이며 오탐일 수 있습니다. 동일 메시지 안내는 1분에 한 번 표시됩니다.`
-            )
-          ).components.slice(0, 1),
-          flags: MessageFlags.IsComponentsV2,
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xf1c40f)
+              .setTitle('⚠️ 채팅 검토 결과')
+              .setDescription(
+                record.categories
+                  .map((category) => {
+                    const score = record.scores?.[category]
+                    return `- ${labels[category]} (${category}): **${score === undefined ? '점수 없음' : `${(score * 100).toFixed(2)}%`}**`
+                  })
+                  .join('\n')
+              )
+              .setFooter({
+                text: `OpenAI 감지 점수이며 위반 확정 확률이 아닙니다. 오탐 가능 · 안내는 1분에 한 번${record.incomplete ? ' · 일부 첨부파일 검사 불가' : ''}`
+              })
+          ],
           allowedMentions: { parse: [], repliedUser: false }
         })
       } catch {
-        saveRecord(key, { ...record, shownAt: previous })
+        const latest = readRecords()[key]
+        if (latest && latest.signature === record.signature)
+          saveRecord(key, { ...record, shownAt: previous })
         throw new Error('Moderation result delivery failed')
       }
     } catch {

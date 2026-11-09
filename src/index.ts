@@ -187,6 +187,9 @@ client.on(Events.MessageCreate, (message) => {
     console.error('message handling failed')
   })
 })
+client.on(Events.MessageUpdate, (_previous, message) => {
+  void handleModeration(message)
+})
 
 const handleReactionForward = createReactionForwardHandler()
 const syncReactions = (message: Parameters<typeof handleReactionForward>[0]) => {

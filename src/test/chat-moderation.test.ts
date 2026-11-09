@@ -1,8 +1,10 @@
 import { join } from 'node:path'
 import {
-  MessageFlags,
+  Collection,
   MessageType,
+  type Attachment,
   type Message,
+  type PartialMessage,
   type MessageReaction,
   type User
 } from 'discord.js'
@@ -37,7 +39,8 @@ const CHANNEL = '777777777777777777'
 const ID = '1000000000000000001'
 const flagged = {
   flagged: true,
-  categories: { harassment: true, hate: false, 'violence/graphic': true }
+  categories: { harassment: true, hate: false, 'violence/graphic': true },
+  category_scores: { harassment: 0.98765, hate: 0.01, 'violence/graphic': 0.8532 }
 }
 
 function message(overrides: Record<string, unknown> = {}) {
@@ -49,6 +52,9 @@ function message(overrides: Record<string, unknown> = {}) {
     author: { bot: false },
     webhookId: null,
     content: 'private original text',
+    attachments: new Collection(),
+    reactions: { cache: new Collection() },
+    client: { rest: { delete: vi.fn().mockResolvedValue(undefined) } },
     react: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
     ...overrides
@@ -73,6 +79,239 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+function attachment(overrides: Record<string, unknown> = {}): Attachment {
+  return {
+    id: '9000000000000000001',
+    size: 100,
+    contentType: 'image/png',
+    url: 'https://cdn.discordapp.com/attachments/777777777777777777/9000000000000000001/image.png?ex=123&sig=secret',
+    ...overrides
+  } as Attachment
+}
+function files(...items: Attachment[]) {
+  return new Collection(items.map((item) => [item.id, item]))
+}
+
+describe('edited messages and attachment moderation', () => {
+  it('rechecks edits, replaces categories/scores, and removes only the bot warning when clean', async () => {
+    const moderate = vi
+      .fn()
+      .mockResolvedValueOnce(flagged)
+      .mockResolvedValueOnce({
+        flagged: true,
+        categories: { hate: true },
+        category_scores: { hate: 0.9234 }
+      })
+      .mockResolvedValueOnce({ flagged: false, categories: {} })
+    const handler = createChatModerationHandler(moderate)
+    const source = message()
+    await handler(source)
+    source.content = 'edited harmful content'
+    await handler(source)
+    const record = JSON.parse(getStoredValue(KEY)!)[`${GUILD}:${CHANNEL}:${ID}`]
+    expect(record.categories).toEqual(['hate'])
+    expect(record.scores).toEqual({ hate: 0.9234 })
+    source.content = 'now safe'
+    await handler(source)
+    expect(moderate).toHaveBeenCalledTimes(3)
+    expect(getStoredValue(KEY)).toBe('{}')
+    expect(source.client.rest.delete).toHaveBeenCalledExactlyOnceWith(
+      `/channels/${CHANNEL}/messages/${ID}/reactions/${encodeURIComponent('⚠️')}/@me`
+    )
+  })
+  it('checks uncached edited messages and safely handles fetch failures', async () => {
+    const source = message()
+    const fetch = vi.fn().mockRejectedValueOnce(new Error('gone')).mockResolvedValue(source)
+    const partial = { partial: true, guildId: GUILD, fetch } as unknown as PartialMessage
+    const moderate = vi.fn().mockResolvedValue(flagged)
+    const handler = createChatModerationHandler(moderate)
+    await handler(partial)
+    expect(moderate).not.toHaveBeenCalled()
+    await handler(partial)
+    expect(moderate).toHaveBeenCalledExactlyOnceWith(source.content)
+  })
+  it.each(['resolve', 'reject'])(
+    'never applies a stale in-flight result on edits (%s)',
+    async (outcome) => {
+      let resolve!: (value: unknown) => void
+      let reject!: (error: Error) => void
+      const moderate = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((done, fail) => {
+              resolve = done
+              reject = fail
+            })
+        )
+        .mockResolvedValueOnce({
+          flagged: true,
+          categories: { hate: true },
+          category_scores: { hate: 0.99 }
+        })
+      const handler = createChatModerationHandler(moderate)
+      const source = message()
+      const first = handler(source)
+      await vi.advanceTimersByTimeAsync(0)
+      source.content = 'new revision'
+      const edited = handler(source)
+      if (outcome === 'resolve') resolve(flagged)
+      else reject(new Error('old request failed'))
+      await Promise.all([first, edited])
+      expect(moderate).toHaveBeenCalledTimes(2)
+      expect(moderate).toHaveBeenLastCalledWith('new revision')
+      expect(source.react).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(getStoredValue(KEY)!)[`${GUILD}:${CHANNEL}:${ID}`].categories).toEqual([
+        'hate'
+      ])
+    }
+  )
+  it.each(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])(
+    'checks attachment-only %s messages',
+    async (contentType) => {
+      const fetch = vi.fn()
+      vi.stubGlobal('fetch', fetch)
+      const file = attachment({ contentType })
+      const source = message({ content: '', attachments: files(file) })
+      await createChatModerationHandler()(source)
+      expect(provider.create).toHaveBeenCalledExactlyOnceWith({
+        model: 'omni-moderation-latest',
+        input: [{ type: 'image_url', image_url: { url: file.url } }]
+      })
+      expect(fetch).not.toHaveBeenCalled()
+      expect(source.react).toHaveBeenCalledWith('⚠️')
+      expect(getStoredValue(KEY)).not.toContain('sig=secret')
+    }
+  )
+  it('checks body and multiple attachments together and rechecks attachment replacements/removal', async () => {
+    const moderate = vi
+      .fn()
+      .mockResolvedValueOnce(flagged)
+      .mockResolvedValueOnce(flagged)
+      .mockResolvedValueOnce({ flagged: false, categories: {} })
+    const handler = createChatModerationHandler(moderate)
+    const first = attachment()
+    const second = attachment({
+      id: '9000000000000000002',
+      url: first.url.replace('image.png', 'second.png')
+    })
+    const source = message({ attachments: files(first, second) })
+    await handler(source)
+    expect(moderate).toHaveBeenCalledWith([
+      { type: 'text', text: source.content },
+      { type: 'image_url', image_url: { url: first.url } },
+      { type: 'image_url', image_url: { url: second.url } }
+    ])
+    source.attachments = files(second)
+    await handler(source)
+    source.attachments = files()
+    await handler(source)
+    expect(moderate).toHaveBeenCalledTimes(3)
+    expect(source.client.rest.delete).toHaveBeenCalledOnce()
+  })
+  it('clears the warning when an attachment-only message becomes empty', async () => {
+    const source = message({ content: '', attachments: files(attachment()) })
+    const handler = createChatModerationHandler()
+    await handler(source)
+    source.attachments = files()
+    await handler(source)
+    expect(provider.create).toHaveBeenCalledTimes(1)
+    expect(source.client.rest.delete).toHaveBeenCalledOnce()
+    expect(getStoredValue(KEY)).toBe('{}')
+  })
+  it('downloads UTF-8 text/JSON attachments with bounded streaming and no redirects', async () => {
+    const fetch = vi
+      .fn()
+      .mockImplementation(
+        async () => new Response('file content', { headers: { 'content-length': '12' } })
+      )
+    vi.stubGlobal('fetch', fetch)
+    const file = attachment({
+      contentType: 'application/json',
+      size: 12,
+      url: attachment().url.replace('image.png', 'body.json')
+    })
+    const source = message({ attachments: files(file) })
+    await createChatModerationHandler()(source)
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(file.url, {
+      redirect: 'error',
+      signal: expect.any(AbortSignal)
+    })
+    expect(provider.create).toHaveBeenCalledWith({
+      model: 'omni-moderation-latest',
+      input: [
+        { type: 'text', text: source.content },
+        { type: 'text', text: 'file content' }
+      ]
+    })
+    expect(getStoredValue(KEY)).not.toContain('file content')
+  })
+  it.each([
+    { url: 'http://127.0.0.1/file.txt', contentType: 'text/plain' },
+    { url: 'https://evil.example/file.png' },
+    { url: 'https://cdn.discordapp.com/other/image.png' },
+    { contentType: 'application/pdf' },
+    { contentType: 'video/mp4' },
+    { contentType: 'audio/mpeg' },
+    { size: 21 * 1024 * 1024 },
+    { contentType: 'text/plain', size: 65537 }
+  ])('does not fetch or claim unsupported/unsafe attachments are clean: %j', async (overrides) => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    const source = message({ content: '', attachments: files(attachment(overrides)) })
+    await createChatModerationHandler()(source)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(provider.create).not.toHaveBeenCalled()
+    expect(runtimeIssueSummary()).toContain('attachments could not be checked')
+  })
+  it.each(['timeout', 'oversized-header', 'oversized-stream', 'invalid-utf8', 'http-error'])(
+    'reports failed text downloads without dropping body checks (%s)',
+    async (failure) => {
+      const fetch = vi.fn().mockImplementation(async () => {
+        if (failure === 'timeout') throw new Error('timed out: secret URL')
+        if (failure === 'oversized-header')
+          return new Response('small', { headers: { 'content-length': '65537' } })
+        if (failure === 'oversized-stream') return new Response('x'.repeat(65537))
+        if (failure === 'invalid-utf8') return new Response(new Uint8Array([0xff]))
+        return new Response('error', { status: 503 })
+      })
+      vi.stubGlobal('fetch', fetch)
+      const source = message({ attachments: files(attachment({ contentType: 'text/plain' })) })
+      await createChatModerationHandler()(source)
+      expect(provider.create).toHaveBeenCalledWith({
+        model: 'omni-moderation-latest',
+        input: source.content
+      })
+      expect(runtimeIssueSummary()).toContain('attachments could not be checked')
+      expect(runtimeIssueSummary()).not.toContain('secret URL')
+      await createModerationReactionHandler()(reaction(source), user)
+      expect(JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])).toContain(
+        '일부 첨부파일 검사 불가'
+      )
+    }
+  )
+  it('does not send over-budget image/text totals', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('x'.repeat(40000)))
+    vi.stubGlobal('fetch', fetch)
+    const first = attachment({ size: 11 * 1024 * 1024 })
+    const second = attachment({ id: '9000000000000000002', size: 11 * 1024 * 1024 })
+    const text = attachment({ id: '9000000000000000003', size: 40000, contentType: 'text/plain' })
+    const text2 = attachment({ id: '9000000000000000004', size: 40000, contentType: 'text/plain' })
+    const source = message({ content: '', attachments: files(first, second, text, text2) })
+    await createChatModerationHandler()(source)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(provider.create).toHaveBeenCalledWith({
+      model: 'omni-moderation-latest',
+      input: [
+        { type: 'image_url', image_url: { url: first.url } },
+        { type: 'text', text: 'x'.repeat(40000) }
+      ]
+    })
+    expect(runtimeIssueSummary()).toContain('attachments could not be checked')
+  })
 })
 
 describe('chat moderation', () => {
@@ -189,11 +428,11 @@ describe('chat moderation', () => {
     const moderate = vi.fn().mockResolvedValue({ flagged: false, categories: {} })
     const handler = createChatModerationHandler(moderate)
     await handler(message())
-    await handler(message())
+    await handler(message({ id: '2000000000000000000' }))
     expect(moderate).toHaveBeenCalledTimes(1)
     expect(runtimeIssueSummary()).toContain('capacity')
     await vi.advanceTimersByTimeAsync(60_000)
-    await handler(message())
+    await handler(message({ id: '2000000000000000000' }))
     expect(moderate).toHaveBeenCalledTimes(2)
   })
   it('coalesces duplicates, bounds concurrent checks and releases slots on failure', async () => {
@@ -206,10 +445,12 @@ describe('chat moderation', () => {
     )
     const handler = createChatModerationHandler(moderate)
     const pending = handler(message())
-    await handler(message())
+    const duplicate = handler(message())
+    await vi.advanceTimersByTimeAsync(0)
     expect(moderate).toHaveBeenCalledTimes(1)
     resolve(flagged)
     await pending
+    await duplicate
     await handler(message())
     expect(moderate).toHaveBeenCalledTimes(1)
     const completes: Array<(value: unknown) => void> = []
@@ -222,6 +463,7 @@ describe('chat moderation', () => {
     const jobs = Array.from({ length: 5 }, (_, i) =>
       handler(message({ id: String(2000000000000000000n + BigInt(i)) }))
     )
+    await vi.advanceTimersByTimeAsync(0)
     expect(completes).toHaveLength(4)
     completes.forEach((done) => done({ flagged: false, categories: {} }))
     await Promise.all(jobs)
@@ -253,14 +495,57 @@ describe('warning reaction results', () => {
     expect(source.fetch).toHaveBeenCalledOnce()
     const payload = vi.mocked(source.reply).mock.calls[0]![0]
     expect(payload).toMatchObject({
-      flags: MessageFlags.IsComponentsV2,
+      embeds: [expect.anything()],
       allowedMentions: { parse: [], repliedUser: false }
     })
     const output = JSON.stringify(payload)
     expect(output).toContain('harassment')
     expect(output).toContain('violence/graphic')
+    expect(output).toContain('98.77%')
+    expect(output).toContain('85.32%')
+    expect(output).toContain('위반 확정 확률이 아닙니다')
     expect(output).not.toContain('(hate)')
     expect(output).not.toContain(source.content)
+  })
+  it('never displays old categories after a source edit, even before its new check finishes', async () => {
+    const source = message({ content: 'new content' })
+    await createModerationReactionHandler()(reaction(source), user)
+    expect(source.reply).not.toHaveBeenCalled()
+  })
+  it('does not invent percentages for legacy results without scores', async () => {
+    setStoredValue(
+      KEY,
+      JSON.stringify({
+        [`${GUILD}:${CHANNEL}:${ID}`]: {
+          categories: ['hate'],
+          createdAt: Date.now(),
+          shownAt: 0
+        }
+      })
+    )
+    const source = message()
+    await createModerationReactionHandler()(reaction(source), user)
+    const output = JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])
+    expect(output).toContain('점수 없음')
+    expect(output).not.toContain('%')
+  })
+  it('preserves exact 0% and 100% scores and rejects out-of-range provider scores', async () => {
+    const source = message({ content: 'different input' })
+    await createChatModerationHandler(async () => ({
+      ...flagged,
+      category_scores: { harassment: 0, 'violence/graphic': 1 }
+    }))(source)
+    await createModerationReactionHandler()(reaction(source), user)
+    const output = JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])
+    expect(output).toContain('0.00%')
+    expect(output).toContain('100.00%')
+    const bad = message({ id: '2000000000000000000' })
+    await createChatModerationHandler(async () => ({
+      ...flagged,
+      category_scores: { harassment: 1.1 }
+    }))(bad)
+    expect(bad.react).not.toHaveBeenCalled()
+    expect(runtimeIssueSummary()).toContain('chat_moderation')
   })
   it('handles uncached partial messages with an unqualified warning emoji', async () => {
     const source = message()
