@@ -8,6 +8,6 @@ export const discordClientOptions: ClientOptions = {
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
   allowedMentions: { parse: [], repliedUser: false }
 }

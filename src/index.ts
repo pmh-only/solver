@@ -3,6 +3,7 @@ import { Client, Collection, Events, REST, Routes } from 'discord.js'
 import { discordClientOptions } from './discord-client-options.js'
 import { createMessageHandler } from './message-handler.js'
 import { createReactionForwardHandler } from './reaction-forward.js'
+import { createChatModerationHandler, createModerationReactionHandler } from './chat-moderation.js'
 import type { Subcommand } from './types.js'
 import { areApplicationCommandsCurrent } from './application-commands.js'
 import {
@@ -179,7 +180,9 @@ client.on(Events.Error, (error) => {
 client.on(Events.InteractionCreate, featureRegistry.createHandler(recoverInteractionWithAgent))
 
 const handleMessage = createMessageHandler()
+const handleModeration = createChatModerationHandler()
 client.on(Events.MessageCreate, (message) => {
+  void handleModeration(message)
   void handleMessage(message).catch(() => {
     console.error('message handling failed')
   })
@@ -191,7 +194,11 @@ const syncReactions = (message: Parameters<typeof handleReactionForward>[0]) => 
     console.error('reaction forwarding failed')
   })
 }
-client.on(Events.MessageReactionAdd, (reaction) => syncReactions(reaction.message))
+const handleModerationReaction = createModerationReactionHandler()
+client.on(Events.MessageReactionAdd, (reaction, user) => {
+  syncReactions(reaction.message)
+  void handleModerationReaction(reaction, user)
+})
 client.on(Events.MessageReactionRemove, (reaction) => syncReactions(reaction.message))
 client.on(Events.MessageReactionRemoveEmoji, (reaction) => syncReactions(reaction.message))
 client.on(Events.MessageReactionRemoveAll, (message) => syncReactions(message))

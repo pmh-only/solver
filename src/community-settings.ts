@@ -56,6 +56,12 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  chatModeration: z
+    .object({
+      enabled: z.boolean().default(true),
+      requestsPerMinute: z.number().int().min(1).max(3000).default(120)
+    })
+    .strict(),
   discordArchive: z
     .object({
       enabled: z.boolean().default(true),
@@ -184,6 +190,10 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    chatModeration: communitySettingsFields.chatModeration.default({
+      enabled: true,
+      requestsPerMinute: 120
+    }),
     discordArchive: communitySettingsFields.discordArchive.default({
       enabled: true,
       autoCollect: true,
@@ -220,6 +230,7 @@ export const manageCommunitySettingsSchema = z.object({
     'reset',
     'reset-message-replies',
     'reset-reaction-forwards',
+    'reset-chat-moderation',
     'reset-role-chat-relationships'
   ]),
   // A PATCH must not inject defaults for omitted fields (Zod 4 also applies defaults
@@ -292,6 +303,7 @@ export function manageCommunitySettings(input: unknown): CommunitySettings {
   }
   if (action === 'reset-role-chat-relationships')
     deleteStoredValue('community:role-chat-relationships')
+  if (action === 'reset-chat-moderation') deleteStoredValue('community:chat-moderation')
   const resetPrefix =
     action === 'reset-message-replies'
       ? 'community:message-bot:'
