@@ -196,7 +196,7 @@ export async function handleKickvoteButton(interaction: ButtonInteraction) {
       const notice = errorContainer(
         'kickvote',
         new Map([['pub', true]]),
-        `<@${interaction.user.id}>님이 추방에 찬성했습니다. (${current.votes.length}/${current.threshold}표)`
+        `누군가가 추방에 찬성했습니다. (${current.votes.length}/${current.threshold}표)`
       )
       await interaction.message.reply({
         components: notice.components,

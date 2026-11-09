@@ -169,7 +169,7 @@ function notices(calls: Awaited<ReturnType<typeof dispatch>>) {
   return calls.filter((call) => call.method === 'POST' && call.route === publicRoute)
 }
 
-describe('public kickvote agreement replies', () => {
+describe('anonymous kickvote agreement replies', () => {
   it('separates the reason from the heading and uses an emoji-only cancellation button', async () => {
     const components = await startVote()
     const body = (components[0] as { components: Array<{ type: number; content?: string }> })
@@ -186,7 +186,7 @@ describe('public kickvote agreement replies', () => {
     expect(cancel).not.toHaveProperty('label')
     expect(JSON.stringify(components)).not.toContain('개설자/관리자')
   })
-  it('identifies each accepted voter in a reply to the original poll without pinging anyone', async () => {
+  it('announces each accepted vote anonymously in a reply to the original poll', async () => {
     const components = await startVote()
     expect(JSON.stringify(components)).toContain('투표 마감: <t:')
     expect(JSON.stringify(components)).not.toContain('공개 찬성')
@@ -204,8 +204,17 @@ describe('public kickvote agreement replies', () => {
       message_reference: { message_id: PUBLIC_MESSAGE },
       allowed_mentions: { parse: [], replied_user: false }
     })
-    expect(JSON.stringify(payload)).toContain(`<@${VOTER}>님이 추방에 찬성했습니다.`)
+    expect(JSON.stringify(payload)).toContain('누군가가 추방에 찬성했습니다.')
     expect(JSON.stringify(payload)).toContain('1/7표')
+    expect(JSON.stringify(payload)).not.toContain(VOTER)
+    expect(JSON.stringify(payload)).not.toContain(OWNER)
+    expect(JSON.stringify(payload)).not.toContain('voter')
+    expect(payload).not.toHaveProperty('interaction_metadata')
+    expect(payload).not.toHaveProperty('interaction')
+    expect(JSON.stringify(getEdit(calls))).not.toContain(VOTER)
+    expect(
+      calls.some((call) => call.method === 'POST' && call.route.startsWith('/webhooks/'))
+    ).toBe(false)
     expect(notices(await vote(components))).toHaveLength(0)
   })
   it('shows only the deadline label and keeps it in sync with accepted votes', async () => {
@@ -227,9 +236,13 @@ describe('public kickvote agreement replies', () => {
     await vote(components)
     const final = await vote(components, OWNER)
     expect(notices(final)).toHaveLength(1)
-    expect(JSON.stringify(notices(final)[0]!.body)).toContain(
-      `<@${OWNER}>님이 추방에 찬성했습니다. (2/2표)`
-    )
+    const notice = notices(final)[0]!.body
+    expect(JSON.stringify(notice)).toContain('누군가가 추방에 찬성했습니다. (2/2표)')
+    expect(JSON.stringify(notice)).not.toContain(OWNER)
+    expect(JSON.stringify(notice)).not.toContain(VOTER)
+    expect(JSON.stringify(notice)).not.toContain('voter')
+    expect(notice).not.toHaveProperty('interaction_metadata')
+    expect(notice).not.toHaveProperty('interaction')
     expect(kick).toHaveBeenCalledTimes(1)
     expect(notices(await vote(components, OWNER))).toHaveLength(0)
     expect(kick).toHaveBeenCalledTimes(1)
