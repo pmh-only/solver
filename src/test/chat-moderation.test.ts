@@ -512,7 +512,7 @@ describe('warning reaction results', () => {
     await createModerationReactionHandler()(reaction(source), user)
     expect(source.reply).not.toHaveBeenCalled()
   })
-  it('does not invent percentages for legacy results without scores', async () => {
+  it('automatically refreshes legacy results instead of displaying missing scores', async () => {
     setStoredValue(
       KEY,
       JSON.stringify({
@@ -526,8 +526,129 @@ describe('warning reaction results', () => {
     const source = message()
     await createModerationReactionHandler()(reaction(source), user)
     const output = JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])
-    expect(output).toContain('점수 없음')
-    expect(output).not.toContain('%')
+    expect(provider.create).toHaveBeenCalledExactlyOnceWith({
+      model: 'omni-moderation-latest',
+      input: source.content
+    })
+    expect(output).toContain('98.77%')
+    expect(output).toContain('85.32%')
+    expect(output).not.toContain('점수 없음')
+    const stored = JSON.parse(getStoredValue(KEY)!)[`${GUILD}:${CHANNEL}:${ID}`]
+    expect(stored.scores).toEqual({ harassment: 0.98765, 'violence/graphic': 0.8532 })
+    expect(stored.signature).toMatch(/^[a-f0-9]{64}$/)
+  })
+  it('refreshes missing/partial scores even when the revision fingerprint matches', async () => {
+    const source = message({ content: 'fresh revision checked by the shared handler' })
+    const check = createChatModerationHandler()
+    await check(source)
+    const stored = JSON.parse(getStoredValue(KEY)!)
+    delete stored[`${GUILD}:${CHANNEL}:${ID}`].scores['violence/graphic']
+    setStoredValue(KEY, JSON.stringify(stored))
+    const handler = createModerationReactionHandler(check)
+    await handler(reaction(source), user)
+    expect(provider.create).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])).toContain('85.32%')
+    await handler(reaction(source), user)
+    expect(provider.create).toHaveBeenCalledTimes(2)
+    expect(source.reply).toHaveBeenCalledTimes(1)
+  })
+  it('coalesces simultaneous score refreshes and persists the display cooldown', async () => {
+    const source = message()
+    const stored = JSON.parse(getStoredValue(KEY)!)
+    delete stored[`${GUILD}:${CHANNEL}:${ID}`].scores
+    setStoredValue(KEY, JSON.stringify(stored))
+    let complete!: (result: unknown) => void
+    const check = createChatModerationHandler(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve
+        })
+    )
+    const handler = createModerationReactionHandler(check)
+    const first = handler(reaction(source), user)
+    await vi.advanceTimersByTimeAsync(0)
+    const duplicate = handler(reaction(source), user)
+    complete(flagged)
+    await Promise.all([first, duplicate])
+    expect(source.reply).toHaveBeenCalledTimes(1)
+    await handler(reaction(source), user)
+    expect(source.reply).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    await handler(reaction(source), user)
+    expect(source.reply).toHaveBeenCalledTimes(2)
+  })
+  it('reports providers that omit scores instead of pretending stored data is the only cause', async () => {
+    const source = message()
+    const stored = JSON.parse(getStoredValue(KEY)!)
+    delete stored[`${GUILD}:${CHANNEL}:${ID}`].scores
+    setStoredValue(KEY, JSON.stringify(stored))
+    provider.create.mockResolvedValue({
+      results: [{ flagged: true, categories: flagged.categories }]
+    })
+    await createModerationReactionHandler()(reaction(source), user)
+    const output = JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])
+    expect(output).toContain('점수 조회 불가')
+    expect(output).not.toContain('0.00%')
+    expect(runtimeIssueSummary()).toContain('omitted category_scores')
+  })
+  it('retains scoreless legacy results for another attempt if refresh fails', async () => {
+    const source = message()
+    setStoredValue(
+      KEY,
+      JSON.stringify({
+        [`${GUILD}:${CHANNEL}:${ID}`]: {
+          categories: ['hate'],
+          createdAt: Date.now(),
+          shownAt: 0
+        }
+      })
+    )
+    provider.create.mockRejectedValueOnce(new Error('provider unavailable'))
+    const handler = createModerationReactionHandler()
+    await handler(reaction(source), user)
+    expect(source.reply).not.toHaveBeenCalled()
+    expect(JSON.parse(getStoredValue(KEY)!)[`${GUILD}:${CHANNEL}:${ID}`]).toBeDefined()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await handler(reaction(source), user)
+    expect(JSON.stringify(vi.mocked(source.reply).mock.calls[0]![0])).toContain('98.77%')
+  })
+  it('uses the shared request budget for refreshes and retries after the window resets', async () => {
+    const source = message({ content: 'fresh revision consuming the shared request budget' })
+    manageCommunitySettings({
+      action: 'update',
+      settings: { chatModeration: { requestsPerMinute: 1 } }
+    })
+    const check = createChatModerationHandler()
+    await check(source)
+    const stored = JSON.parse(getStoredValue(KEY)!)
+    delete stored[`${GUILD}:${CHANNEL}:${ID}`].scores
+    setStoredValue(KEY, JSON.stringify(stored))
+    const handler = createModerationReactionHandler(check)
+    await handler(reaction(source), user)
+    expect(provider.create).toHaveBeenCalledTimes(1)
+    expect(runtimeIssueSummary()).toContain('capacity')
+    await vi.advanceTimersByTimeAsync(60_000)
+    await handler(reaction(source), user)
+    expect(provider.create).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(vi.mocked(source.reply).mock.calls.at(-1)![0])).toContain('98.77%')
+  })
+  it('removes stale detection when a legacy result refresh now comes back clean', async () => {
+    const source = message()
+    setStoredValue(
+      KEY,
+      JSON.stringify({
+        [`${GUILD}:${CHANNEL}:${ID}`]: {
+          categories: ['hate'],
+          createdAt: Date.now(),
+          shownAt: 0
+        }
+      })
+    )
+    provider.create.mockResolvedValue({ results: [{ flagged: false, categories: {} }] })
+    await createModerationReactionHandler()(reaction(source), user)
+    expect(getStoredValue(KEY)).toBe('{}')
+    expect(source.reply).not.toHaveBeenCalled()
+    expect(source.client.rest.delete).toHaveBeenCalledOnce()
   })
   it('preserves exact 0% and 100% scores and rejects out-of-range provider scores', async () => {
     const source = message({ content: 'different input' })

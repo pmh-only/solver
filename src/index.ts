@@ -197,7 +197,7 @@ const syncReactions = (message: Parameters<typeof handleReactionForward>[0]) => 
     console.error('reaction forwarding failed')
   })
 }
-const handleModerationReaction = createModerationReactionHandler()
+const handleModerationReaction = createModerationReactionHandler(handleModeration)
 client.on(Events.MessageReactionAdd, (reaction, user) => {
   syncReactions(reaction.message)
   void handleModerationReaction(reaction, user)

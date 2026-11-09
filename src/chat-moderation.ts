@@ -66,6 +66,10 @@ const recordsSchema = z
   .record(z.string().regex(/^\d{17,20}:\d{17,20}:\d{17,20}$/), recordSchema)
   .refine((records) => Object.keys(records).length <= MAX_RECORDS)
 
+function hasScores(record: z.infer<typeof recordSchema>): boolean {
+  return record.categories.every((category) => typeof record.scores?.[category] === 'number')
+}
+
 function readRecords() {
   const raw = getStoredValue(KEY)
   if (!raw) return {}
@@ -131,10 +135,15 @@ export function createChatModerationHandler(
     const { message, signature } = snapshot
     const key = `${message.guildId}:${message.channelId}:${message.id}`
     const previous = readRecords()[key]
-    if (previous?.signature === signature || completed.get(key) === signature) return
+    if (
+      (previous?.signature === signature && hasScores(previous)) ||
+      completed.get(key) === signature
+    )
+      return
     completed.delete(key)
-    // Invalidate immediately: an old detection must never describe an edited message.
-    if (previous) deleteRecord(key)
+    // Invalidate known stale revisions immediately. Keep scoreless records for
+    // retry on a refresh failure; reaction replies always recheck these first.
+    if (previous?.signature && previous.signature !== signature) deleteRecord(key)
     if (Date.now() - windowStart >= 60_000) {
       windowStart = Date.now()
       attempts = 0
@@ -186,6 +195,16 @@ export function createChatModerationHandler(
           createdAt: Date.now(),
           shownAt: 0
         })
+        if (!categories.every((category) => typeof scores?.[category] === 'number')) {
+          reportRuntimeIssue(
+            'chat_moderation_scores',
+            new Error(
+              'Moderation provider omitted category_scores for detected categories; check the configured OpenAI endpoint through /a'
+            )
+          )
+        } else {
+          clearRuntimeIssue('chat_moderation_scores')
+        }
         await message.react(MODERATION_WARNING)
       } else if (
         !incomplete &&
@@ -194,6 +213,7 @@ export function createChatModerationHandler(
             (item) => item.me && item.emoji.name?.replace(/\uFE0F/g, '') === '⚠'
           ))
       ) {
+        if (previous) deleteRecord(key)
         await message.client.rest.delete(
           Routes.channelMessageOwnReaction(
             message.channelId,
@@ -270,7 +290,8 @@ export function createChatModerationHandler(
   }
 }
 
-export function createModerationReactionHandler() {
+export function createModerationReactionHandler(recheck = createChatModerationHandler()) {
+  const pending = new Set<string>()
   return async (
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser
@@ -283,12 +304,14 @@ export function createModerationReactionHandler() {
       reaction.emoji.name?.replace(/\uFE0F/g, '') !== '⚠'
     )
       return
+    const key = `${message.guildId}:${message.channelId}:${message.id}`
+    if (pending.has(key) || pending.size >= 250) return
+    pending.add(key)
     try {
       if (!loadCommunitySettings().chatModeration.enabled) return
       const actor = user.partial ? await user.fetch() : user
       if (actor.bot) return
-      const key = `${message.guildId}:${message.channelId}:${message.id}`
-      const record = readRecords()[key]
+      let record = readRecords()[key]
       if (!record || (record.shownAt && Date.now() - record.shownAt < 60_000)) return
       // Reserve before awaiting to coalesce duplicate/concurrent clicks.
       const previous = record.shownAt
@@ -306,6 +329,16 @@ export function createModerationReactionHandler() {
         if (record.signature && moderationSnapshot(source).signature !== record.signature) return
         const latest = readRecords()[key]
         if (!latest || latest.signature !== record.signature) return
+        // Pre-score records (and incomplete provider responses) must not remain
+        // permanently scoreless just because the message itself hasn't changed.
+        if (!record.signature || !hasScores(record)) {
+          await recheck(source)
+          if (!loadCommunitySettings().chatModeration.enabled) return
+          const refreshed = readRecords()[key]
+          if (!refreshed || refreshed.signature !== moderationSnapshot(source).signature) return
+          record = { ...refreshed, shownAt: Date.now() }
+          saveRecord(key, record)
+        }
         await source.reply({
           embeds: [
             new EmbedBuilder()
@@ -315,7 +348,7 @@ export function createModerationReactionHandler() {
                 record.categories
                   .map((category) => {
                     const score = record.scores?.[category]
-                    return `- ${labels[category]} (${category}): **${score === undefined ? '점수 없음' : `${(score * 100).toFixed(2)}%`}**`
+                    return `- ${labels[category]} (${category}): **${score === undefined ? '점수 조회 불가 (잠시 후 재시도)' : `${(score * 100).toFixed(2)}%`}**`
                   })
                   .join('\n')
               )
@@ -336,6 +369,8 @@ export function createModerationReactionHandler() {
         'chat_moderation_reaction',
         new Error('Could not display moderation results in the source channel')
       )
+    } finally {
+      pending.delete(key)
     }
   }
 }
