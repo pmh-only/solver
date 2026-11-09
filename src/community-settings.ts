@@ -56,6 +56,13 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  repeatedMessages: z
+    .object({
+      roleId: z.string().regex(/^\d{17,20}$/),
+      windowSeconds: z.number().int().min(10).max(3600).default(300)
+    })
+    .strict()
+    .nullable(),
   chatModeration: z
     .object({
       enabled: z.boolean().default(true),
@@ -190,6 +197,7 @@ const communitySettingsFields = {
 
 export const communitySettingsSchema = z
   .object({
+    repeatedMessages: communitySettingsFields.repeatedMessages.default(null),
     chatModeration: communitySettingsFields.chatModeration.default({
       enabled: true,
       requestsPerMinute: 120
