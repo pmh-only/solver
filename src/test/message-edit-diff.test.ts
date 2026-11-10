@@ -23,36 +23,56 @@ describe('deleted text detection', () => {
   })
 })
 
-describe('deleted-only edit diffs', () => {
+describe('inline edit diffs', () => {
   it.each([
-    ['ab', 'ac', '~~b~~'],
-    ['abc', 'ac', '~~b~~'],
-    ['ac', 'abc', ''],
-    ['수정 전', '수정 후', '~~전~~'],
-    ['abcde', 'aXcdY', '~~b~~ ~~e~~'],
+    ['ab', 'ac', 'a~~b~~c'],
+    ['abc', 'ac', 'a~~b~~c'],
+    ['ac', 'abc', 'abc'],
+    ['수정 전', '수정 후', '수정 ~~전~~후'],
+    ['abcde', 'aXcdY', 'a~~b~~Xcd~~e~~Y'],
     ['hello', '', '~~hello~~'],
-    ['', 'hello', ''],
-    ['same', 'same', ''],
-    ['a😀c', 'a🥲c', '~~😀~~'],
+    ['', 'hello', 'hello'],
+    ['same', 'same', 'same'],
+    ['a😀c', 'a🥲c', 'a~~😀~~🥲c'],
     ['hello\nworld', '', '~~hello world~~']
   ])('%s → %s', (before, after, expected) => {
     expect(formatMessageEditDiff(before, after)).toBe(expected)
   })
   it('escapes user markdown without escaping generated strikethrough', () => {
-    expect(formatMessageEditDiff('a*b', 'a*c')).toBe('~~b~~')
-    expect(formatMessageEditDiff('a*b', 'ab')).toBe('~~\\*~~')
+    expect(formatMessageEditDiff('a*b', 'a*c')).toBe('a\\*~~b~~c')
+    expect(formatMessageEditDiff('a*b', 'ab')).toBe('a~~\\*~~b')
     expect(formatMessageEditDiff('~~', '')).toBe('~~\\~\\~~~')
   })
-  it('shows only removed text from consecutive edits on one line', () => {
+  it('merges consecutive edits into one sentence rather than listing versions', () => {
     expect(
       formatMessageEditHistory([{ content: 'ab' }, { content: 'ac' }, { content: 'ad' }])
-    ).toBe('~~b~~ ~~c~~')
+    ).toBe('a~~bc~~d')
   })
   it('handles unknown originals and empty text', () => {
     expect(formatMessageEditHistory([{ content: 'known' }])).toBe('')
     expect(formatMessageEditHistory([{ content: '' }])).toBe('')
+    expect(
+      formatMessageEditHistory([{ content: 'a' }, { content: 'ab' }, { content: 'abc' }])
+    ).toBe('')
   })
-  it('omits insertion-only transitions without leaving extra separators', () => {
+  it('merges emoji replacements without splitting code points', () => {
+    expect(
+      formatMessageEditHistory([{ content: 'a😀c' }, { content: 'a🥲c' }, { content: 'a🙃c' }])
+    ).toBe('a~~😀🥲~~🙃c')
+  })
+  it('keeps the live text identical to the latest version after several edits', () => {
+    const sequences = [
+      ['abc', 'ac', 'xac', 'xyac', 'xyc'],
+      ['abc', '', 'xy', 'zxy', 'zy'],
+      ['ababa', 'aba', 'baba', 'bbba', 'ba'],
+      ['hello world', 'hello friend', 'hey friend', 'hey']
+    ]
+    for (const sequence of sequences) {
+      const result = formatMessageEditHistory(sequence.map((content) => ({ content })))
+      expect(result.replace(/~~.*?~~/g, '')).toBe(sequence.at(-1))
+    }
+  })
+  it('preserves additions and previous deletions in one sentence', () => {
     expect(
       formatMessageEditHistory([
         { content: 'ab' },
@@ -60,7 +80,20 @@ describe('deleted-only edit diffs', () => {
         { content: 'ac' },
         { content: 'acd' }
       ])
-    ).toBe('~~b~~')
+    ).toBe('a~~b~~cd')
+  })
+  it('keeps unchanged context and separate deletions in their original positions', () => {
+    expect(
+      formatMessageEditHistory([{ content: 'abcde' }, { content: 'aXcdY' }, { content: 'aXcY!' }])
+    ).toBe('a~~b~~Xc~~de~~Y!')
+  })
+  it('keeps previous deletions when text is reintroduced or the message becomes empty', () => {
+    expect(formatMessageEditHistory([{ content: 'a' }, { content: 'b' }, { content: 'a' }])).toBe(
+      '~~ab~~a'
+    )
+    expect(formatMessageEditHistory([{ content: 'abc' }, { content: 'ac' }, { content: '' }])).toBe(
+      '~~abc~~'
+    )
   })
   it('bounds large rewrites and closes truncated strikethrough', () => {
     const output = formatMessageEditDiff('a'.repeat(4000), 'b'.repeat(4000), 100)
@@ -73,6 +106,6 @@ describe('deleted-only edit diffs', () => {
     )
     expect(output.length).toBeLessThanOrEqual(3900)
     expect(output).not.toContain('\n')
-    expect(output.split(' ')).toHaveLength(9)
+    expect(output).not.toContain(' ')
   })
 })
