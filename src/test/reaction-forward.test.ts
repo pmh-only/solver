@@ -6,6 +6,10 @@ import {
   IntentsBitField,
   MessageReferenceType,
   Partials,
+  ReactionType,
+  Webhook,
+  WebhookType,
+  type User,
   type Client,
   type Guild,
   type Message
@@ -31,14 +35,78 @@ const send = vi.fn()
 const edit = vi.fn()
 const deleteMessage = vi.fn()
 const fetchChannel = vi.fn()
+const createWebhook = vi.fn()
+const deleteWebhook = vi.fn()
+const fetchWebhooks = vi.fn()
+const BOT = '999999999999999999'
+const webhook = {
+  id: '999999999999999998',
+  name: 'solver reaction forward',
+  owner: { id: BOT },
+  isIncoming: () => true,
+  send,
+  editMessage: edit,
+  delete: deleteWebhook
+}
 
 function reactions(counts: Array<[string, number]>) {
   return {
     cache: new Collection(
-      counts.map(([emoji, count]) => [emoji, { count, emoji: { toString: () => emoji } }])
+      counts.map(([emoji, count], index) => [
+        emoji,
+        {
+          count,
+          countDetails: { normal: count, burst: 0 },
+          emoji: { toString: () => emoji },
+          users: {
+            fetch: vi.fn().mockImplementation(async ({ after, limit = 100 }) => {
+              const users = Array.from({ length: count }, (_, i) => ({
+                id: String(2000000000000000000n + BigInt(index * 1000 + i)),
+                bot: false
+              }))
+              return new Collection(
+                users
+                  .filter((user) => !after || BigInt(user.id) > BigInt(after))
+                  .slice(0, limit)
+                  .map((user) => [user.id, user])
+              )
+            })
+          }
+        }
+      ])
     )
   }
 }
+type Reactor = { id: string; bot: boolean }
+function peopleReactions(entries: Array<[string, Reactor[], Reactor[]?]>) {
+  return {
+    cache: new Collection(
+      entries.map(([emoji, normal, burst = []]) => [
+        emoji,
+        {
+          count: normal.length + burst.length,
+          countDetails: { normal: normal.length, burst: burst.length },
+          emoji: { toString: () => emoji },
+          users: {
+            fetch: vi.fn().mockImplementation(
+              async ({ type, after, limit = 100 }) =>
+                new Collection(
+                  (type === ReactionType.Super ? burst : normal)
+                    .filter((user) => !after || BigInt(user.id) > BigInt(after))
+                    .slice(0, limit)
+                    .map((user) => [user.id, user])
+                )
+            )
+          }
+        }
+      ])
+    )
+  }
+}
+const person = (id: number, bot = false): Reactor => ({
+  id: String(3000000000000000000n + BigInt(id)),
+  bot
+})
 function sourceMessage(
   counts: Array<[string, number]> = [['⭐', 3]],
   overrides: Record<string, unknown> = {}
@@ -54,7 +122,7 @@ function sourceMessage(
       displayAvatarURL: () => 'https://cdn.discordapp.com/embed/avatars/0.png'
     },
     member: { displayName: '작성자' },
-    client: { channels: { fetch: fetchChannel } },
+    client: { user: { id: BOT }, channels: { fetch: fetchChannel } },
     reactions: reactions(counts),
     ...overrides
   } as unknown as Message
@@ -65,7 +133,8 @@ function embedFrom(payload: unknown) {
   return JSON.parse(JSON.stringify((payload as { embeds: unknown[] }).embeds[0])) as {
     author: { name: string; url: string; icon_url: string }
     description: string
-    footer: { text: string }
+    footer?: { text: string }
+    title?: string
   }
 }
 
@@ -87,9 +156,15 @@ beforeEach(() => {
     id: DESTINATION,
     guildId: GUILD,
     isSendable: () => true,
+    isThread: () => false,
+    createWebhook,
+    fetchWebhooks,
     send,
     messages: { edit, delete: deleteMessage }
   })
+  fetchWebhooks.mockReset().mockImplementation(async () => new Collection([[webhook.id, webhook]]))
+  createWebhook.mockReset().mockResolvedValue(webhook)
+  deleteWebhook.mockReset().mockResolvedValue(undefined)
 })
 afterEach(() => {
   vi.clearAllTimers()
@@ -98,6 +173,190 @@ afterEach(() => {
 })
 
 describe('reaction forwarding', () => {
+  it('counts a person only once across different emoji', async () => {
+    const source = sourceMessage([], {
+      reactions: peopleReactions([
+        ['⭐', [person(1)]],
+        ['🔥', [person(1)]],
+        ['✏️', [person(1)]]
+      ])
+    })
+    await createReactionForwardHandler()(source)
+    expect(send).not.toHaveBeenCalled()
+    expect(fetchChannel).not.toHaveBeenCalled()
+  })
+  it('excludes bots from the threshold and per-emoji counts', async () => {
+    const source = sourceMessage([], {
+      reactions: peopleReactions([
+        ['⭐', [person(1), person(2), person(3, true)]],
+        ['✏️', [person(4, true)]]
+      ])
+    })
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    expect(send).not.toHaveBeenCalled()
+    source.reactions = peopleReactions([
+      ['⭐', [person(1), person(2), person(3), person(4, true)]],
+      ['✏️', [person(5, true)]]
+    ]) as never
+    await handler(source)
+    expect(embedFrom(send.mock.calls[1]![0]).description).toBe('⭐ **3**')
+  })
+  it('deduplicates normal and burst reactions and humans shared across emoji', async () => {
+    const source = sourceMessage([], {
+      reactions: peopleReactions([
+        ['⭐', [person(1), person(2)], [person(1), person(3), person(4, true)]],
+        ['🔥', [person(1), person(2)]]
+      ])
+    })
+    await createReactionForwardHandler()(source)
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(embedFrom(send.mock.calls[1]![0]).description).toBe('⭐ **3** · 🔥 **2**')
+  })
+  it('paginates beyond 100 users instead of relying on the user cache', async () => {
+    const source = sourceMessage([], {
+      reactions: peopleReactions([
+        ['⭐', Array.from({ length: 103 }, (_, i) => person(i, i < 100))]
+      ])
+    })
+    await createReactionForwardHandler()(source)
+    const reaction = source.reactions.cache.first()!
+    expect(reaction.users.fetch).toHaveBeenCalledTimes(2)
+    expect(reaction.users.fetch).toHaveBeenLastCalledWith({
+      type: ReactionType.Normal,
+      limit: 100,
+      after: person(99).id
+    })
+    expect(embedFrom(send.mock.calls[1]![0]).description).toBe('⭐ **3**')
+  })
+  it('deletes tracked posts when distinct humans fall below 3 despite many reactions', async () => {
+    const source = sourceMessage()
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    source.reactions = peopleReactions([
+      ['⭐', [person(1), person(2), person(3, true)]],
+      ['🔥', [person(1), person(2)]]
+    ]) as never
+    await handler(source)
+    expect(deleteMessage).toHaveBeenCalledTimes(2)
+  })
+  it('fails closed if user enumeration fails, retaining tracked posts for retry', async () => {
+    const source = sourceMessage()
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    vi.mocked(source.reactions.cache.first()!.users.fetch).mockRejectedValueOnce(
+      new Error('users unavailable')
+    )
+    await expect(handler(source)).rejects.toThrow('users unavailable')
+    expect(deleteMessage).not.toHaveBeenCalled()
+    expect(edit).not.toHaveBeenCalled()
+  })
+  it('rechecks distinct people even when per-emoji counts stay unchanged', async () => {
+    const source = sourceMessage([], {
+      reactions: peopleReactions([
+        ['⭐', [person(1), person(2)]],
+        ['🔥', [person(2), person(3)]]
+      ])
+    })
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    source.reactions = peopleReactions([
+      ['⭐', [person(1), person(2)]],
+      ['🔥', [person(1), person(2)]]
+    ]) as never
+    await handler(source)
+    expect(deleteMessage).toHaveBeenCalledTimes(2)
+  })
+  it('bounds stalled reaction user requests', async () => {
+    const source = sourceMessage()
+    vi.mocked(source.reactions.cache.first()!.users.fetch).mockReturnValueOnce(
+      new Promise(() => {})
+    )
+    const failure = expect(createReactionForwardHandler()(source)).rejects.toThrow('timed out')
+    await vi.advanceTimersByTimeAsync(10_000)
+    await failure
+    expect(send).not.toHaveBeenCalled()
+  })
+  it('rejects stalled pagination without forwarding incomplete counts', async () => {
+    const source = sourceMessage([['⭐', 100]])
+    const users = new Collection(Array.from({ length: 100 }, (_, i) => [person(i).id, person(i)]))
+    vi.mocked(source.reactions.cache.first()!.users.fetch).mockResolvedValue(users as never)
+    await expect(createReactionForwardHandler()(source)).rejects.toThrow('pagination stalled')
+    expect(send).not.toHaveBeenCalled()
+  })
+  it('creates one persistent webhook and reuses it to edit summaries, including after restart', async () => {
+    fetchWebhooks.mockResolvedValueOnce(new Collection())
+    const source = sourceMessage()
+    await createReactionForwardHandler()(source)
+    source.reactions = reactions([['⭐', 4]]) as never
+    await createReactionForwardHandler()(source)
+    expect(createWebhook).toHaveBeenCalledExactlyOnceWith({ name: 'solver reaction forward' })
+    expect(edit).toHaveBeenCalledTimes(1)
+    expect(deleteWebhook).not.toHaveBeenCalled()
+    expect(deleteMessage).not.toHaveBeenCalled()
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  it('serializes webhook creation across different source messages', async () => {
+    fetchWebhooks.mockResolvedValueOnce(new Collection())
+    const handler = createReactionForwardHandler()
+    await Promise.all([
+      handler(sourceMessage()),
+      handler(sourceMessage([['⭐', 3]], { id: '1000000000000000009' }))
+    ])
+    expect(createWebhook).toHaveBeenCalledTimes(1)
+    expect(deleteWebhook).not.toHaveBeenCalled()
+  })
+  it('does not reuse a similarly named webhook owned by someone else', async () => {
+    fetchWebhooks.mockResolvedValueOnce(
+      new Collection([['other', { ...webhook, owner: { id: AUTHOR } }]])
+    )
+    await createReactionForwardHandler()(sourceMessage())
+    expect(createWebhook).toHaveBeenCalledTimes(1)
+  })
+  it('uses the parent webhook and thread ID when sending and editing in a thread', async () => {
+    fetchChannel.mockResolvedValue({
+      id: DESTINATION,
+      guildId: GUILD,
+      isSendable: () => true,
+      isThread: () => true,
+      parent: { id: '888888888888888887', fetchWebhooks, createWebhook },
+      send,
+      messages: { delete: deleteMessage }
+    })
+    const source = sourceMessage()
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    expect(send.mock.calls[1]![0].threadId).toBe(DESTINATION)
+    source.reactions = reactions([['⭐', 4]]) as never
+    await handler(source)
+    expect(edit).toHaveBeenCalledWith(SUMMARY, expect.objectContaining({ threadId: DESTINATION }))
+  })
+  it('retains the native forward if webhook creation fails and retries without forwarding again', async () => {
+    fetchWebhooks.mockResolvedValue(new Collection())
+    createWebhook.mockRejectedValueOnce(new Error('missing webhook permission'))
+    const handler = createReactionForwardHandler()
+    const source = sourceMessage()
+    await expect(handler(source)).rejects.toThrow('missing webhook permission')
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`].embedMessageId).toBeNull()
+    await handler(source)
+    expect(send.mock.calls.filter(([payload]) => payload.forward)).toHaveLength(1)
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+  it('migrates old bot summaries once, then edits through the persistent webhook', async () => {
+    const source = sourceMessage()
+    const handler = createReactionForwardHandler()
+    await handler(source)
+    source.reactions = reactions([['⭐', 4]]) as never
+    edit.mockRejectedValueOnce({ code: 50005 })
+    await handler(source)
+    expect(deleteMessage).toHaveBeenCalledExactlyOnceWith(SUMMARY)
+    expect(send).toHaveBeenCalledTimes(3)
+    source.reactions = reactions([['⭐', 5]]) as never
+    await handler(source)
+    expect(send).toHaveBeenCalledTimes(3)
+    expect(edit).toHaveBeenCalledTimes(2)
+  })
   it('enables reaction events and partials for uncached messages', () => {
     expect(
       new IntentsBitField(discordClientOptions.intents).has(GatewayIntentBits.GuildMessageReactions)
@@ -111,7 +370,7 @@ describe('reaction forwarding', () => {
     expect(send).not.toHaveBeenCalled()
     expect(edit).not.toHaveBeenCalled()
   })
-  it('sums different emoji counts, forwards natively once, then sends the author/count embed below it', async () => {
+  it('counts distinct people, forwards natively once, then shows horizontal emoji counts without title or footer', async () => {
     const source = sourceMessage([
       ['⭐', 1],
       ['🔥', 2]
@@ -133,8 +392,9 @@ describe('reaction forwarding', () => {
       name: '작성자',
       url: `https://discord.com/users/${AUTHOR}`
     })
-    expect(summary.description).toBe('⭐ **1**\n🔥 **2**')
-    expect(summary.footer.text).toBe('총 3개 반응')
+    expect(summary.description).toBe('⭐ **1** · 🔥 **2**')
+    expect(summary).not.toHaveProperty('title')
+    expect(summary).not.toHaveProperty('footer')
     expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`]).toMatchObject({
       channelId: DESTINATION,
       forwardedMessageId: FORWARDED,
@@ -286,7 +546,7 @@ describe('reaction forwarding', () => {
     await Promise.all([first, second, third])
     expect(send).toHaveBeenCalledTimes(2)
     expect(edit).toHaveBeenCalledTimes(1)
-    expect(embedFrom(edit.mock.calls[0]![1]).footer.text).toBe('총 7개 반응')
+    expect(embedFrom(edit.mock.calls[0]![1]).description).toBe('🔥 **7**')
     expect(vi.getTimerCount()).toBe(0)
   })
   it('does not lose tracking for different messages updating concurrently', async () => {
@@ -369,6 +629,9 @@ describe('reaction forwarding', () => {
       id: AUTHOR,
       guildId: GUILD,
       isSendable: () => true,
+      isThread: () => false,
+      createWebhook,
+      fetchWebhooks,
       send,
       messages: { edit }
     })
@@ -404,15 +667,18 @@ describe('reaction forwarding', () => {
     expect(send.mock.calls.filter(([payload]) => payload.forward)).toHaveLength(1)
     expect(send).toHaveBeenCalledTimes(3)
   })
-  it('does not advance the persisted signature if an embed edit failed', async () => {
+  it('does not advance the persisted signature if a webhook summary edit failed', async () => {
     const handler = createReactionForwardHandler()
     const source = sourceMessage()
     await handler(source)
-    const previous = getStoredValue(stateKey)
+    const previous = JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`].signature
     source.reactions = reactions([['🔥', 5]]) as never
-    edit.mockRejectedValueOnce(new Error('edit failed'))
-    await expect(handler(source)).rejects.toThrow('edit failed')
-    expect(getStoredValue(stateKey)).toBe(previous)
+    edit.mockRejectedValueOnce(new Error('summary failed'))
+    await expect(handler(source)).rejects.toThrow('summary failed')
+    expect(JSON.parse(getStoredValue(stateKey)!)[`${SOURCE}:${ID}`]).toMatchObject({
+      signature: previous,
+      embedMessageId: SUMMARY
+    })
     await handler(source)
     expect(edit).toHaveBeenCalledTimes(2)
     expect(send).toHaveBeenCalledTimes(2)
@@ -462,6 +728,16 @@ describe('reaction forwarding', () => {
 
 describe('native Discord forwarding REST payload', () => {
   function configureClient(client: Client) {
+    Object.defineProperty(client, 'user', {
+      configurable: true,
+      value: (client.users as unknown as { _add(data: unknown): User })._add({
+        id: BOT,
+        username: 'solver',
+        discriminator: '0',
+        avatar: null,
+        bot: true
+      })
+    })
     const guild = (client.guilds as unknown as { _add(data: unknown): Guild })._add({
       id: GUILD,
       name: 'test',
@@ -530,6 +806,36 @@ describe('native Discord forwarding REST payload', () => {
         vi.spyOn(message, 'fetch').mockResolvedValue(
           message as Awaited<ReturnType<Message['fetch']>>
         )
+        vi.spyOn(message.reactions.cache.first()!.users, 'fetch').mockImplementation(
+          async () =>
+            new Collection(
+              Array.from({ length: message.reactions.cache.first()!.count }, (_, i) => {
+                const id = String(2000000000000000000n + BigInt(i))
+                return [id, { id, bot: false } as import('discord.js').User]
+              })
+            )
+        )
+        const hook = Reflect.construct(Webhook, [
+          message.client,
+          {
+            id: webhook.id,
+            name: webhook.name,
+            token: 'test-webhook-token',
+            type: 1,
+            channel_id: DESTINATION,
+            guild_id: GUILD,
+            user: {
+              id: message.client.user!.id,
+              username: 'solver',
+              discriminator: '0',
+              avatar: null,
+              bot: true
+            }
+          }
+        ]) as Webhook<WebhookType.Incoming>
+        const destination = message.client.channels.cache.get(DESTINATION)!
+        if (!('fetchWebhooks' in destination)) throw new Error('Expected webhook channel')
+        vi.spyOn(destination, 'fetchWebhooks').mockResolvedValue(new Collection([[hook.id, hook]]))
         await handler(message)
         Object.assign(message.reactions.cache.first()!, { count: 2 })
         await handler(message)
@@ -537,7 +843,8 @@ describe('native Discord forwarding REST payload', () => {
     )
     const posts = calls.filter((call) => call.method === 'POST')
     expect(posts).toHaveLength(2)
-    expect(posts.every((call) => call.route === `/channels/${DESTINATION}/messages`)).toBe(true)
+    expect(posts[0]!.route).toBe(`/channels/${DESTINATION}/messages`)
+    expect(posts[1]!.route).toBe(`/webhooks/${webhook.id}/test-webhook-token`)
     expect(posts[0]!.body).toMatchObject({
       message_reference: {
         type: MessageReferenceType.Forward,
@@ -557,6 +864,9 @@ describe('native Discord forwarding REST payload', () => {
       ],
       allowed_mentions: { parse: [], replied_user: false }
     })
+    expect(JSON.stringify(posts[1]!.body)).not.toContain('원본 메시지')
+    expect(JSON.stringify(posts[1]!.body)).not.toContain('총 3개 반응')
+    expect(getStoredValue(stateKey)).not.toContain('test-webhook-token')
     expect(JSON.stringify(posts[0]!.body)).not.toContain('"content":"original"')
     const deletedRoutes = calls
       .filter((call) => call.method === 'DELETE')

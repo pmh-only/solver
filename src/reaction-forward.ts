@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { EmbedBuilder, type Message, type PartialMessage } from 'discord.js'
+import {
+  EmbedBuilder,
+  ReactionType,
+  type Message,
+  type PartialMessage,
+  type Webhook
+} from 'discord.js'
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
 import { getStoredValue, setStoredValue } from './helpers/kv-store.js'
@@ -8,6 +14,8 @@ const THRESHOLD = 3
 const TIMEOUT_MS = 10_000
 const RETENTION_MS = 30 * 24 * 60 * 60_000
 const MAX_RECORDS = 1000
+const WEBHOOK_NAME = 'solver reaction forward'
+const webhookJobs = new Map<string, Promise<Webhook>>()
 const NO_MENTIONS = { parse: [] as const, repliedUser: false }
 const discordId = z.string().regex(/^\d{17,20}$/)
 const recordSchema = z
@@ -68,34 +76,57 @@ async function withTimeout<T>(operation: Promise<T>): Promise<T> {
   }
 }
 
-function reactionSummary(message: Message) {
+async function reactionSummary(message: Message) {
   const reactions = [...message.reactions.cache.values()].filter(
     (reaction) => Number.isSafeInteger(reaction.count) && reaction.count > 0
   )
-  const total = reactions.reduce((sum, reaction) => sum + reaction.count, 0)
+  const people = new Set<string>()
+  const descriptions: string[] = []
+  let requests = 0
+  const deadline = Date.now() + TIMEOUT_MS
+  for (const reaction of reactions) {
+    const reactors = new Set<string>()
+    const types = [ReactionType.Normal]
+    if (reaction.countDetails.burst > 0) types.push(ReactionType.Super)
+    for (const type of types) {
+      let after: string | undefined
+      for (;;) {
+        // Never decide using an incomplete list or cached reaction users.
+        if (++requests > 100 || Date.now() >= deadline) {
+          throw new Error('Reaction user enumeration exceeded its limit')
+        }
+        const users = await withTimeout(reaction.users.fetch({ type, limit: 100, after }))
+        for (const user of users.values()) {
+          if (!user.bot) {
+            reactors.add(user.id)
+            people.add(user.id)
+          }
+        }
+        if (users.size < 100) break
+        const cursor = [...users.keys()].reduce((max, id) => (BigInt(id) > BigInt(max) ? id : max))
+        if (after && BigInt(cursor) <= BigInt(after))
+          throw new Error('Reaction user pagination stalled')
+        after = cursor
+      }
+    }
+    if (reactors.size) descriptions.push(`${reaction.emoji.toString()} **${reactors.size}**`)
+  }
+  const total = people.size
   const embed = new EmbedBuilder()
     .setAuthor({
       name: (message.member?.displayName ?? message.author.username).slice(0, 256),
       iconURL: message.author.displayAvatarURL(),
       url: `https://discord.com/users/${message.author.id}`
     })
-    .setTitle('원본 메시지')
-    .setURL(message.url)
-    .setDescription(
-      reactions
-        .map((reaction) => `${reaction.emoji.toString()} **${reaction.count}**`)
-        .join('\n')
-        .slice(0, 4000) || '반응 없음'
-    )
-    .setFooter({ text: `총 ${total}개 반응` })
-  return { total, embed, signature: hash(JSON.stringify(embed.toJSON())) }
+    .setDescription(descriptions.join(' · ').slice(0, 4000) || '반응 없음')
+  return { total, embed, signature: hash(JSON.stringify({ total, embed: embed.toJSON() })) }
 }
 
 async function syncReactionForward(partial: Message | PartialMessage) {
   if (!partial.guildId) return
   const settings = loadCommunitySettings().reactionForward
   if (!settings || partial.channelId === settings.channelId) return
-  // Always fetch fresh aggregate counts, including for old/uncached messages and removals.
+  // Always fetch fresh reactions and users, including for old/uncached messages and removals.
   const source = await withTimeout(partial.fetch(true))
   if (loadCommunitySettings().reactionForward?.channelId !== settings.channelId) return
   if (
@@ -104,7 +135,7 @@ async function syncReactionForward(partial: Message | PartialMessage) {
     source.id !== partial.id
   )
     return
-  const { total, embed, signature } = reactionSummary(source)
+  const { total, embed, signature } = await reactionSummary(source)
   const key = `${source.channelId}:${source.id}`
   let state: ForwardRecord | undefined = readRecords(partial.guildId)[key]
   if (state?.channelId !== settings.channelId) state = undefined
@@ -171,20 +202,73 @@ async function syncReactionForward(partial: Message | PartialMessage) {
     // Persist before sending the separate author/count embed; retries must not forward again.
     saveRecord(partial.guildId, key, state)
   }
+  const webhookChannel = channel.isThread() ? channel.parent : channel
+  if (
+    !webhookChannel ||
+    !('createWebhook' in webhookChannel) ||
+    !('fetchWebhooks' in webhookChannel)
+  ) {
+    throw new Error('Reaction-forward destination must support webhooks')
+  }
+  const botId = source.client.user?.id
+  if (!botId) throw new Error('Reaction forwarding requires a ready Discord client')
+  // Discover the bot-owned webhook after restarts without persisting its token.
+  // Serialize discovery/creation so different source messages share one webhook.
+  let webhookJob = webhookJobs.get(webhookChannel.id)
+  if (!webhookJob) {
+    if (webhookJobs.size >= 250) throw new Error('Too many reaction-forward webhook jobs')
+    webhookJob = (async () => {
+      const webhooks = await withTimeout(webhookChannel.fetchWebhooks())
+      const existing = webhooks.find(
+        (hook) => hook.isIncoming() && hook.owner?.id === botId && hook.name === WEBHOOK_NAME
+      )
+      return existing ?? (await withTimeout(webhookChannel.createWebhook({ name: WEBHOOK_NAME })))
+    })()
+    webhookJobs.set(webhookChannel.id, webhookJob)
+  }
+  let webhook: Webhook
+  try {
+    webhook = await webhookJob
+  } finally {
+    if (webhookJobs.get(webhookChannel.id) === webhookJob) webhookJobs.delete(webhookChannel.id)
+  }
+  if (!webhook.isIncoming()) throw new Error('Reaction-forward webhook must be incoming')
+  if (loadCommunitySettings().reactionForward?.channelId !== settings.channelId) return
+  const payload = {
+    embeds: [embed],
+    allowedMentions: NO_MENTIONS,
+    ...(channel.isThread() ? { threadId: channel.id } : {})
+  }
+  if (state.embedMessageId) {
+    try {
+      await withTimeout(webhook.editMessage(state.embedMessageId, payload))
+    } catch (error) {
+      // Migrate pre-webhook summaries, or recover a manually removed summary.
+      if (
+        !error ||
+        typeof error !== 'object' ||
+        !('code' in error) ||
+        ![10008, 50005].includes(Number(error.code))
+      )
+        throw error
+      try {
+        await withTimeout(channel.messages.delete(state.embedMessageId))
+      } catch (deletionError) {
+        if (
+          !deletionError ||
+          typeof deletionError !== 'object' ||
+          !('code' in deletionError) ||
+          deletionError.code !== 10008
+        )
+          throw deletionError
+      }
+      state.embedMessageId = null
+      saveRecord(partial.guildId, key, state)
+    }
+  }
   if (!state.embedMessageId) {
-    const summary = await withTimeout(
-      channel.send({
-        embeds: [embed],
-        nonce: nonce('summary'),
-        enforceNonce: true,
-        allowedMentions: NO_MENTIONS
-      })
-    )
+    const summary = await withTimeout(webhook.send(payload))
     state.embedMessageId = summary.id
-  } else {
-    await withTimeout(
-      channel.messages.edit(state.embedMessageId, { embeds: [embed], allowedMentions: NO_MENTIONS })
-    )
   }
   state.signature = signature
   state.updatedAt = Date.now()
