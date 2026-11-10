@@ -2,6 +2,16 @@ import { escapeMarkdown } from 'discord.js'
 
 type Part = { deleted: boolean; value: string }
 
+export function hasMessageEditDeletion(before: string, after: string): boolean {
+  // An insertion-only edit preserves every old code point in the same order.
+  const original = Array.from(before)
+  let matched = 0
+  for (const char of after) {
+    if (char === original[matched]) matched++
+  }
+  return matched < original.length
+}
+
 export function formatMessageEditDiff(before: string, after: string, limit = 3900): string {
   // Work with code points so an edit cannot split an emoji's surrogate pair.
   const old = Array.from(before.slice(0, 4000))

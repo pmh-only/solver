@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { formatMessageEditDiff, formatMessageEditHistory } from '../message-edit-diff.js'
+import {
+  formatMessageEditDiff,
+  formatMessageEditHistory,
+  hasMessageEditDeletion
+} from '../message-edit-diff.js'
+
+describe('deleted text detection', () => {
+  it.each([
+    ['ac', 'abcd', false],
+    ['abc', 'prefix abc suffix', false],
+    ['', 'new', false],
+    ['same', 'same', false],
+    ['a😀c', 'a😀bc', false],
+    ['abc', 'ac', true],
+    ['ab', 'ac', true],
+    ['abc', '', true],
+    ['abc', 'bac', true],
+    ['a😀c', 'a🥲c', true],
+    ['a'.repeat(4000), 'a'.repeat(3999), true]
+  ])('%s → %s: %s', (before, after, expected) => {
+    expect(hasMessageEditDeletion(before, after)).toBe(expected)
+  })
+})
 
 describe('inline edit diffs', () => {
   it.each([

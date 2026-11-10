@@ -12,7 +12,7 @@ import {
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
 import { text } from './components.js'
-import { formatMessageEditHistory } from './message-edit-diff.js'
+import { formatMessageEditHistory, hasMessageEditDeletion } from './message-edit-diff.js'
 import { consumeStoredRateLimit, getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 const RETENTION = 30 * 24 * 60 * 60_000
@@ -112,6 +112,7 @@ export async function recordMessageEdit(
   const before = stored?.versions.at(-1)?.content ?? previousContent
   // Embed, pin and reaction updates are not text edits.
   if (before === content || !message.editedTimestamp) return
+  const hasDeletion = before !== undefined && hasMessageEditDeletion(before, content)
   const versions =
     stored?.versions ?? (before === undefined ? [] : [{ content: before, at: previousAt }])
   versions.push({ content, at: message.editedTimestamp })
@@ -119,10 +120,10 @@ export async function recordMessageEdit(
     authorId: message.author.id,
     channelId: message.channelId,
     updatedAt: Date.now(),
-    edited: true,
+    edited: stored?.edited === true || hasDeletion,
     versions: versions.slice(-10)
   })
-  await withTimeout(message.react('✏️'))
+  if (hasDeletion) await withTimeout(message.react('✏️'))
 }
 
 export function deleteMessageEditHistory(message: Message | PartialMessage) {
