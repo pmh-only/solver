@@ -111,11 +111,10 @@ describe('message edit history', () => {
     const payload = send.mock.calls[0]![0]
     expect(payload.flags).toBe(MessageFlags.IsComponentsV2)
     expect(payload.allowedMentions).toEqual({ parse: [], repliedUser: false })
-    expect(JSON.stringify(payload)).toContain('수정 전')
-    expect(JSON.stringify(payload)).toContain('수정 후')
-    expect(payload.files[0].attachment.toString('utf8')).toContain('수정 전')
-    expect(payload.files[0].attachment.toString('utf8')).toContain('수정 후')
-    expect(payload.components[1].toJSON().file.url).toBe('attachment://message-edit-history.txt')
+    expect(payload.components).toHaveLength(1)
+    expect(payload.components[0].toJSON().content).toBe('수정 ~~전~~후')
+    expect(payload).not.toHaveProperty('files')
+    expect(payload).not.toHaveProperty('embeds')
     expect(dm).not.toHaveBeenCalled()
   })
   it('ignores duplicate updates and metadata-only changes', async () => {

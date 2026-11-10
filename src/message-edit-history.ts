@@ -1,10 +1,7 @@
 import {
-  AttachmentBuilder,
-  FileBuilder,
   ChannelType,
   MessageFlags,
   PermissionFlagsBits,
-  escapeMarkdown,
   type Message,
   type PartialMessage,
   type MessageReaction,
@@ -15,6 +12,7 @@ import {
 import { z } from 'zod'
 import { loadCommunitySettings } from './community-settings.js'
 import { text } from './components.js'
+import { formatMessageEditHistory } from './message-edit-diff.js'
 import { consumeStoredRateLimit, getStoredValue, setStoredValue } from './helpers/kv-store.js'
 
 const RETENTION = 30 * 24 * 60 * 60_000
@@ -185,32 +183,10 @@ export async function showMessageEditHistory(
     return
   if (!loadCommunitySettings().messageEditHistory.enabled || !read(partial.guildId)[partial.id])
     return
-  const history = entry.versions
-    .map(
-      (version, index) =>
-        `**${index + 1}. <t:${Math.floor(version.at / 1000)}:f>**\n${escapeMarkdown(version.content.slice(0, 130)) || '(빈 메시지)'}${version.content.length > 130 ? '…' : ''}`
-    )
-    .join('\n\n')
-  const fullHistory = entry.versions
-    .map(
-      (version, index) =>
-        `${index + 1}. ${new Date(version.at).toISOString()}\n${version.content || '(빈 메시지)'}`
-    )
-    .join('\n\n')
   await withTimeout(
     source.reply({
       flags: MessageFlags.IsComponentsV2,
-      components: [
-        text(
-          `## ✏️ 메시지 수정 기록\n${source.url}\n최근 최대 10개 버전 · 전체 내용은 첨부 파일에서 확인하세요.\n\n${history}`
-        ),
-        new FileBuilder().setURL('attachment://message-edit-history.txt')
-      ],
-      files: [
-        new AttachmentBuilder(Buffer.from(fullHistory, 'utf8'), {
-          name: 'message-edit-history.txt'
-        })
-      ],
+      components: [text(formatMessageEditHistory(entry.versions))],
       allowedMentions: { parse: [], repliedUser: false }
     })
   )
