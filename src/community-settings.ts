@@ -46,6 +46,7 @@ export const communityCommandNames = [
   'color',
   'invite',
   'emoji',
+  'deleted',
   'kickvote'
 ] as const
 export const foodSchema = z
@@ -56,6 +57,12 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  deletedMessages: z
+    .object({
+      enabled: z.boolean().default(true),
+      retentionMinutes: z.number().int().min(1).max(1440).default(60)
+    })
+    .strict(),
   messageEditHistory: z.object({ enabled: z.boolean() }).strict(),
   automodChannelId: z
     .string()
@@ -203,6 +210,10 @@ const communitySettingsFields = {
 export const communitySettingsSchema = z
   .object({
     repeatedMessages: communitySettingsFields.repeatedMessages.default(null),
+    deletedMessages: communitySettingsFields.deletedMessages.default({
+      enabled: true,
+      retentionMinutes: 60
+    }),
     messageEditHistory: communitySettingsFields.messageEditHistory.default({ enabled: true }),
     automodChannelId: communitySettingsFields.automodChannelId.default(null),
     chatModeration: communitySettingsFields.chatModeration.default({

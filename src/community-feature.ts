@@ -16,10 +16,11 @@ import {
   isKickvoteButtonId
 } from './commands/kickvote.js'
 import { createHelpSubcommand } from './commands/help.js'
+import { subcommand as deleted } from './commands/deleted.js'
 import { errorContainer, scheduleEphemeralMessageDelete, sendCommandReply } from './components.js'
 import { safeErrorMessage } from './safe-error.js'
 
-const commands = [...leisureCommands, ...guildCommunityCommands, kickvote]
+const commands = [...leisureCommands, ...guildCommunityCommands, kickvote, deleted]
 commands.push(createHelpSubcommand(commands))
 const byName = new Map(commands.map((command) => [command.name, command]))
 const names = new Set(communityApplicationCommands.map((command) => command.name))
@@ -90,7 +91,7 @@ export function createCommunityFeature(): DiscordFeature {
         if (!interaction.isChatInputCommand()) return
         const command = byName.get(interaction.commandName)!
         const flags: Flags = new Map()
-        if (!['invite', 'anon'].includes(interaction.commandName)) flags.set('pub', true)
+        if (!['invite', 'anon', 'deleted'].includes(interaction.commandName)) flags.set('pub', true)
         markStandaloneContext(flags)
         // Typed Discord options are not shell flags. Preserve message text such as "--pub" verbatim.
         await command.execute(

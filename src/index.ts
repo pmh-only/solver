@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { Client, Collection, Events, REST, Routes } from 'discord.js'
 import { discordClientOptions } from './discord-client-options.js'
 import { createMessageHandler } from './message-handler.js'
+import { registerDeletedMessageTracking } from './deleted-messages.js'
 import { createReactionForwardHandler } from './reaction-forward.js'
 import {
   recordMessageOriginal,
@@ -188,6 +189,7 @@ client.on(Events.InteractionCreate, featureRegistry.createHandler(recoverInterac
 
 const handleMessage = createMessageHandler()
 const handleModeration = createChatModerationHandler()
+registerDeletedMessageTracking(client)
 client.on(Events.MessageCreate, (message) => {
   try {
     recordMessageOriginal(message)

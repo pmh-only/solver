@@ -30,6 +30,7 @@ export const communityApplicationCommands = [
       option.setName('secondary').setDescription('보조 색상 (#rgb 또는 #rrggbb)').setMaxLength(7)
     ),
   guildCommand('invite', '일회용 초대 링크를 비공개로 생성합니다'),
+  guildCommand('deleted', '현재 채널에서 최근 삭제된 메시지를 비공개로 확인합니다'),
   guildCommand('anon', '현재 채널에 익명 메시지를 보냅니다').addStringOption((option) =>
     option
       .setName('message')
