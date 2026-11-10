@@ -56,6 +56,10 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  automodChannelId: z
+    .string()
+    .regex(/^\d{17,20}$/)
+    .nullable(),
   repeatedMessages: z
     .object({
       roleId: z.string().regex(/^\d{17,20}$/),
@@ -198,6 +202,7 @@ const communitySettingsFields = {
 export const communitySettingsSchema = z
   .object({
     repeatedMessages: communitySettingsFields.repeatedMessages.default(null),
+    automodChannelId: communitySettingsFields.automodChannelId.default(null),
     chatModeration: communitySettingsFields.chatModeration.default({
       enabled: true,
       requestsPerMinute: 120

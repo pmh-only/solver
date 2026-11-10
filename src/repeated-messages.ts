@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { MessageType, type Message } from 'discord.js'
+import { EmbedBuilder, MessageType, type Message } from 'discord.js'
 import { loadCommunitySettings } from './community-settings.js'
 import { clearRuntimeIssue, reportRuntimeIssue } from './runtime-health.js'
 
@@ -11,6 +11,45 @@ type Record = {
   attemptedAt?: number
   pending: boolean
   assigned: boolean
+}
+
+async function notifyRoleAssignment(message: Message, roleId: string): Promise<void> {
+  try {
+    const channelId = loadCommunitySettings().automodChannelId
+    if (!channelId) return
+    const channel = await message.guild!.channels.fetch(channelId)
+    if (!channel?.isSendable() || channel.guildId !== message.guildId)
+      throw new Error('Invalid automod destination')
+    if (loadCommunitySettings().automodChannelId !== channelId) return
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xf1c40f)
+          .setTitle('반복 메시지 역할 부여')
+          .addFields(
+            { name: '사용자', value: `<@${message.author.id}> (${message.author.id})` },
+            { name: '부여 역할', value: `<@&${roleId}>` },
+            {
+              name: '원본 메시지',
+              value: `https://discord.com/channels/${message.guildId}/${message.channelId}/${message.id}`
+            }
+          )
+          .setDescription(
+            `**반복 내용**\n${message.content.length > 3000 ? `${message.content.slice(0, 2999)}…` : message.content}`
+          )
+          .setTimestamp()
+      ],
+      allowedMentions: { parse: [], repliedUser: false }
+    })
+    clearRuntimeIssue('repeated_messages_log')
+  } catch {
+    reportRuntimeIssue(
+      'repeated_messages_log',
+      new Error(
+        'Could not send repeated-message log; check /a automodChannelId and channel permissions'
+      )
+    )
+  }
 }
 
 // Only fingerprints and bounded transient metadata are retained, never message text.
@@ -66,10 +105,12 @@ export function createRepeatedMessageHandler() {
         const member = message.member ?? (await message.guild.members.fetch(message.author.id))
         // Settings may have changed while fetching an uncached member.
         if (JSON.stringify(loadCommunitySettings().repeatedMessages) !== signature) return
-        if (!member.roles.cache.has(settings.roleId))
+        const alreadyAssigned = member.roles.cache.has(settings.roleId)
+        if (!alreadyAssigned)
           await member.roles.add(settings.roleId, 'Identical message sent at least five times')
         record.assigned = true
         clearRuntimeIssue('repeated_messages')
+        if (!alreadyAssigned) await notifyRoleAssignment(message, settings.roleId)
       } finally {
         record.pending = false
       }
