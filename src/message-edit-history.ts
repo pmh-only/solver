@@ -158,6 +158,8 @@ export async function showMessageEditHistory(
   if (!partial.guildId) return
   const entry = read(partial.guildId)[partial.id]
   if (!entry?.edited || entry.channelId !== partial.channelId) return
+  const history = formatMessageEditHistory(entry.versions)
+  if (!history) return
   // Bound network work and repeated replies across restarts as well as duplicate events.
   const viewerKey = `${partial.guildId}:${user.id}`
   if ((viewers.get(viewerKey) ?? 0) > Date.now()) return
@@ -187,7 +189,7 @@ export async function showMessageEditHistory(
   await withTimeout(
     source.reply({
       flags: MessageFlags.IsComponentsV2,
-      components: [text(formatMessageEditHistory(entry.versions))],
+      components: [text(history)],
       allowedMentions: { parse: [], repliedUser: false }
     })
   )

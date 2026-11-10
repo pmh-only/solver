@@ -112,7 +112,7 @@ describe('message edit history', () => {
     expect(payload.flags).toBe(MessageFlags.IsComponentsV2)
     expect(payload.allowedMentions).toEqual({ parse: [], repliedUser: false })
     expect(payload.components).toHaveLength(1)
-    expect(payload.components[0].toJSON().content).toBe('수정 ~~전~~후')
+    expect(payload.components[0].toJSON().content).toBe('~~전~~')
     expect(payload).not.toHaveProperty('files')
     expect(payload).not.toHaveProperty('embeds')
     expect(dm).not.toHaveBeenCalled()
@@ -124,6 +124,28 @@ describe('message edit history', () => {
     expect(state().versions).toHaveLength(2)
     await recordMessageEdit(message('a'), message('b'))
     expect(react).toHaveBeenCalledTimes(1)
+  })
+  it('replies with only deleted fragments on one line across multiple edits', async () => {
+    const before = message('abcde')
+    recordMessageOriginal(before)
+    const first = message('aXcdY', { editedTimestamp: Date.now() })
+    await recordMessageEdit(before, first)
+    const second = message('aXcY!', { editedTimestamp: Date.now() + 1 })
+    await recordMessageEdit(first, second)
+    await showMessageEditHistory(reaction(second), user())
+    expect(send.mock.calls[0]![0].components[0].toJSON().content).toBe('~~b~~ ~~e~~ ~~d~~')
+  })
+  it('does not send an empty reply for legacy insertion-only history', async () => {
+    const source = await edited()
+    const entry = state()
+    entry.versions = [
+      { content: 'a', at: Date.now() - 1 },
+      { content: 'ab', at: Date.now() }
+    ]
+    setStoredValue(KEY, JSON.stringify({ [ID]: entry }))
+    await showMessageEditHistory(reaction(source), user())
+    expect(send).not.toHaveBeenCalled()
+    expect(source.fetch).not.toHaveBeenCalled()
   })
   it('uses stored originals when old messages are partial and fetches partial updates', async () => {
     recordMessageOriginal(message())

@@ -23,32 +23,44 @@ describe('deleted text detection', () => {
   })
 })
 
-describe('inline edit diffs', () => {
+describe('deleted-only edit diffs', () => {
   it.each([
-    ['ab', 'ac', 'a~~b~~c'],
-    ['abc', 'ac', 'a~~b~~c'],
-    ['ac', 'abc', 'abc'],
-    ['수정 전', '수정 후', '수정 ~~전~~후'],
-    ['abcde', 'aXcdY', 'a~~b~~Xcd~~e~~Y'],
+    ['ab', 'ac', '~~b~~'],
+    ['abc', 'ac', '~~b~~'],
+    ['ac', 'abc', ''],
+    ['수정 전', '수정 후', '~~전~~'],
+    ['abcde', 'aXcdY', '~~b~~ ~~e~~'],
     ['hello', '', '~~hello~~'],
-    ['', 'hello', 'hello'],
-    ['same', 'same', 'same'],
-    ['a😀c', 'a🥲c', 'a~~😀~~🥲c']
+    ['', 'hello', ''],
+    ['same', 'same', ''],
+    ['a😀c', 'a🥲c', '~~😀~~'],
+    ['hello\nworld', '', '~~hello world~~']
   ])('%s → %s', (before, after, expected) => {
     expect(formatMessageEditDiff(before, after)).toBe(expected)
   })
   it('escapes user markdown without escaping generated strikethrough', () => {
-    expect(formatMessageEditDiff('a*b', 'a*c')).toBe('a\\*~~b~~c')
+    expect(formatMessageEditDiff('a*b', 'a*c')).toBe('~~b~~')
+    expect(formatMessageEditDiff('a*b', 'ab')).toBe('~~\\*~~')
     expect(formatMessageEditDiff('~~', '')).toBe('~~\\~\\~~~')
   })
-  it('shows consecutive edits without titles, dates or explanations', () => {
+  it('shows only removed text from consecutive edits on one line', () => {
     expect(
       formatMessageEditHistory([{ content: 'ab' }, { content: 'ac' }, { content: 'ad' }])
-    ).toBe('a~~b~~c\n\na~~c~~d')
+    ).toBe('~~b~~ ~~c~~')
   })
   it('handles unknown originals and empty text', () => {
-    expect(formatMessageEditHistory([{ content: 'known' }])).toBe('known')
-    expect(formatMessageEditHistory([{ content: '' }])).toBe('\u200b')
+    expect(formatMessageEditHistory([{ content: 'known' }])).toBe('')
+    expect(formatMessageEditHistory([{ content: '' }])).toBe('')
+  })
+  it('omits insertion-only transitions without leaving extra separators', () => {
+    expect(
+      formatMessageEditHistory([
+        { content: 'ab' },
+        { content: 'abc' },
+        { content: 'ac' },
+        { content: 'acd' }
+      ])
+    ).toBe('~~b~~')
   })
   it('bounds large rewrites and closes truncated strikethrough', () => {
     const output = formatMessageEditDiff('a'.repeat(4000), 'b'.repeat(4000), 100)
@@ -60,6 +72,7 @@ describe('inline edit diffs', () => {
       Array.from({ length: 10 }, (_, i) => ({ content: String(i).repeat(4000) }))
     )
     expect(output.length).toBeLessThanOrEqual(3900)
-    expect(output.split('\n\n')).toHaveLength(9)
+    expect(output).not.toContain('\n')
+    expect(output.split(' ')).toHaveLength(9)
   })
 })

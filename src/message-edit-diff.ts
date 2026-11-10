@@ -69,11 +69,12 @@ export function formatMessageEditDiff(before: string, after: string, limit = 390
   append(false, end ? old.slice(old.length - end).join('') : '')
 
   let result = ''
-  for (const part of parts) {
-    const remaining = limit - result.length - (part.deleted ? 4 : 0) - 1
+  for (const part of parts.filter((part) => part.deleted)) {
+    const separator = result ? ' ' : ''
+    const remaining = limit - result.length - separator.length - 5
     let value = ''
     let truncated = false
-    for (const char of part.value) {
+    for (const char of part.value.replace(/[\r\n\u2028\u2029]+/g, ' ')) {
       // These markers are only escaped by escapeMarkdown when seen in context;
       // escape them explicitly because rendering/truncation works per code point.
       const escaped = ['~', '|', '#', '>'].includes(char) ? `\\${char}` : escapeMarkdown(char)
@@ -83,11 +84,10 @@ export function formatMessageEditDiff(before: string, after: string, limit = 390
       }
       value += escaped
     }
-    if (value) result += part.deleted ? `~~${value}~~` : value
+    if (value) result += `${separator}~~${value}~~`
     if (truncated) return result + '…'
   }
-  // Discord rejects empty text displays.
-  return result || '\u200b'
+  return result
 }
 
 export function formatMessageEditHistory(versions: { content: string }[]): string {
@@ -99,5 +99,6 @@ export function formatMessageEditHistory(versions: { content: string }[]): strin
     .map((version, index) =>
       formatMessageEditDiff(versions[index]!.content, version.content, limit)
     )
-    .join('\n\n')
+    .filter(Boolean)
+    .join(' ')
 }
