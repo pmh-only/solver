@@ -108,6 +108,7 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
 })
 
 describe('original pmh-only/bot message commands', () => {
@@ -127,12 +128,63 @@ describe('original pmh-only/bot message commands', () => {
       `${date} (${date.getTime()}) <t:${Math.floor(date.getTime() / 1000)}:R>`
     ])
   })
+  it.each([
+    ['KST', '2026-10-27T09:00:00.000+09:00 [Asia/Seoul]'],
+    ['kst', '2026-10-27T09:00:00.000+09:00 [Asia/Seoul]'],
+    ['Asia/Seoul', '2026-10-27T09:00:00.000+09:00 [Asia/Seoul]'],
+    ['JST', '2026-10-27T09:00:00.000+09:00 [Asia/Tokyo]'],
+    ['UTC', '2026-10-27T00:00:00.000+00:00 [UTC]'],
+    ['GMT', '2026-10-27T00:00:00.000+00:00 [UTC]'],
+    ['America/New_York', '2026-10-26T20:00:00.000-04:00 [America/New_York]'],
+    ['Asia/Kathmandu', '2026-10-27T05:45:00.000+05:45 [Asia/Kathmandu]']
+  ])('formats !!now %s in the requested time zone', async (zone, expected) => {
+    const date = new Date()
+    const calls = await run(`!!now ${zone}`)
+    expect(replies(calls)).toEqual([
+      `${expected} (${date.getTime()}) <t:${Math.floor(date.getTime() / 1000)}:R>`
+    ])
+    expect(calls.find((call) => call.method === 'POST')?.body).toMatchObject({
+      allowed_mentions: { parse: [], replied_user: false }
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['2026-01-15T12:00:00Z', '2026-01-15T07:00:00.000-05:00'],
+    ['2026-07-15T12:00:00Z', '2026-07-15T08:00:00.000-04:00']
+  ])('applies IANA daylight saving rules on %s', async (instant, expected) => {
+    vi.setSystemTime(new Date(instant))
+    expect(replies(await run('!!now America/New_York'))[0]).toContain(expected)
+  })
+  it('supports the configured ! prefix, whitespace and per-request overrides without changing defaults', async () => {
+    vi.stubEnv('AGENT_TZ', 'UTC')
+    manageCommunitySettings({ action: 'update', settings: { messageCommands: { prefix: '!' } } })
+    expect(replies(await run('!now\tKST  '))[0]).toContain('+09:00 [Asia/Seoul]')
+    expect(replies(await run('!now Asia/Seoul'))[0]).toContain('+09:00 [Asia/Seoul]')
+    expect(replies(await run('!now'))[0]).toBe(
+      `${new Date()} (${Date.now()}) <t:${Math.floor(Date.now() / 1000)}:R>`
+    )
+    expect(process.env.AGENT_TZ).toBe('UTC')
+    expect(replies(await run('!!now KST'))).toEqual([])
+  })
+  it.each(['Mars/Base', 'not-a-zone'])(
+    'rejects unsupported time zones instead of silently using the host zone (%s)',
+    async (zone) => {
+      const result = replies(await run(`!!now ${zone}`))
+      expect(result).toHaveLength(1)
+      expect(result[0]).toContain('지원하지 않는 시간대')
+      expect(result[0]).not.toContain('<t:')
+    }
+  )
+  it('shows usage for multiple time-zone arguments without matching other command names', async () => {
+    expect(replies(await run('!!now KST extra'))).toEqual(['!!now [KST|JST|UTC|GMT|IANA 시간대]'])
+    expect(replies(await run('!!nowhere KST'))).toEqual([])
+  })
   it('keeps the exact original help text and command grammar', async () => {
     expect(replies(await run('!!help'))).toEqual([
       [
         '!!help - show commands',
         '!!ping - pong',
-        '!!now - current time',
+        '!!now [KST|JST|UTC|GMT|IANA timezone] - current time',
         '!!set <match> [...reply] - add or delete a set command',
         '!!list - list set command keys',
         '!!pizza - show pizza index',

@@ -1,6 +1,15 @@
 // Command bodies ported from pmh-only/bot (MIT, Copyright (c) 2026 Minhyeok Park).
-// Only imports, I/O dependencies, and TypeScript types are adapted here.
+// Imports, I/O dependencies and types are adapted; now also supports per-request time zones.
 // See docs/community-integration.md for the upstream license.
+
+import { formatAgentDateTime } from '../../helpers/timezone.js'
+
+const timeZoneAliases = new Map([
+  ['KST', 'Asia/Seoul'],
+  ['JST', 'Asia/Tokyo'],
+  ['UTC', 'UTC'],
+  ['GMT', 'UTC']
+])
 
 export interface SetRecord {
   content: string
@@ -37,10 +46,32 @@ export function createOriginalBotCommands({
   }
 
   const nowFn: CommandRunner = (_client, message) => {
-    if (message.content !== PREFIX + 'now') return
+    const [command, ...args] = message.content.trim().split(/\s+/)
+    if (command !== PREFIX + 'now') return
+    if (args.length > 1) {
+      message.reply({
+        content: `${PREFIX}now [KST|JST|UTC|GMT|IANA 시간대]`,
+        allowedMentions: { parse: [] }
+      })
+      return
+    }
     const date = new Date()
+    let formatted = String(date)
+    if (args.length) {
+      const input = args[0]!
+      const timeZone = timeZoneAliases.get(input.toUpperCase()) ?? input
+      try {
+        formatted = formatAgentDateTime(date, timeZone)
+      } catch {
+        message.reply({
+          content: `지원하지 않는 시간대입니다. 예: ${PREFIX}now KST / ${PREFIX}now Asia/Seoul`,
+          allowedMentions: { parse: [] }
+        })
+        return
+      }
+    }
     message.reply({
-      content: `${date} (${date.getTime()}) <t:${Math.floor(date.getTime() / 1000)}:R>`,
+      content: `${formatted} (${date.getTime()}) <t:${Math.floor(date.getTime() / 1000)}:R>`,
       allowedMentions: { parse: [] }
     })
   }
@@ -90,6 +121,8 @@ export function createOriginalBotCommands({
       source = groups[2] ?? ''
       target = args[2] ?? ''
     }
+    // Do not fetch currency data for unrelated commands such as now <timezone>.
+    if (!source || !target) return
     const currencies = (await fetch(
       'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/' +
         source +
@@ -138,7 +171,7 @@ export function createOriginalBotCommands({
       content: [
         PREFIX + 'help - show commands',
         PREFIX + 'ping - pong',
-        PREFIX + 'now - current time',
+        PREFIX + 'now [KST|JST|UTC|GMT|IANA timezone] - current time',
         PREFIX + 'set <match> [...reply] - add or delete a set command',
         PREFIX + 'list - list set command keys',
         PREFIX + 'pizza - show pizza index',
