@@ -56,6 +56,10 @@ beforeEach(() => {
   clearRuntimeIssuesForTests()
   vi.clearAllMocks()
   has.mockReturnValue(false)
+  add.mockImplementation(async () => {
+    has.mockReturnValue(true)
+  })
+  fetch.mockResolvedValue({ roles: { add, cache: { has } } })
   channelFetch.mockResolvedValue({
     guildId: '111111111111111111',
     isSendable: () => true,
@@ -225,14 +229,14 @@ describe('repeated message roles', () => {
     expect(sendLog).not.toHaveBeenCalled()
     const source = message({ content: 'repeated @everyone <@555555555555555555>' })
     await handler(source)
-    expect(channelFetch).toHaveBeenCalledWith(LOG_CHANNEL)
+    expect(channelFetch).toHaveBeenCalledWith(LOG_CHANNEL, { force: true })
     expect(add.mock.invocationCallOrder[0]).toBeLessThan(sendLog.mock.invocationCallOrder[0]!)
     const payload = sendLog.mock.calls[0]![0] as {
-      embeds: { toJSON(): unknown }[]
+      content: string
       allowedMentions: unknown
     }
     expect(payload.allowedMentions).toEqual({ parse: [], repliedUser: false })
-    const rendered = JSON.stringify(payload.embeds[0]!.toJSON())
+    const rendered = payload.content
     expect(rendered).toContain(source.content)
     expect(rendered).toContain(source.author.id)
     expect(rendered).toContain(ROLE)
@@ -269,6 +273,7 @@ describe('repeated message roles', () => {
     await send(createRepeatedMessageHandler())
     manageCommunitySettings({ action: 'update', settings: { automodChannelId: LOG_CHANNEL } })
     manageCommunitySettings({ action: 'update', settings: { automodChannelId: null } })
+    has.mockReturnValue(false)
     await send(createRepeatedMessageHandler())
     expect(add).toHaveBeenCalledTimes(2)
     expect(channelFetch).not.toHaveBeenCalled()
@@ -311,18 +316,83 @@ describe('repeated message roles', () => {
     expect(sendLog).toHaveBeenCalledOnce()
     expect(runtimeIssueSummary()).toContain('repeated_messages_log')
     expect(runtimeIssueSummary()).not.toContain('sensitive text')
+    has.mockReturnValue(false)
     await send(handler, 5, { content: 'another repeated message' })
     expect(runtimeIssueSummary()).not.toContain('repeated_messages_log')
   })
 
-  it('truncates repeated content to stay within Discord embed limits', async () => {
+  it('uses bounded plain-text logs without needing Embed Links permission', async () => {
     configure()
     manageCommunitySettings({ action: 'update', settings: { automodChannelId: LOG_CHANNEL } })
     await send(createRepeatedMessageHandler(), 5, { content: 'x'.repeat(4000) })
-    const payload = sendLog.mock.calls[0]![0] as { embeds: { toJSON(): { description: string } }[] }
-    const description = payload.embeds[0]!.toJSON().description
-    expect(description.length).toBeLessThan(4096)
-    expect(description).toContain('x'.repeat(2999))
-    expect(description).toMatch(/…$/)
+    const payload = sendLog.mock.calls[0]![0] as { content: string }
+    expect(payload).not.toHaveProperty('embeds')
+    expect(payload.content.length).toBeLessThanOrEqual(2000)
+    expect(payload.content).toContain('x'.repeat(1499))
+    expect(payload.content).toMatch(/…$/)
+  })
+
+  it('uses fresh membership even when the gateway member incorrectly has the role cached', async () => {
+    configure()
+    const stale = { roles: { add, cache: { has: () => true } } }
+    await send(createRepeatedMessageHandler(), 5, { member: stale })
+    expect(fetch).toHaveBeenCalledWith({ user: '555555555555555555', force: true })
+    expect(add).toHaveBeenCalledOnce()
+  })
+
+  it('reassigns a manually removed role after five new repeats, even for the same text', async () => {
+    configure()
+    manageCommunitySettings({ action: 'update', settings: { automodChannelId: LOG_CHANNEL } })
+    const handler = createRepeatedMessageHandler()
+    await send(handler)
+    expect(add).toHaveBeenCalledOnce()
+    has.mockReturnValue(false)
+    await send(handler, 4)
+    expect(add).toHaveBeenCalledOnce()
+    await handler(message())
+    expect(add).toHaveBeenCalledTimes(2)
+    expect(sendLog).toHaveBeenCalledTimes(2)
+  })
+
+  it('rechecks roles after five new messages without duplicate role additions or logs', async () => {
+    configure()
+    manageCommunitySettings({ action: 'update', settings: { automodChannelId: LOG_CHANNEL } })
+    const handler = createRepeatedMessageHandler()
+    await send(handler)
+    await send(handler, 10)
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(add).toHaveBeenCalledOnce()
+    expect(sendLog).toHaveBeenCalledOnce()
+  })
+
+  it('does not log a role assignment if settings change during the fresh member fetch', async () => {
+    configure()
+    fetch.mockImplementationOnce(async () => {
+      configure(OTHER_ROLE)
+      return { roles: { add, cache: { has } } }
+    })
+    await send(createRepeatedMessageHandler())
+    expect(add).not.toHaveBeenCalled()
+    expect(sendLog).not.toHaveBeenCalled()
+  })
+
+  it('reports the Discord code and failed operation without leaking service errors', async () => {
+    configure()
+    add.mockRejectedValueOnce(Object.assign(new Error('secret body'), { code: 50013, status: 403 }))
+    await send(createRepeatedMessageHandler())
+    expect(runtimeIssueSummary()).toContain('stage=role_add; discord_code=50013; http_status=403')
+    expect(runtimeIssueSummary()).not.toContain('secret body')
+  })
+
+  it('distinguishes log-send errors from role assignment errors', async () => {
+    configure()
+    manageCommunitySettings({ action: 'update', settings: { automodChannelId: LOG_CHANNEL } })
+    sendLog.mockRejectedValueOnce(
+      Object.assign(new Error('secret token'), { code: 50001, status: 403 })
+    )
+    await send(createRepeatedMessageHandler())
+    expect(runtimeIssueSummary()).toContain('stage=log_send; discord_code=50001; http_status=403')
+    expect(runtimeIssueSummary()).not.toContain('secret token')
+    expect(add).toHaveBeenCalledOnce()
   })
 })
