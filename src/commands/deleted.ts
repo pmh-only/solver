@@ -3,15 +3,13 @@ import type { Subcommand } from '../types.js'
 import { commandContainer, sendCommandReply, summarySection, text } from '../components.js'
 import { loadCommunitySettings } from '../community-settings.js'
 import { deletedMessageHistory } from '../deleted-messages.js'
-import { markStandaloneContext } from '../flags.js'
-import type { Flags } from '../flags.js'
 
 export const subcommand: Subcommand = {
   name: 'deleted',
-  description: '현재 채널에서 최근 삭제된 메시지를 비공개로 확인합니다',
+  description: '현재 채널에서 최근 삭제된 메시지를 함께 확인합니다',
   usage: '/deleted',
   examples: ['/deleted'],
-  async execute(interaction) {
+  async execute(interaction, _args, flags) {
     if (!interaction.guildId || !interaction.isChatInputCommand())
       throw new Error('서버에서만 사용할 수 있습니다.')
     const settings = loadCommunitySettings()
@@ -22,9 +20,6 @@ export const subcommand: Subcommand = {
     const required = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
     if (!interaction.memberPermissions?.has(required) || !interaction.appPermissions?.has(required))
       throw new Error('사용자와 봇 모두 채널 보기 및 메시지 기록 보기 권한이 필요합니다.')
-    // Always ephemeral, with no publish/retry controls, even if called with public flags.
-    const flags: Flags = new Map()
-    markStandaloneContext(flags)
     const records = deletedMessageHistory.recent(interaction.guildId, interaction.channelId)
     await sendCommandReply(
       interaction,

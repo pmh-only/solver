@@ -204,7 +204,7 @@ describe('guild /deleted routing', () => {
     })
   })
 
-  it('allows ordinary members to view only their channel, privately and without publishing controls', async () => {
+  it('allows ordinary members to publicly show only their channel without publishing controls', async () => {
     deletedMessageHistory.capture(message())
     deletedMessageHistory.capture(
       message({ channelId: '888888888888888888', content: 'other channel secret' })
@@ -213,7 +213,7 @@ describe('guild /deleted routing', () => {
       message({ guildId: '444444444444444444', content: 'other guild secret' })
     )
     const callback = await run()
-    expect(callback.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(callback.data.flags & MessageFlags.Ephemeral).toBeFalsy()
     expect(callback.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
     const rendered = JSON.stringify(callback.data.components)
     expect(rendered).toContain('deleted human text')
@@ -225,7 +225,9 @@ describe('guild /deleted routing', () => {
   })
 
   it('shows a truthful empty state when no cached deletion is available', async () => {
-    const rendered = JSON.stringify((await run()).data.components)
+    const callback = await run()
+    expect(callback.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+    const rendered = JSON.stringify(callback.data.components)
     expect(rendered).toContain('최근 삭제된 메시지가 없습니다')
     expect(rendered).toContain('재시작하면')
   })
@@ -248,7 +250,9 @@ describe('guild /deleted routing', () => {
     }
   ])('requires current channel/history permissions for user and bot (%j)', async (overrides) => {
     deletedMessageHistory.capture(message())
-    const rendered = JSON.stringify(await run(overrides))
+    const callback = await run(overrides)
+    expect(callback.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    const rendered = JSON.stringify(callback)
     expect(rendered).toContain('권한이 필요')
     expect(rendered).not.toContain('deleted human text')
   })
