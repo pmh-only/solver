@@ -56,6 +56,7 @@ export const foodSchema = z
   .strict()
 
 const communitySettingsFields = {
+  messageEditHistory: z.object({ enabled: z.boolean() }).strict(),
   automodChannelId: z
     .string()
     .regex(/^\d{17,20}$/)
@@ -202,6 +203,7 @@ const communitySettingsFields = {
 export const communitySettingsSchema = z
   .object({
     repeatedMessages: communitySettingsFields.repeatedMessages.default(null),
+    messageEditHistory: communitySettingsFields.messageEditHistory.default({ enabled: true }),
     automodChannelId: communitySettingsFields.automodChannelId.default(null),
     chatModeration: communitySettingsFields.chatModeration.default({
       enabled: true,
@@ -243,6 +245,7 @@ export const manageCommunitySettingsSchema = z.object({
     'reset',
     'reset-message-replies',
     'reset-reaction-forwards',
+    'reset-message-edit-history',
     'reset-chat-moderation',
     'reset-role-chat-relationships'
   ]),
@@ -322,7 +325,9 @@ export function manageCommunitySettings(input: unknown): CommunitySettings {
       ? 'community:message-bot:'
       : action === 'reset-reaction-forwards'
         ? 'community:reaction-forward:'
-        : null
+        : action === 'reset-message-edit-history'
+          ? 'community:message-edit-history:'
+          : null
   if (resetPrefix) {
     for (const key of listStoredKeys()) if (key.startsWith(resetPrefix)) deleteStoredValue(key)
   }

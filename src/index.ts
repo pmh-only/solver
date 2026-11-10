@@ -3,6 +3,13 @@ import { Client, Collection, Events, REST, Routes } from 'discord.js'
 import { discordClientOptions } from './discord-client-options.js'
 import { createMessageHandler } from './message-handler.js'
 import { createReactionForwardHandler } from './reaction-forward.js'
+import {
+  recordMessageOriginal,
+  recordMessageEdit,
+  deleteMessageEditHistory,
+  deleteMessagesEditHistory,
+  showMessageEditHistory
+} from './message-edit-history.js'
 import { createChatModerationHandler, createModerationReactionHandler } from './chat-moderation.js'
 import type { Subcommand } from './types.js'
 import { areApplicationCommandsCurrent } from './application-commands.js'
@@ -182,13 +189,35 @@ client.on(Events.InteractionCreate, featureRegistry.createHandler(recoverInterac
 const handleMessage = createMessageHandler()
 const handleModeration = createChatModerationHandler()
 client.on(Events.MessageCreate, (message) => {
+  try {
+    recordMessageOriginal(message)
+  } catch (error) {
+    reportRuntimeIssue('message_edit_history', error)
+  }
   void handleModeration(message)
   void handleMessage(message).catch(() => {
     console.error('message handling failed')
   })
 })
-client.on(Events.MessageUpdate, (_previous, message) => {
+client.on(Events.MessageUpdate, (previous, message) => {
+  void recordMessageEdit(previous, message).catch((error) =>
+    reportRuntimeIssue('message_edit_history', error)
+  )
   void handleModeration(message)
+})
+client.on(Events.MessageDelete, (message) => {
+  try {
+    deleteMessageEditHistory(message)
+  } catch (error) {
+    reportRuntimeIssue('message_edit_history', error)
+  }
+})
+client.on(Events.MessageBulkDelete, (messages) => {
+  try {
+    deleteMessagesEditHistory(messages.values())
+  } catch (error) {
+    reportRuntimeIssue('message_edit_history', error)
+  }
 })
 
 const handleReactionForward = createReactionForwardHandler()
@@ -199,6 +228,9 @@ const syncReactions = (message: Parameters<typeof handleReactionForward>[0]) => 
 }
 const handleModerationReaction = createModerationReactionHandler(handleModeration)
 client.on(Events.MessageReactionAdd, (reaction, user) => {
+  void showMessageEditHistory(reaction, user).catch((error) =>
+    reportRuntimeIssue('message_edit_history', error)
+  )
   syncReactions(reaction.message)
   void handleModerationReaction(reaction, user)
 })
