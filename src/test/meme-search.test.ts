@@ -75,13 +75,16 @@ it('configures and disables meme search through persisted /a settings', () => {
 it('returns the image URL with only two API requests and no image download', async () => {
   configureGiphy()
   fetchMock
-    .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+    )
     .mockResolvedValueOnce(
       Response.json({ original: { url: 'https://s3.lth.so/memehub/file?signature=test' } })
     )
   expect(await findMemeContent('gp2 engine')).toEqual(imageResult)
   expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe('sfw')
   expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('content_type')).toBe(false)
   expect(fetchMock.mock.calls[0][1]).toMatchObject({
     redirect: 'error',
@@ -92,6 +95,41 @@ it('stops after an empty Memehub search when no GIPHY key is configured', async 
   fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
   expect(await findMemeContent('missing')).toBeNull()
   expect(fetchMock).toHaveBeenCalledOnce()
+})
+it.each(['image', 'audio', 'text'] as const)(
+  'never delivers %s results unless explicitly rated SFW',
+  async (type) => {
+    for (const rating of ['nsfw', undefined, null, 'unknown', 'SFW', '']) {
+      fetchMock.mockReset()
+      fetchMock.mockResolvedValueOnce(
+        Response.json({
+          items: [{ id: ID, content_type: type, safety_rating: rating, body_text: 'unsafe' }]
+        })
+      )
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { message, send } = fixture()
+      const play = vi.fn()
+      await createMemeSearchHandler(findMemeContent, play)(message as unknown as Message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(send).not.toHaveBeenCalled()
+      expect(play).not.toHaveBeenCalled()
+      expect(message.delete).not.toHaveBeenCalled()
+      expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe(
+        'sfw'
+      )
+    }
+  }
+)
+it('uses the existing safe GIPHY fallback when Memehub returns a non-SFW result', async () => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'nsfw' }] })
+    )
+    .mockResolvedValueOnce(Response.json({ data: [{ images: { original: { url: gif } } }] }))
+  expect(await findMemeContent('query')).toEqual({ type: 'image', content: gif })
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(new URL(String(fetchMock.mock.calls[1][0])).hostname).toBe('api.giphy.com')
 })
 it('falls back to GIPHY and delivers the GIF through the existing webhook', async () => {
   configureGiphy()
@@ -180,7 +218,9 @@ it.each(['malformed', 'oversized', 'timeout', 'http'])(
 )
 it('returns audio URLs without downloading or re-uploading media', async () => {
   fetchMock
-    .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'audio' }] }))
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'audio', safety_rating: 'sfw' }] })
+    )
     .mockResolvedValueOnce(Response.json({ original: { url: image } }))
   const { message, send } = fixture()
   await createMemeSearchHandler()(message as unknown as Message)
@@ -192,7 +232,9 @@ it('returns audio URLs without downloading or re-uploading media', async () => {
 it('sends text bodies verbatim without a media request or mention notifications', async () => {
   const body = '첫 줄\n@everyone <@123456789012345678> **밈**'
   fetchMock.mockResolvedValueOnce(
-    Response.json({ items: [{ id: ID, content_type: 'text', body_text: body }] })
+    Response.json({
+      items: [{ id: ID, content_type: 'text', safety_rating: 'sfw', body_text: body }]
+    })
   )
   const { message, send } = fixture()
   await createMemeSearchHandler()(message as unknown as Message)
@@ -255,7 +297,11 @@ it.each([2000, 2001, 10_000])(
   'bounds %i-character text to the Discord content limit',
   async (size) => {
     fetchMock.mockResolvedValueOnce(
-      Response.json({ items: [{ id: ID, content_type: 'text', body_text: '가'.repeat(size) }] })
+      Response.json({
+        items: [
+          { id: ID, content_type: 'text', safety_rating: 'sfw', body_text: '가'.repeat(size) }
+        ]
+      })
     )
     expect(await findMemeContent('query')).toEqual({
       type: 'text',
@@ -269,7 +315,9 @@ it.each([undefined, null, '', ' \n ', 123, 'x'.repeat(10_001)])(
   async (body) => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     fetchMock.mockResolvedValueOnce(
-      Response.json({ items: [{ id: ID, content_type: 'text', body_text: body }] })
+      Response.json({
+        items: [{ id: ID, content_type: 'text', safety_rating: 'sfw', body_text: body }]
+      })
     )
     const { message, send } = fixture()
     await createMemeSearchHandler()(message as unknown as Message)
@@ -282,7 +330,9 @@ it.each(['http://s3.lth.so/file', 'https://127.0.0.1/file', 'https://s3.lth.so.e
   'rejects unsafe media %s',
   async (url) => {
     fetchMock
-      .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
+      .mockResolvedValueOnce(
+        Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+      )
       .mockResolvedValueOnce(Response.json({ original: { url } }))
     await expect(findMemeContent('query')).rejects.toThrow()
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -408,7 +458,9 @@ it('does not reuse someone else’s webhook', async () => {
 
 it('rejects image URLs exceeding the Discord content limit', async () => {
   fetchMock
-    .mockResolvedValueOnce(Response.json({ items: [{ id: ID, content_type: 'image' }] }))
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+    )
     .mockResolvedValueOnce(
       Response.json({ original: { url: `https://s3.lth.so/${'x'.repeat(2000)}` } })
     )

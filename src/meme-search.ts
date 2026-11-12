@@ -14,10 +14,15 @@ const resultsSchema = z.object({
   items: z
     .array(
       z.discriminatedUnion('content_type', [
-        z.object({ id: z.string().uuid(), content_type: z.enum(['image', 'audio']) }),
+        z.object({
+          id: z.string().uuid(),
+          content_type: z.enum(['image', 'audio']),
+          safety_rating: z.string().optional()
+        }),
         z.object({
           id: z.string().uuid(),
           content_type: z.literal('text'),
+          safety_rating: z.string().optional(),
           body_text: z
             .string()
             .max(10_000)
@@ -83,9 +88,9 @@ async function findGiphyContent(query: string): Promise<MemeContent | null> {
 }
 
 export async function findMemeContent(query: string): Promise<MemeContent | null> {
-  const params = new URLSearchParams({ q: query, limit: '1' })
+  const params = new URLSearchParams({ q: query, limit: '1', safety_rating: 'sfw' })
   const result = resultsSchema.parse(await apiJson(new URL(`memes?${params}`, API))).items[0]
-  if (!result) return findGiphyContent(query)
+  if (!result || result.safety_rating !== 'sfw') return findGiphyContent(query)
   if (result.content_type === 'text') {
     return {
       type: 'text',
