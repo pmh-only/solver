@@ -304,21 +304,6 @@ async function api(path, opt = {}) {
   }
   return r
 }
-async function readUpdates(r, onUpdate) {
-  let reader = r.body.getReader(),
-    decoder = new TextDecoder(),
-    buffer = ''
-  while (true) {
-    let { done, value } = await reader.read()
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-    let lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (let line of lines) {
-      if (line) onUpdate(JSON.parse(line))
-    }
-    if (done) break
-  }
-}
 async function interaction(target, customId, values = [], fields) {
   if (state.pending.has(customId)) return
   state.pending.add(customId)
@@ -335,32 +320,18 @@ async function interaction(target, customId, values = [], fields) {
   controls.forEach((x) => (x.disabled = true))
   try {
     let r = await api('/api/chat/interaction', {
-        method: 'POST',
-        body: JSON.stringify({ customId, values, ...(fields ? { fields } : {}) })
-      }),
-      reader = r.body.getReader(),
-      decoder = new TextDecoder(),
-      buffer = ''
-    while (true) {
-      let { done, value } = await reader.read()
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-      let lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (let line of lines) {
-        if (!line) continue
-        let update = JSON.parse(line)
-        if (update.error) throw new Error(update.error)
-        if (update.modal) {
-          openModal(update.modal, target)
-          status.textContent = ''
-          continue
-        }
-        if (update.payload) {
-          target.innerHTML = payload(update.payload)
-        }
+      method: 'POST',
+      body: JSON.stringify({ customId, values, ...(fields ? { fields } : {}) })
+    })
+    await readUpdates(r, (update) => {
+      if (update.error) throw new Error(update.error)
+      if (update.modal) {
+        openModal(update.modal, target)
+        status.textContent = ''
+        return
       }
-      if (done) break
-    }
+      if (update.payload) target.innerHTML = payload(update.payload)
+    })
   } catch (err) {
     status = target.querySelector?.('.interaction-status') || status
     status.className = 'interaction-status status error'
@@ -891,21 +862,11 @@ async function sendPrompt(prompt, name, settings) {
       pending.querySelector('.body').innerHTML = '<span class="status">Starting assistant...</span>'
     }
     let body = { prompt, sessionName: name, ...settings },
-      r = await api('/api/chat', { method: 'POST', body: JSON.stringify(body) }),
-      reader = r.body.getReader(),
-      decoder = new TextDecoder(),
-      buffer = ''
+      r = await api('/api/chat', { method: 'POST', body: JSON.stringify(body) })
     if (settings.debug) browserTiming.responseHeaders = performance.now() - browserStarted
-    while (true) {
-      let { done, value } = await reader.read()
-      if (settings.debug && value?.length && browserTiming.firstByte === undefined)
-        browserTiming.firstByte = performance.now() - browserStarted
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-      let lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (let line of lines) {
-        if (!line) continue
-        let update = JSON.parse(line)
+    await readUpdates(
+      r,
+      (update) => {
         if (update.timing) serverTiming = update.timing
         if (update.runId) {
           runId = update.runId
@@ -925,9 +886,12 @@ async function sendPrompt(prompt, name, settings) {
         if (target && update.error)
           target.querySelector('.body').innerHTML =
             '<span class="status error">' + esc(update.error) + '</span>'
+      },
+      () => {
+        if (settings.debug && browserTiming.firstByte === undefined)
+          browserTiming.firstByte = performance.now() - browserStarted
       }
-      if (done) break
-    }
+    )
     if (settings.debug) {
       browserTiming.streamComplete = performance.now() - browserStarted
       if (assistantIndex !== undefined)

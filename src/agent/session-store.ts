@@ -8,6 +8,7 @@ import {
 import { loadOpenAIEndpoint } from '../openai-config.js'
 import { AGENT_EFFORT_OPTIONS } from './config.js'
 import { activeDiscordRuns, activeWebRuns, sessionQueues } from './runtime-state.js'
+import { agentSession, type AgentSession } from './session-identity.js'
 import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
@@ -36,7 +37,7 @@ export function selectSession(sessionName: string): void {
   setStoredValue(GPT_SELECTED_SESSION_KEY, sessionName)
 }
 
-export function sessionKey(sessionName: string): string {
+export function sessionKey({ name: sessionName }: AgentSession): string {
   return `${GPT_SESSION_KEY}:${encodeURIComponent(sessionName)}`
 }
 
@@ -49,34 +50,32 @@ function sessionIsIdle(sessionName: string, now: number): boolean {
   return Number.isFinite(lastActivity) && now - lastActivity >= GPT_SESSION_IDLE_TIMEOUT_MS
 }
 
-export function beginSessionCommand(userId: string, sessionName: string): void {
-  void userId
+export function beginSessionCommand(session: AgentSession): void {
+  const sessionName = session.name
   const now = Date.now()
-  if (sessionIsIdle(sessionName, now)) clearConversation(sessionName)
+  if (sessionIsIdle(sessionName, now)) clearConversation(session)
   setStoredValue(sessionActivityKey(sessionName), String(now))
 }
 
-export function finishSessionCommand(userId: string, sessionName: string): void {
-  void userId
-  setStoredValue(sessionActivityKey(sessionName), String(Date.now()))
+export function finishSessionCommand(session: AgentSession): void {
+  setStoredValue(sessionActivityKey(session.name), String(Date.now()))
 }
 
-export function resetIdleSession(userId: string, sessionName: string): void {
-  void userId
-  const key = sessionKey(sessionName)
+export function resetIdleSession(session: AgentSession): void {
+  const key = sessionKey(session)
   if (
     sessionQueues.has(key) ||
     activeWebRuns.has(key) ||
     activeDiscordRuns.has(key) ||
-    !sessionIsIdle(sessionName, Date.now())
+    !sessionIsIdle(session.name, Date.now())
   ) {
     return
   }
-  clearConversation(sessionName)
+  clearConversation(session)
 }
 
-export function clearConversation(sessionName: string): void {
-  setStoredValue(sessionKey(sessionName), '[]')
+export function clearConversation(session: AgentSession): void {
+  setStoredValue(sessionKey(session), '[]')
 }
 
 function addStoredSessionNames(sessions: Set<string>, stored: string | undefined): void {
@@ -91,8 +90,7 @@ function addStoredSessionNames(sessions: Set<string>, stored: string | undefined
   }
 }
 
-export function loadAgentSessionNames(userId: string): string[] {
-  void userId
+export function loadAgentSessionNames(): string[] {
   const sessions = new Set([DEFAULT_SESSION_NAME])
   addStoredSessionNames(sessions, getStoredValue(GPT_SESSIONS_KEY))
   addStoredSessionNames(sessions, getStoredValue(GPT_WEB_SESSIONS_KEY))
@@ -117,9 +115,9 @@ export function loadAgentSessionNames(userId: string): string[] {
   )
 }
 
-export function registerAgentSession(userId: string, sessionName: string): void {
-  const sessions = new Set(loadAgentSessionNames(userId))
-  sessions.add(sessionName)
+export function registerAgentSession(session: AgentSession): void {
+  const sessions = new Set(loadAgentSessionNames())
+  sessions.add(session.name)
   setStoredValue(GPT_SESSIONS_KEY, JSON.stringify([...sessions]))
 }
 
@@ -127,15 +125,15 @@ function settingsKey(sessionName: string): string {
   return `${GPT_SETTINGS_KEY}:${encodeURIComponent(sessionName)}`
 }
 
-export function deleteInternalAgentSession(sessionName: string): void {
+export function deleteInternalAgentSession(session: AgentSession): void {
+  const sessionName = session.name
   if (!sessionName.startsWith('__feature:')) throw new Error('not an internal feature session')
-  deleteStoredValue(sessionKey(sessionName))
+  deleteStoredValue(sessionKey(session))
   deleteStoredValue(sessionActivityKey(sessionName))
   deleteStoredValue(settingsKey(sessionName))
 }
 
-export function loadSessionSettings(userId: string, sessionName: string): GptSessionSettings {
-  void userId
+export function loadSessionSettings({ name: sessionName }: AgentSession): GptSessionSettings {
   const defaults: GptSessionSettings = {
     model: DEFAULT_MODEL,
     effort: 'medium',
@@ -169,11 +167,9 @@ export function loadSessionSettings(userId: string, sessionName: string): GptSes
 }
 
 export function storeSessionSettings(
-  userId: string,
-  sessionName: string,
+  { name: sessionName }: AgentSession,
   settings: GptSessionSettings
 ): void {
-  void userId
   setStoredValue(settingsKey(sessionName), JSON.stringify(settings))
 }
 
@@ -222,12 +218,11 @@ function legacyAgentMessages(history: ConversationTurn[]): MessageData[] {
   }))
 }
 
-export function loadConversation(userId: string, sessionName: string): StoredConversation {
-  void userId
-  const key = sessionKey(sessionName)
+export function loadConversation(session: AgentSession): StoredConversation {
+  const key = sessionKey(session)
   const stored = getStoredValue(key)
   if (stored === undefined) {
-    clearConversation(sessionName)
+    clearConversation(session)
     return { version: 2, turns: [], messages: [] }
   }
 
@@ -267,7 +262,7 @@ export function storeConversation(
   status: ConversationTurn['status'] = 'complete'
 ): void {
   setStoredValue(
-    sessionKey(ctx.sessionName),
+    sessionKey(agentSession(ctx.sessionName)),
     JSON.stringify({
       version: 2,
       turns: [
@@ -287,7 +282,7 @@ export function storeConversation(
 }
 
 export function loadContextConversation(ctx: GptContext): void {
-  const conversation = loadConversation(ctx.userId, ctx.sessionName)
+  const conversation = loadConversation(agentSession(ctx.sessionName))
   const responseState = conversation.responseState
   const canContinueResponse =
     responseState?.model === ctx.model && responseState.endpoint === loadOpenAIEndpoint()
@@ -312,12 +307,10 @@ export function fallbackTurnMessages(ctx: GptContext, assistantText: string): Me
 }
 
 export async function runInSession(
-  userId: string,
-  sessionName: string,
+  session: AgentSession,
   operation: () => Promise<void>
 ): Promise<void> {
-  void userId
-  const key = sessionKey(sessionName)
+  const key = sessionKey(session)
   const previous = sessionQueues.get(key) ?? Promise.resolve()
   const current = previous.catch(() => {}).then(operation)
   sessionQueues.set(key, current)

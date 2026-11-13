@@ -830,7 +830,7 @@ describe('/a', () => {
     ).toBe(true)
     const mode = loadDiscordSessionMode('666666666666666666', 'work')
     expect(mode.private).toBe(true)
-    expect(loadWebSessionState('web-user').sessions).not.toContain(mode.privateSession)
+    expect(loadWebSessionState().sessions).not.toContain(mode.privateSession)
     const publicCalls = await dispatch(agentCommandJSON('/public'), subs)
     expect(JSON.stringify(publicCalls)).toContain('is now public')
     expect(agentMock).toHaveBeenCalledTimes(1)
@@ -852,7 +852,7 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('private confidential detail'), subs)
     expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
     const mode = loadDiscordSessionMode('666666666666666666', 'default')
-    expect(() => loadWebConversation('web-user', mode.privateSession)).toThrow('reserved')
+    expect(() => loadWebConversation(mode.privateSession)).toThrow('reserved')
     await dispatch(agentCommandJSON('/public'), subs)
     await dispatch(agentCommandJSON('public follow-up'), subs)
     expect(JSON.stringify(agentMock.mock.calls.at(-1)?.[0].messages)).toContain('public baseline')
@@ -2185,7 +2185,7 @@ describe('/a', () => {
   })
 
   it('creates and lists web sessions with their persisted settings', async () => {
-    const created = createWebSession('web-user', 'project notes')
+    const created = createWebSession('project notes')
 
     expect(created).toEqual({
       sessions: ['default', 'project notes'],
@@ -2210,7 +2210,7 @@ describe('/a', () => {
       async () => undefined
     )
 
-    expect(loadWebSessionState('web-user', 'project notes')).toEqual({
+    expect(loadWebSessionState('project notes')).toEqual({
       sessions: ['default', 'project notes'],
       selectedSession: 'project notes',
       settings: {
@@ -2220,7 +2220,19 @@ describe('/a', () => {
         toolsEnabled: false
       }
     })
-    expect(() => createWebSession('web-user', ' ')).toThrow('Session name must not be empty')
+    expect(() => createWebSession(' ')).toThrow('Session name must not be empty')
+  })
+
+  it('rejects private/internal names at web session selectors and the agent entrypoint', async () => {
+    const sessionName = '__feature:private:opaque'
+    expect(() => createWebSession(sessionName)).toThrow('reserved')
+    expect(() => loadWebSessionState(sessionName)).toThrow('reserved')
+    expect(() => loadWebConversation(sessionName)).toThrow('reserved')
+    await expect(cancelWebAgent(sessionName)).rejects.toThrow('reserved')
+    await expect(
+      runWebAgent({ userId: 'web-user', sessionName, prompt: 'test' }, async () => {})
+    ).rejects.toThrow('reserved')
+    expect(streamMock).not.toHaveBeenCalled()
   })
 
   it('streams Components V2 text through web updates before the final payload', async () => {
@@ -2250,7 +2262,7 @@ describe('/a', () => {
     )
 
     await vi.waitFor(() => {
-      const active = loadWebConversation('web-user', 'work')
+      const active = loadWebConversation('work')
       expect(active.at(-1)).toMatchObject({
         role: 'assistant',
         status: 'running',
@@ -2260,10 +2272,10 @@ describe('/a', () => {
       expect(active.at(-1)?.content).not.toContain('Working through the request.')
     })
 
-    await expect(cancelWebAgent('web-user', 'work', 'run-one')).resolves.toBe(true)
+    await expect(cancelWebAgent('work', 'run-one')).resolves.toBe(true)
     await running
 
-    expect(loadWebConversation('web-user', 'work')).toEqual([
+    expect(loadWebConversation('work')).toEqual([
       { role: 'user', content: 'long request' },
       expect.objectContaining({
         role: 'assistant',
@@ -2287,10 +2299,10 @@ describe('/a', () => {
     )
     await vi.waitFor(() => expect(streamMock).toHaveBeenCalled())
 
-    await expect(cancelWebAgent('web-user', 'default', 'waiting-run')).resolves.toBe(true)
+    await expect(cancelWebAgent('default', 'waiting-run')).resolves.toBe(true)
     await running
 
-    expect(loadWebConversation('web-user')).toEqual([
+    expect(loadWebConversation()).toEqual([
       { role: 'user', content: 'wait for deployment' },
       expect.objectContaining({ role: 'assistant', status: 'cancelled' })
     ])
@@ -2302,7 +2314,7 @@ describe('/a', () => {
       { userId: 'web-user', prompt: 'first request', runId: 'first-run' },
       async () => undefined
     )
-    await vi.waitFor(() => expect(loadWebConversation('web-user').at(-1)?.status).toBe('running'))
+    await vi.waitFor(() => expect(loadWebConversation().at(-1)?.status).toBe('running'))
 
     const second = runWebAgent(
       { userId: 'web-user', prompt: 'replacement request', runId: 'second-run' },
@@ -2310,7 +2322,7 @@ describe('/a', () => {
     )
     await Promise.all([first, second])
 
-    expect(loadWebConversation('web-user')).toEqual([
+    expect(loadWebConversation()).toEqual([
       { role: 'user', content: 'first request' },
       expect.objectContaining({ role: 'assistant', status: 'cancelled' }),
       { role: 'user', content: 'replacement request' },
@@ -2328,13 +2340,9 @@ describe('/a', () => {
 
   it('shares session discovery between Discord and the web UI', async () => {
     await dispatch(agentCommandJSON('from Discord', {}, 'discord session'), subs)
-    createWebSession('666666666666666666', 'web session')
+    createWebSession('web session')
 
-    expect(loadWebSessionState('666666666666666666').sessions).toEqual([
-      'default',
-      'discord session',
-      'web session'
-    ])
+    expect(loadWebSessionState().sessions).toEqual(['default', 'discord session', 'web session'])
 
     const calls = await dispatch(agentSessionAutocompleteJSON('web'), subs)
     const body = getCallback(calls) as { data: { choices: Array<{ name: string; value: string }> } }
@@ -2342,11 +2350,11 @@ describe('/a', () => {
   })
 
   it('shares the selected session and conversation between Discord and the web UI', async () => {
-    createWebSession('666666666666666666', 'shared session')
+    createWebSession('shared session')
     await dispatch(agentCommandJSON('sent from Discord'), subs)
 
-    expect(loadWebSessionState('666666666666666666').selectedSession).toBe('shared session')
-    expect(loadWebConversation('666666666666666666', 'shared session')[0]).toEqual({
+    expect(loadWebSessionState().selectedSession).toBe('shared session')
+    expect(loadWebConversation('shared session')[0]).toEqual({
       role: 'user',
       content: 'sent from Discord'
     })
@@ -2354,8 +2362,13 @@ describe('/a', () => {
 
   it('uses the same session namespace for an unrelated OIDC subject', async () => {
     await dispatch(agentCommandJSON('sent from Discord'), subs)
+    await runWebAgent(
+      { userId: 'oidc|unrelated-subject', prompt: 'sent from OIDC' },
+      async () => {}
+    )
+    expectStoredAgentHistory(-1, 'sent from Discord')
 
-    expect(loadWebConversation('oidc|unrelated-subject', 'default')[0]).toEqual({
+    expect(loadWebConversation('default')[0]).toEqual({
       role: 'user',
       content: 'sent from Discord'
     })
@@ -2366,7 +2379,7 @@ describe('/a', () => {
     const running = dispatch(agentCommandJSON('sent from Discord'), subs)
 
     await vi.waitFor(() => {
-      const conversation = loadWebConversation('666666666666666666', 'default')
+      const conversation = loadWebConversation('default')
       expect(conversation).toEqual([
         { role: 'user', content: 'sent from Discord', status: 'running' },
         expect.objectContaining({
@@ -2383,7 +2396,7 @@ describe('/a', () => {
     await vi.waitFor(() => expect(streamRelease.resolve).toBeTypeOf('function'))
     streamRelease.resolve!()
     await running
-    expect(loadWebConversation('666666666666666666', 'default')).toEqual([
+    expect(loadWebConversation('default')).toEqual([
       { role: 'user', content: 'sent from Discord' },
       expect.objectContaining({ role: 'assistant' })
     ])
@@ -2393,11 +2406,7 @@ describe('/a', () => {
     setStoredValue('gpt-web-sessions', JSON.stringify(['legacy web']))
     setStoredValue('gpt-session:legacy%20discord', '[]')
 
-    expect(loadWebSessionState('shared-user').sessions).toEqual([
-      'default',
-      'legacy discord',
-      'legacy web'
-    ])
+    expect(loadWebSessionState().sessions).toEqual(['default', 'legacy discord', 'legacy web'])
   })
 
   it('passes through and persists a model outside the suggestion list', async () => {
@@ -2419,7 +2428,7 @@ describe('/a', () => {
       expect.objectContaining({ modelId: 'vendor/custom-model-preview' })
     )
     expect(getStoredValue('gpt-settings:custom')).toContain('"model":"vendor/custom-model-preview"')
-    expect(loadWebSessionState('shared-user').settings.model).toBe('vendor/custom-model-preview')
+    expect(loadWebSessionState().settings.model).toBe('vendor/custom-model-preview')
   })
 
   it.each([
@@ -2462,7 +2471,7 @@ describe('/a', () => {
       toolsEnabled: false,
       [key]: value
     }
-    expect(loadWebSessionState('shared-user').settings).toEqual(settings)
+    expect(loadWebSessionState().settings).toEqual(settings)
     expect(modelMock).toHaveBeenLastCalledWith(expect.objectContaining({ modelId: settings.model }))
   })
 
@@ -2479,7 +2488,7 @@ describe('/a', () => {
     await dispatch(agentCommandJSON('remember this'), subs)
 
     now += 60 * 60 * 1000
-    expect(loadWebConversation('666666666666666666')).toEqual([])
+    expect(loadWebConversation()).toEqual([])
     await dispatch(agentCommandJSON('new topic'), subs)
 
     expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
@@ -2492,7 +2501,7 @@ describe('/a', () => {
     await runWebAgent({ userId: 'web-user', prompt: 'remember this' }, async () => undefined)
 
     now += 60 * 60 * 1000
-    expect(loadWebConversation('web-user')).toEqual([])
+    expect(loadWebConversation()).toEqual([])
     await runWebAgent({ userId: 'web-user', prompt: 'new topic' }, async () => undefined)
 
     expect(agentMock.mock.calls.at(-1)?.[0]).toMatchObject({ messages: [] })
@@ -2784,7 +2793,7 @@ describe('/a', () => {
     expect(renderedJson).toContain('▶️')
     expect(renderedJson).toContain('Unavailable')
     expect(renderedJson).not.toContain('sender_only')
-    expect(loadWebConversation('web-user').at(-1)?.content).toBe(renderedJson)
+    expect(loadWebConversation().at(-1)?.content).toBe(renderedJson)
 
     responsePayloads.push({
       components: [{ type: 10, content: 'Continued from the button' }],
@@ -2801,7 +2810,7 @@ describe('/a', () => {
       expect.anything()
     )
     expect(JSON.stringify(interactionUpdates.at(-1))).toContain('Continued from the button')
-    expect(loadWebConversation('web-user')).toEqual([
+    expect(loadWebConversation()).toEqual([
       { role: 'user', content: 'give me choices' },
       expect.objectContaining({ role: 'assistant', content: expect.stringContaining('Continued') })
     ])

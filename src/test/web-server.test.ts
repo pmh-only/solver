@@ -84,8 +84,16 @@ describe('web server', () => {
         name: 'Restricted user',
         ...flags
       })
-      const headers = { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' }
-      for (const path of ['/api/admin/oidc', '/api/admin/system-prompt', '/api/admin/openai-token']) {
+      const headers = {
+        Cookie: cookie,
+        'X-CSRF-Token': csrfToken,
+        'Content-Type': 'application/json'
+      }
+      for (const path of [
+        '/api/admin/oidc',
+        '/api/admin/system-prompt',
+        '/api/admin/openai-token'
+      ]) {
         const read = await fetch(`${origin}${path}`, { headers })
         expect(read.status).toBe(403)
         const write = await fetch(`${origin}${path}`, { method: 'PUT', headers, body: '{}' })
@@ -106,12 +114,17 @@ describe('web server', () => {
     const html = await response.text()
     const script = await (await fetch(`${origin}/app.js`)).text()
     const markdownScript = await (await fetch(`${origin}/markdown.js`)).text()
+    const streamScript = await fetch(`${origin}/stream.js`)
 
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
     expect(response.headers.get('content-security-policy')).toContain('frame-ancestors')
     expect(html).toContain('<h1>Ask Solver from anywhere.</h1>')
     expect(html).toContain('id="composer"')
+    expect(streamScript.status).toBe(200)
+    expect(streamScript.headers.get('content-type')).toBe('text/javascript; charset=utf-8')
+    expect(html.indexOf('src="/stream.js"')).toBeGreaterThan(-1)
+    expect(html.indexOf('src="/stream.js"')).toBeLessThan(html.indexOf('src="/app.js"'))
     expect(script).toContain("if (prompt === '/clear')")
     expect(html).toContain('name="viewport"')
     expect(html).not.toContain('<aside')

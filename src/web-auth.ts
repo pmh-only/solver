@@ -39,7 +39,7 @@ export interface WebUser {
   discordId?: string
 }
 
-interface WebSession {
+export interface WebSession {
   user: WebUser
   csrfToken: string
   expiresAt: number

@@ -34,14 +34,13 @@ import {
   storeGptContext
 } from './interaction-context.js'
 import {
-  buildAgentCancelledPayload,
   buildAgentProgressPayload,
   buildGptComponents,
   footerSessionName,
   makeCallbacks,
   tokenFromId
 } from './response-renderer.js'
-import { activeDiscordRuns, cancelActiveSession, type ActiveDiscordRun } from './runtime-state.js'
+import { cancelActiveSession } from './runtime-state.js'
 import {
   DEFAULT_SESSION_NAME,
   GPT_ACTION_COMPONENT_ID,
@@ -60,7 +59,6 @@ import {
   clearConversation,
   deleteInternalAgentSession,
   finishSessionCommand,
-  loadContextConversation,
   loadSelectedSession,
   loadSessionSettings,
   registerAgentSession,
@@ -69,10 +67,11 @@ import {
   sessionKey,
   storeSessionSettings
 } from './session-store.js'
-import { runGptStream } from './stream-runner.js'
+import { runActiveAgentContext, runAgentContext } from './run-lifecycle.js'
 import type { StoredDiscordFeature } from '../helpers/discord-feature-store.js'
 import { safeErrorMessage } from '../safe-error.js'
 import { loadDiscordSessionMode, setDiscordSessionMode } from './session-privacy.js'
+import { agentSession } from './session-identity.js'
 
 type SelectKey = 'model' | 'effort' | 'verbosity'
 
@@ -110,8 +109,8 @@ async function handleGptSelect(
 
   const updatedCtx: GptContext = { ...ctx, [key]: value }
   if (key === 'model' || key === 'effort') {
-    storeSessionSettings(ctx.userId, ctx.sessionName, {
-      ...loadSessionSettings(ctx.userId, ctx.sessionName),
+    storeSessionSettings(agentSession(ctx.sessionName), {
+      ...loadSessionSettings(agentSession(ctx.sessionName)),
       [key]: value
     })
   }
@@ -138,15 +137,7 @@ async function handleGptSelect(
     )
   )
 
-  try {
-    await runGptStream(callbacks, updatedCtx, token)
-  } finally {
-    if (updatedCtx.components.length === 0 && Object.keys(updatedCtx.modals).length === 0) {
-      deleteGptContext(token)
-    } else {
-      storeGptContext(token, updatedCtx)
-    }
-  }
+  await runAgentContext(updatedCtx, token, callbacks, { loadHistory: false })
 }
 
 export async function handleGptModelSelect(
@@ -191,25 +182,13 @@ async function continueGptComponentInteraction(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
-  await runInSession(ctx.userId, ctx.sessionName, async () => {
-    // Shared public components may be clicked by someone other than the requester.
-    // Never reuse the original command author's history-search identity for a click.
-    delete ctx.archiveSearchContext
-    loadContextConversation(ctx)
-    ctx.prompt = JSON.stringify({
-      type: 'discord_component',
-      custom_id: componentId,
-      values
-    })
-    storeGptContext(token, ctx)
-    try {
-      await runGptStream(callbacks, ctx, token, signal)
-    } finally {
-      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-        deleteGptContext(token)
-      } else {
-        storeGptContext(token, ctx)
-      }
+  await runAgentContext(ctx, token, callbacks, {
+    signal,
+    prepare: () => {
+      // Public clicks must not inherit the original requester's archive identity.
+      delete ctx.archiveSearchContext
+      ctx.prompt = JSON.stringify({ type: 'discord_component', custom_id: componentId, values })
+      return ctx
     }
   })
 }
@@ -310,15 +289,11 @@ export async function handleGptModalSubmit(interaction: ModalSubmitInteraction):
   })
 
   await interaction.deferUpdate()
-  await runInSession(ctx.userId, ctx.sessionName, async () => {
-    loadContextConversation(ctx)
-    ctx.prompt = JSON.stringify({ type: 'discord_modal_submit', trigger_id: triggerId, fields })
-    storeGptContext(token, ctx)
-    await runGptStream(makeCallbacks(interaction, ctx.pub), ctx, token)
-    if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-      deleteGptContext(token)
-    } else {
-      storeGptContext(token, ctx)
+  await runAgentContext(ctx, token, makeCallbacks(interaction, ctx.pub), {
+    prepare: () => {
+      delete ctx.archiveSearchContext
+      ctx.prompt = JSON.stringify({ type: 'discord_modal_submit', trigger_id: triggerId, fields })
+      return ctx
     }
   })
 }
@@ -343,7 +318,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     throw new Error('Session name is reserved for internal sessions')
   if (!privateArchive) {
     selectSession(logicalSession)
-    registerAgentSession(interaction.user.id, logicalSession)
+    registerAgentSession(agentSession(logicalSession))
   }
   const mode = modeCommand
     ? setDiscordSessionMode(
@@ -408,11 +383,12 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
   if (prompt === '/clear' && !privateArchive) {
     const clearStarted = performance.now()
     await interaction.deferReply(privateSession ? { flags: MessageFlags.Ephemeral } : {})
-    cancelActiveSession(sessionKey(sessionName))
-    await runInSession(interaction.user.id, sessionName, async () => {
-      beginSessionCommand(interaction.user.id, sessionName)
+    const session = agentSession(sessionName)
+    cancelActiveSession(sessionKey(session))
+    await runInSession(session, async () => {
+      beginSessionCommand(session)
       try {
-        clearConversation(sessionName)
+        clearConversation(session)
         await interaction.editReply({
           content: null,
           components: [
@@ -427,7 +403,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
           allowedMentions: { parse: [] }
         })
       } finally {
-        finishSessionCommand(interaction.user.id, sessionName)
+        finishSessionCommand(session)
       }
     })
     timing?.span('clear session and deliver response', clearStarted)
@@ -440,7 +416,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     return
   }
 
-  const storedSettings = loadSessionSettings(interaction.user.id, sessionName)
+  const storedSettings = loadSessionSettings(agentSession(sessionName))
   const requestedModel = interaction.options.getString('model')
   const requestedEffort = interaction.options.getString('effort') as EffortLevel | null
   const requestedMaxTokens = interaction.options.getInteger('tokens')
@@ -451,7 +427,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     maxTokens: requestedMaxTokens ?? storedSettings.maxTokens,
     toolsEnabled: requestedToolsEnabled ?? storedSettings.toolsEnabled
   }
-  storeSessionSettings(interaction.user.id, sessionName, settings)
+  storeSessionSettings(agentSession(sessionName), settings)
   const pub = !privateSession
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
@@ -501,7 +477,7 @@ export async function handleAgentCommand(interaction: ChatInputCommandInteractio
     aborted = await runDiscordAgentContext(interaction, ctx, token, startedAt, timing)
   } finally {
     if (privateArchive) {
-      deleteInternalAgentSession(sessionName)
+      deleteInternalAgentSession(agentSession(sessionName))
       deleteGptContext(token)
       resetSessionSystemPrompt(interaction.user.id, sessionName)
     }
@@ -521,7 +497,7 @@ export async function runDynamicAgentFeature(
   pub: boolean
 ): Promise<void> {
   const sessionName = `__feature:${feature.id}:${interaction.user.id}`
-  const settings = loadSessionSettings(interaction.user.id, loadSelectedSession())
+  const settings = loadSessionSettings(agentSession(loadSelectedSession()))
   const token = randomUUID().replace(/-/g, '').slice(0, 16)
   const ctx: GptContext = {
     prompt: input,
@@ -627,7 +603,7 @@ export function deleteDynamicAgentFeatureSessions(
   userIds: Iterable<string>
 ): void {
   for (const userId of userIds) {
-    deleteInternalAgentSession(`__feature:${featureId}:${userId}`)
+    deleteInternalAgentSession(agentSession(`__feature:${featureId}:${userId}`))
   }
 }
 
@@ -650,64 +626,18 @@ async function runDiscordAgentContext(
   timing?.span('initial Discord response', phaseStarted)
 
   const callbacks = makeCallbacks(interaction, ctx.pub)
-  const key = sessionKey(ctx.sessionName)
-  cancelActiveSession(key)
-  const active: ActiveDiscordRun = {
-    prompt: ctx.prompt,
-    startedAt: new Date().toISOString(),
-    controller: new AbortController(),
-    latestPayload: buildAgentProgressPayload(ctx),
-    persisted: false
-  }
-  activeDiscordRuns.set(key, active)
-  try {
-    const queueStarted = performance.now()
-    await runInSession(ctx.userId, ctx.sessionName, async () => {
-      timing?.span('session queue wait', queueStarted)
-      const sharedCallbacks: StreamCallbacks = {
-        editMain: callbacks.editMain,
-        editPayload: async (payload) => {
-          active.latestPayload = payload
-          await callbacks.editPayload(payload)
-        },
-        stored: () => {
-          active.persisted = true
-        }
-      }
-      beginSessionCommand(ctx.userId, ctx.sessionName)
-      try {
-        if (active.controller.signal.aborted) {
-          await callbacks.editPayload(
-            buildAgentCancelledPayload(ctx, { reasoning: '', tools: [], responseStarted: false })
-          )
-          return
-        }
-        const loadStarted = performance.now()
-        if (resetConversation) clearConversation(ctx.sessionName)
-        loadContextConversation(ctx)
-        timing?.span('conversation load', loadStarted)
-        storeGptContext(token, ctx)
-        await runGptStream(sharedCallbacks, ctx, token, active.controller.signal, timing)
-      } finally {
-        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-          deleteGptContext(token)
-        } else {
-          storeGptContext(token, ctx)
-        }
-        finishSessionCommand(ctx.userId, ctx.sessionName)
-      }
-    })
-  } finally {
-    if (activeDiscordRuns.get(key) === active) activeDiscordRuns.delete(key)
-  }
-  if (!active.controller.signal.aborted && Date.now() - startedAt >= SLOW_RESPONSE_MS) {
+  const aborted = await runActiveAgentContext('discord', ctx, token, callbacks, {
+    timing,
+    resetConversation
+  })
+  if (!aborted && Date.now() - startedAt >= SLOW_RESPONSE_MS) {
     await interaction.followUp({
       content: '완료되었습니다.',
       ...(!ctx.pub ? { flags: MessageFlags.Ephemeral } : {}),
       allowedMentions: { parse: [] }
     })
   }
-  return active.controller.signal.aborted
+  return aborted
 }
 
 async function sendDiscordTiming(

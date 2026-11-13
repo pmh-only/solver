@@ -20,6 +20,8 @@ import {
   TextInputStyle,
   TextDisplayBuilder
 } from 'discord.js'
+import type { RepliableInteraction } from 'discord.js'
+import { deliverInteractionReply, type ReplyMode } from './interaction-reply.js'
 import { randomUUID } from 'node:crypto'
 import type { CommandInteraction, CommandRunResult, Subcommand } from './types.js'
 import type { Flags } from './flags.js'
@@ -666,64 +668,40 @@ export async function deferCommandResponse(interaction: CommandInteraction, flag
 }
 
 export async function sendCommandReply(
-  interaction: CommandInteraction,
-  payload: ReturnType<typeof container>
+  interaction: RepliableInteraction,
+  payload: ReturnType<typeof container>,
+  mode: ReplyMode = 'command'
 ) {
-  if (interaction.deferred) {
-    const message = (await interaction.editReply({
-      components: payload.components,
-      files: payload.files,
-      attachments: [],
-      flags: MessageFlags.IsComponentsV2
-    })) as { id?: string }
-    if (typeof message.id === 'string') {
-      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags)
-    }
-    if (payload.commandInput && typeof message.id === 'string') {
-      rememberCommandInputForMessage(message.id, payload.commandInput)
-    }
-    return
+  const delivery = await deliverInteractionReply(
+    interaction,
+    {
+      initial: payload,
+      edit: {
+        components: payload.components,
+        files: payload.files,
+        attachments: [],
+        flags: MessageFlags.IsComponentsV2
+      }
+    },
+    mode,
+    Boolean(payload.commandInput) || hasEphemeralFlag(payload.flags)
+  )
+  rememberDelivery(interaction, delivery, payload.flags)
+  if (payload.commandInput && delivery.messageId) {
+    rememberCommandInputForMessage(delivery.messageId, payload.commandInput)
   }
+}
 
-  if (interaction.isButton() || interaction.isStringSelectMenu()) {
-    await interaction.update({
-      components: payload.components,
-      files: payload.files,
-      attachments: [],
-      flags: MessageFlags.IsComponentsV2
-    })
-    scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags)
-    if (payload.commandInput) {
-      rememberCommandInputForMessage(interaction.message.id, payload.commandInput)
-    }
-    return
-  }
-
-  if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
-    await interaction.deferUpdate()
-    const message = (await interaction.editReply({
-      components: payload.components,
-      files: payload.files,
-      attachments: [],
-      flags: MessageFlags.IsComponentsV2
-    })) as { id?: string }
-    const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
-    scheduleEphemeralReplyDelete(interaction, messageId, payload.flags)
-    if (payload.commandInput) {
-      rememberCommandInputForMessage(messageId, payload.commandInput)
-    }
-    return
-  }
-
-  await interaction.reply(payload)
-  if (payload.commandInput || hasEphemeralFlag(payload.flags)) {
-    const message = (await interaction.fetchReply()) as { id?: string }
-    if (typeof message.id === 'string') {
-      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags)
-    }
-    if (payload.commandInput && typeof message.id === 'string') {
-      rememberCommandInputForMessage(message.id, payload.commandInput)
-    }
+function rememberDelivery(
+  interaction: RepliableInteraction,
+  delivery: { messageId?: string; followUp: boolean },
+  flags: number | readonly number[]
+) {
+  if (!delivery.messageId) return
+  if (delivery.followUp) {
+    scheduleEphemeralMessageDelete(interaction.webhook, delivery.messageId, flags)
+  } else {
+    scheduleEphemeralReplyDelete(interaction, delivery.messageId, flags)
   }
 }
 
@@ -731,47 +709,16 @@ export async function sendPlainTextReply(
   interaction: CommandInteraction,
   payload: PlainTextReplyPayload
 ) {
-  if (interaction.deferred) {
-    const message = (await interaction.editReply({
-      content: payload.content,
-      components: payload.components,
-      attachments: []
-    })) as { id?: string }
-    if (typeof message.id === 'string') {
-      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags ?? 0)
-    }
-    return
-  }
-
-  if (interaction.isButton() || interaction.isStringSelectMenu()) {
-    await interaction.update({
-      content: payload.content,
-      components: payload.components,
-      attachments: []
-    })
-    scheduleEphemeralReplyDelete(interaction, interaction.message.id, payload.flags ?? 0)
-    return
-  }
-
-  if (interaction.isModalSubmit() && 'message' in interaction && interaction.message) {
-    await interaction.deferUpdate()
-    const message = (await interaction.editReply({
-      content: payload.content,
-      components: payload.components,
-      attachments: []
-    })) as { id?: string }
-    const messageId = typeof message.id === 'string' ? message.id : interaction.message.id
-    scheduleEphemeralReplyDelete(interaction, messageId, payload.flags ?? 0)
-    return
-  }
-
-  await interaction.reply(payload)
-  if (hasEphemeralFlag(payload.flags ?? 0)) {
-    const message = (await interaction.fetchReply()) as { id?: string }
-    if (typeof message.id === 'string') {
-      scheduleEphemeralReplyDelete(interaction, message.id, payload.flags ?? 0)
-    }
-  }
+  const delivery = await deliverInteractionReply(
+    interaction,
+    {
+      initial: payload,
+      edit: { content: payload.content, components: payload.components, attachments: [] }
+    },
+    'command',
+    hasEphemeralFlag(payload.flags ?? 0)
+  )
+  rememberDelivery(interaction, delivery, payload.flags ?? 0)
 }
 
 function toComponents(result: CommandRunResult): TopLevelComponent[] {
@@ -788,18 +735,7 @@ export async function runRerunnableCommand(
   await deferCommandResponse(interaction, flags)
   const result = await run()
   const reply = commandContainer(subcommand, args, flags, ...toComponents(result))
-  const message = (await interaction.editReply({
-    components: reply.components,
-    files: reply.files,
-    attachments: [],
-    flags: MessageFlags.IsComponentsV2
-  })) as { id?: string }
-
-  if (typeof message.id === 'string') {
-    scheduleEphemeralReplyDelete(interaction, message.id, reply.flags)
-    if (!isStandaloneContext(flags))
-      rememberCommandInputForMessage(message.id, serializeCommandInput(args, flags))
-  }
+  await sendCommandReply(interaction, reply, 'edit')
 }
 
 export function buildEditParametersModal(value: string) {

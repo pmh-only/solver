@@ -97,6 +97,18 @@ afterEach(async () => {
 })
 
 describe('Discord DuckDB archive', () => {
+  it('closes a failed database connection attempt and releases the busy gate for the next operation', async () => {
+    const closeSync = vi.fn()
+    vi.spyOn(DuckDBInstance, 'create').mockResolvedValueOnce({
+      connect: vi.fn().mockRejectedValue(new Error('connect failed')),
+      closeSync
+    } as unknown as DuckDBInstance)
+    await expect(call({ action: 'collect' })).rejects.toThrow('connect failed')
+    expect(closeSync).toHaveBeenCalledOnce()
+    await expect(collectOne()).resolves.toMatchObject({ complete: true, message_count: 1 })
+    await expect(call({ action: 'status' })).resolves.toMatchObject({ message_count: 1 })
+  })
+
   it('paginates and resumes across service restarts without duplicates, then queries normalized and complete JSON data', async () => {
     get.mockResolvedValueOnce([message(), message('1000000000000000099')])
     const partial = await call({ action: 'collect', maxPages: 1 })

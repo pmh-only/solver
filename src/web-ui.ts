@@ -8,6 +8,7 @@ function readWebAsset(name: string): string {
 export const WEB_HTML = readWebAsset('index.html')
 export const WEB_CSS = readWebAsset('app.css')
 export const WEB_MARKDOWN_JS = readWebAsset('markdown.js')
+export const WEB_STREAM_JS = readWebAsset('stream.js')
 export const WEB_JS = readWebAsset('app.js')
 export const PERSONAS_HTML = readWebAsset('personas.html')
 export const PERSONAS_JS = readWebAsset('personas.js')

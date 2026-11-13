@@ -1,22 +1,9 @@
 import { ComponentType, MessageFlags, type InteractionEditReplyOptions } from 'discord.js'
 import { randomUUID } from 'node:crypto'
-import { performance } from 'node:perf_hooks'
 import type { RequestTiming } from '../request-timing.js'
 import { AGENT_EFFORT_OPTIONS, type EffortLevel } from './config.js'
-import {
-  deleteGptContext,
-  findComponent,
-  loadGptContext,
-  storeGptContext
-} from './interaction-context.js'
-import { buildAgentProgressPayload } from './response-renderer.js'
-import {
-  activeDiscordRuns,
-  activeWebInteractions,
-  activeWebRuns,
-  cancelActiveSession,
-  type ActiveWebRun
-} from './runtime-state.js'
+import { findComponent, loadGptContext } from './interaction-context.js'
+import { activeDiscordRuns, activeWebInteractions, activeWebRuns } from './runtime-state.js'
 import {
   DEFAULT_SESSION_NAME,
   GPT_INTERACTION_TTL_MS,
@@ -27,11 +14,8 @@ import {
   type StreamCallbacks
 } from './runtime-types.js'
 import {
-  beginSessionCommand,
   clearConversation,
-  finishSessionCommand,
   loadAgentSessionNames,
-  loadContextConversation,
   loadConversation,
   loadSelectedSession,
   loadSessionSettings,
@@ -42,7 +26,8 @@ import {
   sessionKey,
   storeSessionSettings
 } from './session-store.js'
-import { runGptStream } from './stream-runner.js'
+import { runActiveAgentContext, runAgentContext } from './run-lifecycle.js'
+import { sharedAgentSession } from './session-identity.js'
 
 export interface WebAgentRequest {
   userId: string
@@ -92,43 +77,28 @@ export interface WebComponentInteractionRequest {
   values?: string[]
 }
 
-function validateWebSessionName(sessionName: string): string {
-  const name = sessionName.trim()
-  if (name.startsWith('__feature:'))
-    throw new Error('Session name is reserved for internal sessions')
-  if (!name) throw new Error('Session name must not be empty')
-  if (name.length > 100) throw new Error('Session name must not exceed 100 characters')
-  return name
-}
-
-export function loadWebSessionState(
-  userId: string,
-  sessionName = loadSelectedSession()
-): WebSessionState {
-  const name = validateWebSessionName(sessionName)
+export function loadWebSessionState(sessionName = loadSelectedSession()): WebSessionState {
+  const session = sharedAgentSession(sessionName)
   return {
-    sessions: loadAgentSessionNames(userId),
+    sessions: loadAgentSessionNames(),
     selectedSession: loadSelectedSession(),
-    settings: loadSessionSettings(userId, name)
+    settings: loadSessionSettings(session)
   }
 }
 
-export function createWebSession(userId: string, sessionName: string): WebSessionState {
-  const name = validateWebSessionName(sessionName)
-  loadConversation(userId, name)
-  registerAgentSession(userId, name)
-  selectSession(name)
-  return loadWebSessionState(userId, name)
+export function createWebSession(sessionName: string): WebSessionState {
+  const session = sharedAgentSession(sessionName)
+  loadConversation(session)
+  registerAgentSession(session)
+  selectSession(session.name)
+  return loadWebSessionState(session.name)
 }
 
-export function loadWebConversation(
-  userId: string,
-  sessionName = DEFAULT_SESSION_NAME
-): WebConversationTurn[] {
+export function loadWebConversation(sessionName = DEFAULT_SESSION_NAME): WebConversationTurn[] {
   const visible: WebConversationTurn[] = []
-  const name = validateWebSessionName(sessionName)
-  resetIdleSession(userId, name)
-  for (const { role, content, webContent, status } of loadConversation(userId, name).turns) {
+  const session = sharedAgentSession(sessionName)
+  resetIdleSession(session)
+  for (const { role, content, webContent, status } of loadConversation(session).turns) {
     let interaction = false
     if (role === 'user') {
       try {
@@ -149,7 +119,7 @@ export function loadWebConversation(
     })
   }
 
-  const key = sessionKey(name)
+  const key = sessionKey(session)
   const active = activeWebRuns.get(key)
   if (active && !active.persisted) {
     visible.push(
@@ -179,27 +149,22 @@ export function loadWebConversation(
 }
 
 export async function cancelWebAgent(
-  userId: string,
   sessionName = DEFAULT_SESSION_NAME,
   runId?: string
 ): Promise<boolean> {
-  void userId
-  const name = validateWebSessionName(sessionName)
-  const active = activeWebRuns.get(sessionKey(name))
+  const session = sharedAgentSession(sessionName)
+  const active = activeWebRuns.get(sessionKey(session))
   if (!active || (runId && active.id !== runId)) return false
   active.controller.abort()
   await active.done
   return true
 }
 
-export async function clearWebConversation(
-  userId: string,
-  sessionName = DEFAULT_SESSION_NAME
-): Promise<void> {
-  const name = validateWebSessionName(sessionName)
-  await cancelWebAgent(userId, name)
-  await runInSession(userId, name, async () => {
-    clearConversation(name)
+export async function clearWebConversation(sessionName = DEFAULT_SESSION_NAME): Promise<void> {
+  const session = sharedAgentSession(sessionName)
+  await cancelWebAgent(session.name)
+  await runInSession(session, async () => {
+    clearConversation(session)
   })
 }
 
@@ -215,12 +180,12 @@ export async function runWebAgent(
   if (!prompt || prompt.length > 32_000) {
     throw new Error('Prompt must contain 1 to 32,000 characters')
   }
-  const sessionName = request.sessionName?.trim() || DEFAULT_SESSION_NAME
-  if (sessionName.length > 100) throw new Error('Session name must not exceed 100 characters')
+  const session = sharedAgentSession(request.sessionName?.trim() || DEFAULT_SESSION_NAME)
+  const sessionName = session.name
   const runId = request.runId ?? randomUUID()
   if (!/^[a-zA-Z0-9-]{1,64}$/.test(runId)) throw new Error('Invalid run identifier')
 
-  const storedSettings = loadSessionSettings(userId, sessionName)
+  const storedSettings = loadSessionSettings(session)
   const effort = request.effort ?? storedSettings.effort
   if (!AGENT_EFFORT_OPTIONS.some(({ id }) => id === effort)) {
     throw new Error('Invalid reasoning effort')
@@ -236,8 +201,8 @@ export async function runWebAgent(
     toolsEnabled: request.toolsEnabled ?? storedSettings.toolsEnabled
   }
   if (settings.model.length > 200) throw new Error('Model must not exceed 200 characters')
-  storeSessionSettings(userId, sessionName, settings)
-  registerAgentSession(userId, sessionName)
+  storeSessionSettings(session, settings)
+  registerAgentSession(session)
   selectSession(sessionName)
   timing?.mark('web agent settings loaded')
 
@@ -261,71 +226,7 @@ export async function runWebAgent(
     modals: {},
     expiresAt: Date.now() + GPT_INTERACTION_TTL_MS
   }
-  const key = sessionKey(sessionName)
-  cancelActiveSession(key)
-  const controller = new AbortController()
-  const abort = () => controller.abort()
-  if (signal?.aborted) controller.abort()
-  else signal?.addEventListener('abort', abort, { once: true })
-  let finish!: () => void
-  const done = new Promise<void>((resolve) => {
-    finish = resolve
-  })
-  const active: ActiveWebRun = {
-    id: runId,
-    sessionName,
-    prompt,
-    startedAt: new Date().toISOString(),
-    controller,
-    latestPayload: buildAgentProgressPayload(ctx),
-    persisted: false,
-    done,
-    finish
-  }
-  activeWebRuns.set(key, active)
-  const update = async (payload: InteractionEditReplyOptions): Promise<void> => {
-    active.latestPayload = payload
-    await onUpdate(payload)
-  }
-  const callbacks: StreamCallbacks = {
-    editMain: async (components) =>
-      update({
-        content: null,
-        components: components as never,
-        flags: MessageFlags.IsComponentsV2
-      }),
-    editPayload: update,
-    stored: () => {
-      active.persisted = true
-    }
-  }
-
-  try {
-    const queueStarted = performance.now()
-    await runInSession(userId, sessionName, async () => {
-      timing?.span('session queue wait', queueStarted)
-      beginSessionCommand(userId, sessionName)
-      try {
-        const loadStarted = performance.now()
-        loadContextConversation(ctx)
-        timing?.span('conversation load', loadStarted)
-        storeGptContext(token, ctx)
-        delete ctx.archiveSearchContext
-        await runGptStream(callbacks, ctx, token, controller.signal, timing)
-      } finally {
-        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-          deleteGptContext(token)
-        } else {
-          storeGptContext(token, ctx)
-        }
-        finishSessionCommand(userId, sessionName)
-      }
-    })
-  } finally {
-    signal?.removeEventListener('abort', abort)
-    if (activeWebRuns.get(key) === active) activeWebRuns.delete(key)
-    active.finish()
-  }
+  await runActiveAgentContext('web', ctx, token, webCallbacks(onUpdate), { signal, timing, runId })
 }
 
 function webCallbacks(
@@ -532,7 +433,7 @@ export async function runWebInteraction(
   signal?: AbortSignal
 ): Promise<WebInteractionResult> {
   const parsed = parseWebInteractionId(request.customId)
-  let ctx = loadGptContext(parsed.token)
+  const ctx = loadGptContext(parsed.token)
   if (!ctx) webInteractionError('Interaction expired')
   const interactionKey = request.customId
   if (activeWebInteractions.has(interactionKey)) {
@@ -554,25 +455,20 @@ export async function runWebInteraction(
         webInteractionError('Invalid interaction values')
       }
       validateWebComponentValues(component, values)
-      await runInSession(ctx.userId, ctx.sessionName, async () => {
-        const latest = loadGptContext(parsed.token)
-        const latestComponent = latest && findComponent(latest.components, request.customId)
-        if (!latest || !latestComponent) webInteractionError('Interaction expired')
-        ctx = latest
-        validateWebComponentValues(latestComponent, values)
-        loadContextConversation(ctx)
-        ctx.prompt = JSON.stringify({
-          type: 'discord_component',
-          custom_id: parsed.stableId,
-          values
-        })
-        storeGptContext(parsed.token, ctx)
-        delete ctx.archiveSearchContext
-        await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
-        if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-          deleteGptContext(parsed.token)
-        } else {
-          storeGptContext(parsed.token, ctx)
+      await runAgentContext(ctx, parsed.token, webCallbacks(onUpdate), {
+        signal,
+        prepare: () => {
+          const latest = loadGptContext(parsed.token)
+          const latestComponent = latest && findComponent(latest.components, request.customId)
+          if (!latest || !latestComponent) webInteractionError('Interaction expired')
+          validateWebComponentValues(latestComponent, values)
+          latest.prompt = JSON.stringify({
+            type: 'discord_component',
+            custom_id: parsed.stableId,
+            values
+          })
+          delete latest.archiveSearchContext
+          return latest
         }
       })
       return { updated: true }
@@ -581,27 +477,21 @@ export async function runWebInteraction(
     const modal = ctx.modals[parsed.stableId]
     if (!modal || modal.custom_id !== request.customId) webInteractionError('Interaction expired')
     const fields = normalizeWebModalFields(modal, request.fields)
-    await runInSession(ctx.userId, ctx.sessionName, async () => {
-      const latest = loadGptContext(parsed.token)
-      const latestModal = latest?.modals[parsed.stableId]
-      if (!latest || !latestModal || latestModal.custom_id !== request.customId) {
-        webInteractionError('Interaction expired')
-      }
-      ctx = latest
-      normalizeWebModalFields(latestModal, request.fields)
-      loadContextConversation(ctx)
-      ctx.prompt = JSON.stringify({
-        type: 'discord_modal_submit',
-        trigger_id: parsed.stableId,
-        fields
-      })
-      storeGptContext(parsed.token, ctx)
-      delete ctx.archiveSearchContext
-      await runGptStream(webCallbacks(onUpdate), ctx, parsed.token, signal)
-      if (ctx.components.length === 0 && Object.keys(ctx.modals).length === 0) {
-        deleteGptContext(parsed.token)
-      } else {
-        storeGptContext(parsed.token, ctx)
+    await runAgentContext(ctx, parsed.token, webCallbacks(onUpdate), {
+      signal,
+      prepare: () => {
+        const latest = loadGptContext(parsed.token)
+        const latestModal = latest?.modals[parsed.stableId]
+        if (!latest || !latestModal || latestModal.custom_id !== request.customId)
+          webInteractionError('Interaction expired')
+        normalizeWebModalFields(latestModal, request.fields)
+        latest.prompt = JSON.stringify({
+          type: 'discord_modal_submit',
+          trigger_id: parsed.stableId,
+          fields
+        })
+        delete latest.archiveSearchContext
+        return latest
       }
     })
     return { updated: true }
