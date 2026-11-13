@@ -2,7 +2,7 @@
 
 The message commands from `pmh-only/bot`, commit
 `20a90a1af9caa2560d70b972d9ff07378abccdf3`, are ported in
-`src/commands/message-bot/core.ts`. Their parsing, dispatch order, calculations,
+`src/features/messages/bot/core.ts`. Their parsing, dispatch order, calculations,
 random-food selection, saved-reply attribution, and normal response strings are
 preserved. This is separate from the existing `/c` and standalone slash commands.
 The upstream MIT notice is in [community-integration.md](community-integration.md#upstream-license).

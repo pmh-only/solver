@@ -5,14 +5,14 @@ export {
   GPT_MODAL_ID,
   GPT_MODEL_SELECT_ID,
   GPT_VERBOSITY_SELECT_ID
-} from './runtime-types.js'
+} from './runtime/types.js'
 export {
   closeAgentMcpRuntime,
   initializeAgentMcpRuntime,
   isAgentMcpRuntimeInitializing,
   waitForAgentMcpServer
-} from './mcp-runtime.js'
-export { loadAgentSessionNames } from './session-store.js'
+} from './mcp/runtime.js'
+export { loadAgentSessionNames } from './sessions/store.js'
 export {
   deleteDynamicAgentFeatureSessions,
   handleAgentCommand,
@@ -26,7 +26,7 @@ export {
   isGptSelectId,
   recoverInteractionWithAgent,
   runDynamicAgentFeature
-} from './discord-runtime.js'
+} from './runtime/discord.js'
 export {
   cancelWebAgent,
   clearWebConversation,
@@ -36,7 +36,7 @@ export {
   runWebAgent,
   runWebComponentInteraction,
   runWebInteraction
-} from './web-runtime.js'
+} from './runtime/web.js'
 export type {
   WebAgentRequest,
   WebComponentInteractionRequest,
@@ -45,4 +45,4 @@ export type {
   WebInteractionRequest,
   WebInteractionResult,
   WebSessionState
-} from './web-runtime.js'
+} from './runtime/web.js'

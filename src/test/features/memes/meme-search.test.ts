@@ -1,0 +1,471 @@
+import { join } from 'node:path'
+import { Collection, type Message } from 'discord.js'
+import { beforeEach, afterEach, expect, it, vi } from 'vitest'
+import { createMemeSearchHandler, findMemeContent } from '../../../features/memes/search.js'
+import { createMessageHandler } from '../../../discord/gateway/messages.js'
+import {
+  manageCommunitySettings,
+  loadCommunitySettings
+} from '../../../features/community/settings.js'
+import { clearStoredValues } from '../../../shared/storage/kv-store.js'
+import { isolateStoredValues } from '../../support/kv-store.js'
+const ROLE = '123456789012345678'
+const ID = '08dce137-3f2d-4b75-8319-c1787d530267'
+const image = 'https://s3.lth.so/memehub/file?signature=test'
+const imageResult = { type: 'image' as const, content: image }
+const gif = 'https://media2.giphy.com/media/example/giphy.gif'
+const fetchMock = vi.fn<typeof fetch>()
+
+function configureGiphy() {
+  manageCommunitySettings({
+    action: 'update',
+    settings: { memeSearch: { roleId: ROLE, giphyApiKey: 'test-giphy-secret' } }
+  })
+}
+
+function fixture() {
+  const send = vi.fn().mockResolvedValue({ id: 'sent' })
+  const hook = { name: 'solver-meme', owner: { id: 'bot' }, token: 'secret', send }
+  const channel = {
+    id: 'channel',
+    isThread: () => false,
+    permissionsFor: () => ({ has: () => true }),
+    fetchWebhooks: vi.fn().mockResolvedValue(new Collection([['hook', hook]])),
+    createWebhook: vi.fn().mockResolvedValue(hook)
+  }
+  const message = {
+    id: 'message',
+    guildId: 'guild',
+    content: `<@&${ROLE}> gp2 engine`,
+    author: {
+      id: 'user',
+      username: 'username',
+      bot: false,
+      displayAvatarURL: () => 'https://cdn.discordapp.com/avatar.png'
+    },
+    member: {
+      displayName: 'nickname',
+      displayAvatarURL: () => 'https://cdn.discordapp.com/guild-avatar.png'
+    },
+    client: { user: { id: 'bot' } },
+    channel,
+    attachments: new Collection(),
+    deletable: true,
+    delete: vi.fn().mockResolvedValue(undefined)
+  }
+  return { message, channel, send }
+}
+beforeEach(() => {
+  isolateStoredValues(join(process.cwd(), '.tmp', 'meme-search.test.sqlite'))
+  clearStoredValues()
+  manageCommunitySettings({ action: 'update', settings: { memeSearch: { roleId: ROLE } } })
+  vi.stubGlobal('fetch', fetchMock)
+  fetchMock.mockReset()
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+it('configures and disables meme search through persisted /a settings', () => {
+  expect(loadCommunitySettings().memeSearch).toEqual({ roleId: ROLE })
+  expect(() =>
+    manageCommunitySettings({ action: 'update', settings: { memeSearch: { roleId: 'bad' } } })
+  ).toThrow()
+  manageCommunitySettings({ action: 'update', settings: { memeSearch: null } })
+  expect(loadCommunitySettings().memeSearch).toBeNull()
+})
+it('returns the image URL with only two API requests and no image download', async () => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+    )
+    .mockResolvedValueOnce(
+      Response.json({ original: { url: 'https://s3.lth.so/memehub/file?signature=test' } })
+    )
+  expect(await findMemeContent('gp2 engine')).toEqual(imageResult)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe('sfw')
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('content_type')).toBe(false)
+  expect(fetchMock.mock.calls[0][1]).toMatchObject({
+    redirect: 'error',
+    signal: expect.any(AbortSignal)
+  })
+})
+it('stops after an empty Memehub search when no GIPHY key is configured', async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+  expect(await findMemeContent('missing')).toBeNull()
+  expect(fetchMock).toHaveBeenCalledOnce()
+})
+it.each(['image', 'audio', 'text'] as const)(
+  'never delivers %s results unless explicitly rated SFW',
+  async (type) => {
+    for (const rating of ['nsfw', undefined, null, 'unknown', 'SFW', '']) {
+      fetchMock.mockReset()
+      fetchMock.mockResolvedValueOnce(
+        Response.json({
+          items: [{ id: ID, content_type: type, safety_rating: rating, body_text: 'unsafe' }]
+        })
+      )
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { message, send } = fixture()
+      const play = vi.fn()
+      await createMemeSearchHandler(findMemeContent, play)(message as unknown as Message)
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(send).not.toHaveBeenCalled()
+      expect(play).not.toHaveBeenCalled()
+      expect(message.delete).not.toHaveBeenCalled()
+      expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe(
+        'sfw'
+      )
+    }
+  }
+)
+it('uses the existing safe GIPHY fallback when Memehub returns a non-SFW result', async () => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'nsfw' }] })
+    )
+    .mockResolvedValueOnce(Response.json({ data: [{ images: { original: { url: gif } } }] }))
+  expect(await findMemeContent('query')).toEqual({ type: 'image', content: gif })
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(new URL(String(fetchMock.mock.calls[1][0])).hostname).toBe('api.giphy.com')
+})
+it('falls back to GIPHY and delivers the GIF through the existing webhook', async () => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(Response.json({ items: [] }))
+    .mockResolvedValueOnce(Response.json({ data: [{ images: { original: { url: gif } } }] }))
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  const url = new URL(String(fetchMock.mock.calls[1][0]))
+  expect(url.origin + url.pathname).toBe('https://api.giphy.com/v1/gifs/search')
+  expect(Object.fromEntries(url.searchParams)).toEqual({
+    api_key: 'test-giphy-secret',
+    q: 'gp2 engine',
+    limit: '1',
+    rating: 'pg-13',
+    lang: 'ko',
+    fields: 'images.original.url'
+  })
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({
+    redirect: 'error',
+    signal: expect.any(AbortSignal)
+  })
+  expect(send.mock.calls[0][0]).toMatchObject({
+    content: gif,
+    allowedMentions: { parse: [], repliedUser: false }
+  })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('preserves the original when neither provider has results', async () => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(Response.json({ items: [] }))
+    .mockResolvedValueOnce(Response.json({ data: [] }))
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(send).not.toHaveBeenCalled()
+  expect(message.delete).not.toHaveBeenCalled()
+})
+it('disables GIPHY fallback through /a settings', async () => {
+  configureGiphy()
+  manageCommunitySettings({
+    action: 'update',
+    settings: { memeSearch: { roleId: ROLE, giphyApiKey: null } }
+  })
+  fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+  expect(await findMemeContent('missing')).toBeNull()
+  expect(fetchMock).toHaveBeenCalledOnce()
+})
+it.each([
+  'http://media.giphy.com/a.gif',
+  'https://127.0.0.1/a.gif',
+  'https://media.giphy.com.evil.test/a.gif',
+  'https://user:secret@media.giphy.com/a.gif',
+  'https://media.giphy.com:8080/a.gif',
+  `https://media.giphy.com/${'x'.repeat(2000)}`
+])('rejects unsafe GIPHY media %s', async (url) => {
+  configureGiphy()
+  fetchMock
+    .mockResolvedValueOnce(Response.json({ items: [] }))
+    .mockResolvedValueOnce(Response.json({ data: [{ images: { original: { url } } }] }))
+  await expect(findMemeContent('query')).rejects.toThrow()
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+it.each(['malformed', 'oversized', 'timeout', 'http'])(
+  'preserves the original and never logs credentials on GIPHY %s failure',
+  async (kind) => {
+    configureGiphy()
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    fetchMock.mockResolvedValueOnce(Response.json({ items: [] }))
+    if (kind === 'timeout') fetchMock.mockRejectedValueOnce(new Error('test-giphy-secret'))
+    else
+      fetchMock.mockResolvedValueOnce(
+        kind === 'http'
+          ? new Response('', { status: 429 })
+          : new Response(kind === 'oversized' ? 'x'.repeat(256 * 1024 + 1) : '{}')
+      )
+    const { message, send } = fixture()
+    await createMemeSearchHandler()(message as unknown as Message)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(send).not.toHaveBeenCalled()
+    expect(message.delete).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledExactlyOnceWith('meme search failed; original message retained')
+  }
+)
+it('returns audio URLs without downloading or re-uploading media', async () => {
+  fetchMock
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'audio', safety_rating: 'sfw' }] })
+    )
+    .mockResolvedValueOnce(Response.json({ original: { url: image } }))
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(String(fetchMock.mock.calls[1][0])).toBe(`https://meme.lth.so/api/memes/${ID}/media`)
+  expect(send.mock.calls[0][0]).toMatchObject({ content: image })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('sends text bodies verbatim without a media request or mention notifications', async () => {
+  const body = '첫 줄\n@everyone <@123456789012345678> **밈**'
+  fetchMock.mockResolvedValueOnce(
+    Response.json({
+      items: [{ id: ID, content_type: 'text', safety_rating: 'sfw', body_text: body }]
+    })
+  )
+  const { message, send } = fixture()
+  await createMemeSearchHandler()(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledOnce()
+  expect(send.mock.calls[0][0]).toMatchObject({
+    content: body,
+    allowedMentions: { parse: [], repliedUser: false }
+  })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('plays audio in voice without sending a webhook and deduplicates completed requests', async () => {
+  const { message, send, channel } = fixture()
+  channel.permissionsFor = () => ({ has: () => false })
+  Object.assign(message.member, { voice: { channelId: 'voice' } })
+  const play = vi.fn(async () => {
+    expect(message.delete).not.toHaveBeenCalled()
+    return true
+  })
+  const handle = createMemeSearchHandler(async () => ({ type: 'audio', content: image }), play)
+  await handle(message as unknown as Message)
+  expect(play).toHaveBeenCalledWith(message, image)
+  expect(send).not.toHaveBeenCalled()
+  expect(channel.fetchWebhooks).not.toHaveBeenCalled()
+  expect(message.delete).toHaveBeenCalledOnce()
+  await handle(message as unknown as Message)
+  expect(play).toHaveBeenCalledOnce()
+})
+it('falls back to an audio webhook when voice playback is unavailable', async () => {
+  const { message, send } = fixture()
+  const play = vi.fn().mockResolvedValue(false)
+  await createMemeSearchHandler(
+    async () => ({ type: 'audio', content: image }),
+    play
+  )(message as unknown as Message)
+  expect(play).toHaveBeenCalledOnce()
+  expect(send.mock.calls[0][0]).toMatchObject({ content: image })
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('preserves the original if both voice and webhook delivery are unavailable', async () => {
+  const { message, send, channel } = fixture()
+  channel.permissionsFor = () => ({ has: () => false })
+  Object.assign(message.member, { voice: { channelId: 'voice' } })
+  await createMemeSearchHandler(
+    async () => ({ type: 'audio', content: image }),
+    async () => false
+  )(message as unknown as Message)
+  expect(send).not.toHaveBeenCalled()
+  expect(message.delete).not.toHaveBeenCalled()
+})
+it.each(['image', 'text'] as const)('never plays %s results in voice', async (type) => {
+  const { message } = fixture()
+  const play = vi.fn()
+  await createMemeSearchHandler(
+    async () => ({ type, content: image }),
+    play
+  )(message as unknown as Message)
+  expect(play).not.toHaveBeenCalled()
+})
+it.each([2000, 2001, 10_000])(
+  'bounds %i-character text to the Discord content limit',
+  async (size) => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        items: [
+          { id: ID, content_type: 'text', safety_rating: 'sfw', body_text: '가'.repeat(size) }
+        ]
+      })
+    )
+    expect(await findMemeContent('query')).toEqual({
+      type: 'text',
+      content: size > 2000 ? `${'가'.repeat(1999)}…` : '가'.repeat(size)
+    })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  }
+)
+it.each([undefined, null, '', ' \n ', 123, 'x'.repeat(10_001)])(
+  'preserves the original when text body is invalid (case %#)',
+  async (body) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        items: [{ id: ID, content_type: 'text', safety_rating: 'sfw', body_text: body }]
+      })
+    )
+    const { message, send } = fixture()
+    await createMemeSearchHandler()(message as unknown as Message)
+    expect(send).not.toHaveBeenCalled()
+    expect(message.delete).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  }
+)
+it.each(['http://s3.lth.so/file', 'https://127.0.0.1/file', 'https://s3.lth.so.evil.test/file'])(
+  'rejects unsafe media %s',
+  async (url) => {
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+      )
+      .mockResolvedValueOnce(Response.json({ original: { url } }))
+    await expect(findMemeContent('query')).rejects.toThrow()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  }
+)
+it.each(['malformed', 'oversized', 'timeout', 'http'])('rejects %s API responses', async (kind) => {
+  configureGiphy()
+  if (kind === 'timeout')
+    fetchMock.mockRejectedValueOnce(new DOMException('timeout', 'TimeoutError'))
+  else
+    fetchMock.mockResolvedValueOnce(
+      kind === 'http'
+        ? new Response('', { status: 503 })
+        : new Response(kind === 'oversized' ? 'x'.repeat(256 * 1024 + 1) : '{}')
+    )
+  await expect(findMemeContent('query')).rejects.toThrow()
+  expect(fetchMock).toHaveBeenCalledOnce()
+})
+it('reuses an owned webhook with author identity, suppresses mentions and deletes only after send', async () => {
+  const { message, channel, send } = fixture()
+  send.mockImplementation(async () => {
+    expect(message.delete).not.toHaveBeenCalled()
+  })
+  const find = vi.fn().mockResolvedValue(imageResult)
+  const handle = createMemeSearchHandler(find)
+  expect(await handle(message as unknown as Message)).toBe(true)
+  expect(find).toHaveBeenCalledWith('gp2 engine')
+  expect(send).toHaveBeenCalledWith({
+    username: 'nickname',
+    avatarURL: 'https://cdn.discordapp.com/guild-avatar.png',
+    content: image,
+    allowedMentions: { parse: [], repliedUser: false }
+  })
+  expect(channel.createWebhook).not.toHaveBeenCalled()
+  expect(message.delete).toHaveBeenCalledOnce()
+  await handle(message as unknown as Message)
+  expect(send).toHaveBeenCalledOnce()
+})
+it('creates a webhook if needed and targets threads through their parent', async () => {
+  const { message, channel, send } = fixture()
+  channel.fetchWebhooks.mockResolvedValue(new Collection())
+  message.channel = {
+    id: 'thread',
+    isThread: () => true,
+    parent: channel
+  } as unknown as typeof channel
+  await createMemeSearchHandler(async () => imageResult)(message as unknown as Message)
+  expect(channel.createWebhook).toHaveBeenCalledWith({ name: 'solver-meme' })
+  expect(send.mock.calls[0][0]).toMatchObject({ threadId: 'thread' })
+})
+it.each(['missing', 'lookup', 'send'])('preserves originals on %s failure', async (kind) => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  const { message, send } = fixture()
+  if (kind === 'send') send.mockRejectedValueOnce(new Error('secret'))
+  const find = vi.fn().mockResolvedValue(kind === 'missing' ? null : imageResult)
+  if (kind === 'lookup') find.mockRejectedValueOnce(new Error('signed URL'))
+  await createMemeSearchHandler(find)(message as unknown as Message)
+  expect(message.delete).not.toHaveBeenCalled()
+})
+it.each(['bot', 'webhook', 'dm', 'wrong-role', 'disabled', 'attachment', 'permissions', 'long'])(
+  'ignores unsafe/ineligible %s input',
+  async (kind) => {
+    const { message } = fixture()
+    if (kind === 'bot') message.author.bot = true
+    if (kind === 'webhook') Object.assign(message, { webhookId: 'hook' })
+    if (kind === 'dm') message.guildId = ''
+    if (kind === 'wrong-role') message.content = '<@&999999999999999999> query'
+    if (kind === 'disabled')
+      manageCommunitySettings({ action: 'update', settings: { memeSearch: null } })
+    if (kind === 'attachment') message.attachments.set('file', {})
+    if (kind === 'permissions') message.deletable = false
+    if (kind === 'long') message.content = `<@&${ROLE}> ${'x'.repeat(201)}`
+    const find = vi.fn()
+    await createMemeSearchHandler(find)(message as unknown as Message)
+    expect(find).not.toHaveBeenCalled()
+    expect(message.delete).not.toHaveBeenCalled()
+  }
+)
+it('routes meme mentions before archive search or random role chat', async () => {
+  const { message } = fixture()
+  const commands = vi.fn().mockResolvedValue(false)
+  const chat = vi.fn()
+  const search = vi.fn()
+  const meme = createMemeSearchHandler(async () => null)
+  await createMessageHandler(commands, chat, search, meme)(message as unknown as Message)
+  expect(search).not.toHaveBeenCalled()
+  expect(chat).not.toHaveBeenCalled()
+})
+
+it('does not look up memes without webhook permission', async () => {
+  const { message, channel } = fixture()
+  channel.permissionsFor = () => ({ has: () => false })
+  const find = vi.fn()
+  await createMemeSearchHandler(find)(message as unknown as Message)
+  expect(find).not.toHaveBeenCalled()
+})
+
+it('deduplicates concurrent deliveries within a channel', async () => {
+  const { message, send } = fixture()
+  let release!: (value: typeof imageResult) => void
+  const find = vi.fn(
+    () =>
+      new Promise<typeof imageResult>((resolve) => {
+        release = resolve
+      })
+  )
+  const handle = createMemeSearchHandler(find)
+  const first = handle(message as unknown as Message)
+  expect(await handle(message as unknown as Message)).toBe(true)
+  release(imageResult)
+  await first
+  expect(find).toHaveBeenCalledOnce()
+  expect(send).toHaveBeenCalledOnce()
+})
+
+it('does not reuse someone else’s webhook', async () => {
+  const { message, channel } = fixture()
+  const hooks = await channel.fetchWebhooks()
+  hooks.first()!.owner.id = 'someone-else'
+  await createMemeSearchHandler(async () => imageResult)(message as unknown as Message)
+  expect(channel.createWebhook).toHaveBeenCalledOnce()
+})
+
+it('rejects image URLs exceeding the Discord content limit', async () => {
+  fetchMock
+    .mockResolvedValueOnce(
+      Response.json({ items: [{ id: ID, content_type: 'image', safety_rating: 'sfw' }] })
+    )
+    .mockResolvedValueOnce(
+      Response.json({ original: { url: `https://s3.lth.so/${'x'.repeat(2000)}` } })
+    )
+  await expect(findMemeContent('query')).rejects.toThrow()
+})

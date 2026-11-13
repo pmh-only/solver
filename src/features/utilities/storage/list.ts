@@ -1,0 +1,70 @@
+import type { Subcommand } from '../../../discord/commands/types.js'
+import {
+  commandContainer,
+  sendCommandReply,
+  separator,
+  summarySection,
+  text
+} from '../../../discord/ui/components.js'
+import { isInternalStoredKey, listStoredKeys } from '../../../shared/storage/kv-store.js'
+
+export const subcommand: Subcommand = {
+  name: 'list',
+  description: 'list vars',
+  usage: 'list [namespace] [--pub]',
+  examples: ['list', 'list project'],
+
+  async execute(interaction, args, flags) {
+    const namespace = args.replace(/^\S+\s*/, '').trim()
+    const keys = listStoredKeys().filter(
+      (key) =>
+        !isInternalStoredKey(key) &&
+        (namespace ? key.startsWith(`${namespace}:`) : !key.includes(':'))
+    )
+
+    if (keys.length === 0) {
+      await sendCommandReply(
+        interaction,
+        commandContainer(
+          subcommand,
+          args,
+          flags,
+          summarySection('Stored values', ['No keys found']),
+          separator(),
+          text('**Keys**\n`(empty)`')
+        )
+      )
+      return
+    }
+
+    const header = '**Keys**\n'
+    const maxLen = 3600
+    const lines: string[] = []
+    let len = 0
+
+    for (const k of keys) {
+      const line = `\`${k}\``
+      const added = line.length + (lines.length > 0 ? 1 : 0)
+      if (len + added > maxLen) {
+        lines.push(`*… and ${keys.length - lines.length} more*`)
+        break
+      }
+      lines.push(line)
+      len += added
+    }
+
+    await sendCommandReply(
+      interaction,
+      commandContainer(
+        subcommand,
+        args,
+        flags,
+        summarySection('Stored values', [
+          `${keys.length} key${keys.length === 1 ? '' : 's'} found`
+        ]),
+        separator(),
+        text(`${header}${lines.join('\n')}`)
+      )
+    )
+  }
+}

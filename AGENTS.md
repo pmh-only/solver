@@ -12,7 +12,7 @@ The main flow is:
 Discord interaction
   -> DiscordFeatureRegistry (priority-ordered, first matching feature)
   -> agent / community / additional feature
-  -> feature handler (src/handler.ts for agent and additional interactions)
+  -> feature handler (src/discord/routing/handler.ts for agent and additional interactions)
   -> command or component handler
   -> Discord response and optional persisted state
 
@@ -20,41 +20,49 @@ Discord interaction
   -> parseFlags() and subcommand lookup
   -> Subcommand.execute() -> Components V2 response
 
-Gateway messages/reactions -> message-handler.ts / reaction-forward.ts
-HTTP requests -> web-server.ts -> authentication, agent, settings, archive search
+Gateway messages/reactions -> discord/gateway/messages.ts / reactions.ts
+HTTP requests -> web/server.ts -> authentication, agent, settings, archive search
 ```
+
+Source is grouped by responsibility. See [docs/architecture.md](docs/architecture.md) for the directory tree and placement rules.
 
 Important files:
 
 ```text
-src/index.ts                  subcommand registration and bot startup
-src/features.ts               built-in feature registration and matchers
-src/feature-registry.ts       feature priority, command restrictions, dispatch
-src/dynamic-features.ts       persisted agent-created Discord features
-src/application-commands.ts   Discord-visible slash/context commands
-src/application-command-deployment.ts  command replacement and recovery
-src/community-feature.ts      guild-only community interaction routing
-src/community-settings.ts     persisted community configuration
-src/handler.ts                central interaction router and autocomplete
-src/types.ts                  Subcommand and command result contracts
-src/flags.ts                  flag parsing and aliases
-src/components.ts             Components V2 builders and reply lifecycle
-src/commands/                 command and interaction implementations
-src/agent/                    agent runtime, sessions, streaming, MCP, tools
-src/message-handler.ts        gateway message routing
-src/role-chat.ts              persona-based message conversations
-src/discord-archive*.ts        archive storage, live capture, history backfill
-src/archive-search*.ts         archive queries and web search adapter
-src/web-server.ts             HTTP routes and existing OAuth callbacks
-src/web-auth.ts               web login, session cookies, CSRF
-src/web-ui.ts                 embedded web frontend assets
-src/authorization.ts          administrator authorization
-src/runtime-health.ts         runtime issue reporting
-src/helpers/kv-store.ts       synchronous SQLite key/value storage
-src/helpers/environment-store.ts  restore agent-managed environment settings
-src/helpers/interaction-routes.ts  persisted interaction routing helpers
-src/test/e2e.ts               raw Discord JSON -> captured REST calls harness
-src/test/*.test.ts            Vitest feature and regression tests
+src/index.ts / src/deploy.ts                 stable executable entrypoints
+src/app/start.ts                            subcommand registration and bot startup
+src/app/features.ts                         built-in feature registration and matchers
+src/discord/routing/feature-registry.ts      feature priority, restrictions, dispatch
+src/discord/routing/handler.ts               central interaction router
+src/discord/routing/feature-interactions.ts  feature component/context-menu routing
+src/discord/commands/definitions.ts          Discord-visible slash/context commands
+src/discord/commands/deployment.ts           command replacement and recovery
+src/discord/commands/types.ts                Subcommand and command result contracts
+src/discord/commands/flags.ts                flag parsing and aliases
+src/discord/commands/autocomplete.ts         agent and utility autocomplete
+src/discord/ui/components.ts                Components V2 builders and reply lifecycle
+src/discord/gateway/                        message and reaction routing
+src/agent/                                  runtime, sessions, streaming, MCP, tools
+src/features/community/feature.ts           guild-only community interaction routing
+src/features/community/settings.ts          persisted community configuration
+src/features/dynamic/                       persisted agent-created Discord features
+src/features/conversation/                  persona-based message conversations
+src/features/archive/                       archive service, capture, storage, search
+src/features/games/                         game commands and runtimes
+src/features/media/                         lyrics, downloads, file conversion
+src/features/utilities/                     network, math, storage, system commands
+src/web/server.ts                           HTTP entrypoint and OAuth callbacks
+src/web/routes/                             chat, community, settings HTTP routes
+src/web/auth/session.ts                     web login, session cookies, CSRF
+src/web/ui.ts                               embedded web frontend assets
+src/integrations/                           external-service clients and authentication
+src/shared/security/authorization.ts        administrator authorization
+src/shared/runtime/health.ts                runtime issue reporting
+src/shared/storage/kv-store.ts              synchronous SQLite key/value storage
+src/shared/storage/environment-store.ts     restore agent-managed environment settings
+src/discord/routing/interaction-routes.ts    persisted interaction routing helpers
+src/test/support/e2e.ts                     raw Discord JSON -> captured REST calls harness
+src/test/**/*.test.ts                       tests mirroring the source hierarchy
 ```
 
 Use `.js` suffixes for relative imports. The project is native ESM with Node16 module resolution and strict TypeScript. Use pnpm (the version is pinned in `package.json`). Follow neighboring formatting; `pnpm format` and `pnpm format:check` target `src`, not Markdown.
@@ -63,9 +71,9 @@ Use `.js` suffixes for relative imports. The project is native ESM with Node16 m
 
 For every feature change:
 
-1. Check `git status` and preserve unrelated user changes. Read the affected implementation, its routing/registration, and the closest tests. For command changes, also read `src/handler.ts` and `src/components.ts`.
+1. Check `git status` and preserve unrelated user changes. Read the affected implementation, its routing/registration, and the closest tests. For command changes, also read `src/discord/routing/handler.ts` and `src/discord/ui/components.ts`.
 2. Make the smallest change that implements the requested behavior.
-3. Add or update focused automated tests in `src/test/<feature>.test.ts`.
+3. Add or update focused automated tests under `src/test/`, mirroring the implementation's category and feature directory.
 4. Run `pnpm test`.
 5. Run `pnpm lint`.
 6. Run `pnpm exec tsc --noEmit`.
@@ -77,19 +85,19 @@ Do not run `pnpm deploy` as verification. It replaces the application's global D
 
 ## Routing, Access, And Configuration
 
-- Built-in features are registered in `src/features.ts`. Matchers run in descending priority; the additional feature is a catch-all. A new independent feature needs both command definitions and a registered matcher/handler, not just an export.
-- Community slash commands are defined in `src/community-application-commands.ts` and routed through `src/community-feature.ts`, not the `/c` subcommand collection.
+- Built-in features are registered in `src/app/features.ts`. Matchers run in descending priority; the additional feature is a catch-all. A new independent feature needs both command definitions and a registered matcher/handler, not just an export.
+- Community slash commands are defined in `src/features/community/application-commands.ts` and routed through `src/features/community/feature.ts`, not the `/c` subcommand collection.
 - Application commands default to `default_member_permissions: '0'` through `restrictApplicationCommands`; community commands explicitly opt out. Discord command visibility is not a substitute for runtime authorization.
-- `src/handler.ts` restricts private utility/agent interactions to configured administrators, with explicit exceptions for public source messages and constrained pubtab interactions. Preserve per-feature ownership checks even when central routing allows an interaction.
+- `src/discord/routing/handler.ts` restricts private utility/agent interactions to configured administrators, with explicit exceptions for public source messages and constrained pubtab interactions. Preserve per-feature ownership checks even when central routing allows an interaction.
 - Every new feature must be fully configurable through `/a`, without requiring new environment variables or terminal operations. Reuse existing settings, agent tools, and stores rather than introducing a second configuration path.
 - Agent entrypoints are exported through `src/agent/index.ts` and `src/agent/runtime.ts`; implementation is split across Discord/web runtimes, session storage/privacy, streaming, and MCP runtime modules. Keep changes in the responsible module instead of expanding the export facade.
 - Startup restores stored environment settings before requiring Discord credentials and administrator IDs. Treat stored configuration, credentials, and agent tool access as privileged; do not expose them through ordinary commands or public sessions.
 
 ## Adding A Subcommand
 
-Create substantial commands in `src/commands/<name>.ts`. Keep parsing or protocol code in a separate runtime module when it can be tested without Discord. Add only small, closely related utilities to `src/commands/more.ts`; do not make that module a default dumping ground.
+Create substantial commands in their owning `src/features/<category>/` directory. Group multi-file features in a named subdirectory with `command.ts` and a separate runtime or client module when it can be tested without Discord. Add only small, closely related utilities to `src/features/utilities/catalog.ts`; do not make that module a default dumping ground.
 
-Every subcommand implements `Subcommand` from `src/types.ts`:
+Every subcommand implements `Subcommand` from `src/discord/commands/types.ts`:
 
 ```ts
 export interface Subcommand {
@@ -112,15 +120,15 @@ Follow these rules:
 - `autocomplete` receives only arguments after the subcommand name.
 - Declare value-taking flags with `value: 'string'`; flags without `value` are booleans.
 - The global `--pub` / `-p` flag is supplied by the router and must not be redeclared.
-- Register a dedicated command by importing it and adding it to the collection in `src/index.ts`.
-- Register a small command exported through `extraSubcommands` in `src/commands/more.ts`.
+- Register a dedicated command by importing it and adding it to the collection in `src/app/start.ts`.
+- Register a small command exported through `extraSubcommands` in `src/features/utilities/catalog.ts`.
 - Add `pubtab` metadata only after confirming a command is safe to launch publicly with constrained input; registered commands with that metadata are added to the tab automatically.
 
 The flag parser is whitespace-based, not shell-aware. Boolean flags may consume a following bare token in surprising ways, and quoted values are not preserved as shell tokens. Test the exact supported syntax, especially aliases and value flags.
 
 ## Command Response Pattern
 
-Use the helpers in `src/components.ts` rather than assembling ordinary command responses manually:
+Use the helpers in `src/discord/ui/components.ts` rather than assembling ordinary command responses manually:
 
 - `commandContainer(subcommand, args, flags, ...)` builds a command response with usage, examples, retry, edit, pin, and publish controls.
 - `sendCommandReply(interaction, payload)` handles initial replies, component updates, deferred edits, command-input persistence, and ephemeral deletion.
@@ -129,16 +137,16 @@ Use the helpers in `src/components.ts` rather than assembling ordinary command r
 - `summarySection`, `text`, `separator`, `codeBlock`, `bulletBlock`, and `keyValueBlock` build response content.
 - `container(...)` is for generic/system responses that do not need command controls.
 
-Preferred rerunnable structure:
+Preferred rerunnable structure (for `src/features/utilities/example.ts`):
 
 ```ts
-import type { Subcommand } from '../types.js'
+import type { Subcommand } from '../../discord/commands/types.js'
 import {
   commandReferenceReply,
   runRerunnableCommand,
   sendCommandReply,
   summarySection
-} from '../components.js'
+} from '../../discord/ui/components.js'
 
 export const subcommand: Subcommand = {
   name: 'example',
@@ -187,7 +195,7 @@ For component interactions:
 - Namespace every custom ID with a feature-specific exported prefix.
 - Include an opaque random token when the ID addresses persisted state.
 - Export an `is<Feature>...Id()` predicate and a focused handler from the feature module.
-- Import and route the predicate/handler in `src/handler.ts` before generic command controls.
+- Import and route the predicate/handler in `src/discord/routing/feature-interactions.ts`, which the central handler invokes before generic command controls.
 - Validate custom-ID structure and persisted JSON before use.
 - Return an ephemeral Components V2 "expired" response for missing or malformed state.
 - Enforce initiating-user or participant ownership when the interaction is not intentionally shared.
@@ -196,14 +204,14 @@ For component interactions:
 
 For context-menu features:
 
-- Define the Discord-visible command in `src/application-commands.ts`.
-- Put implementation and exported command/custom IDs in a focused file under `src/commands/`.
-- Add the matching user, message, modal, button, or select branch in `src/handler.ts`.
+- Define the Discord-visible command in `src/discord/commands/definitions.ts`.
+- Put implementation and exported command/custom IDs in the owning feature directory, such as `src/features/messages/commands/`.
+- Add the matching user, message, modal, button, or select branch in `src/discord/routing/feature-interactions.ts`.
 - Startup compares command count, name/type, permissions, contexts, integration types, descriptions, and selected option fields using `areApplicationCommandsCurrent()`. It is not a complete deep comparison of every Discord field. Update deployment tests when changing definitions or synchronization behavior; do not deploy as part of verification.
 
 ## Persistence
 
-`src/helpers/kv-store.ts` is a process-wide, synchronous SQLite key/value store. There is one global keyspace.
+`src/shared/storage/kv-store.ts` is a process-wide, synchronous SQLite key/value store. There is one global keyspace.
 
 The default production path is `data/kv.sqlite`; `KV_STORE_PATH` overrides it. Tests default to worker-specific files under `.tmp/`. Archive storage and agent memory have separate implementations; do not assume all persisted data belongs in the KV store.
 
@@ -212,7 +220,7 @@ The default production path is `data/kv.sqlite`; `KV_STORE_PATH` overrides it. T
 - Parse stored JSON defensively and handle missing/corrupt state as expired.
 - Never copy credentials, raw environment values, or unnecessary interaction tokens into command/session state. Existing privileged configuration stores intentionally persist secrets; use their APIs only for the intended configuration flow and never return their contents publicly.
 - Add bounded retention or cleanup for transient state instead of allowing unlimited growth.
-- Register new internal prefixes in `INTERNAL_KEY_PREFIXES` in `src/helpers/kv-store.ts`. The shared `isInternalStoredKey()` policy protects listing, direct stored-value lookup, and other utility paths; test that internal state stays hidden.
+- Register new internal prefixes in `INTERNAL_KEY_PREFIXES` in `src/shared/storage/kv-store.ts`. The shared `isInternalStoredKey()` policy protects listing, direct stored-value lookup, and other utility paths; test that internal state stays hidden.
 - Clear stored values and reset mocks/timers in tests so cases remain isolated.
 - Avoid repeated synchronous database operations inside large loops or latency-sensitive handlers.
 
@@ -234,7 +242,7 @@ Treat all Discord arguments, message content, component IDs, URLs, files, and st
 
 ## Testing
 
-Tests use Vitest and the harness in `src/test/e2e.ts`. The normal pattern sends raw Discord interaction JSON through the production handler and inspects captured REST calls.
+Tests use Vitest and the harness in `src/test/support/e2e.ts`. The normal pattern sends raw Discord interaction JSON through the production handler and inspects captured REST calls.
 
 The interaction harness dispatches through the production feature registry. It also offers `dispatchMessage()` for gateway messages; runtime/protocol and HTTP tests use focused mocks or local test servers as appropriate. `src/test/setup.ts` supplies the default test administrator and timezone before each test.
 
@@ -261,7 +269,7 @@ Add the cases relevant to the feature:
 
 Mock network and paid services. Use fake timers for deletion or timer behavior. Put protocol parsing, calculation, and formatting in testable runtime functions when practical. Do not weaken assertions merely to make an existing failure pass.
 
-Use `pnpm exec vitest run src/test/<feature>.test.ts` while iterating, then run the full required checks. Restore environment changes, network stubs, mocks, timers, database state/connections, and local servers so tests cannot contaminate other cases. Follow `src/helpers/kv-store-test.ts` and neighboring tests for temporary database isolation; never point tests at production data.
+Use `pnpm exec vitest run src/test/<category>/<feature>.test.ts` while iterating, then run the full required checks. Restore environment changes, network stubs, mocks, timers, database state/connections, and local servers so tests cannot contaminate other cases. Follow `src/test/support/kv-store.ts` and neighboring tests for temporary database isolation; never point tests at production data.
 
 ## Absolute Rules
 

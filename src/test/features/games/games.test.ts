@@ -1,0 +1,741 @@
+import { join } from 'node:path'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ComponentType, InteractionResponseType, MessageFlags } from 'discord.js'
+
+const { generateQuizQuestionMock } = vi.hoisted(() => ({
+  generateQuizQuestionMock: vi.fn()
+}))
+
+vi.mock('../../../features/games/quiz/runtime.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../features/games/quiz/runtime.js')>()
+  return { ...original, generateQuizQuestion: generateQuizQuestionMock }
+})
+
+import { DICE_GUESS_BUTTON_ID, subcommand as dice } from '../../../features/games/dice.js'
+import { COIN_GUESS_BUTTON_ID, subcommand as coin } from '../../../features/games/coin.js'
+import { SLOTS_SPIN_BUTTON_ID, subcommand as slots } from '../../../features/games/slots.js'
+import { TTT_MOVE_BUTTON_ID, subcommand as ttt } from '../../../features/games/ttt.js'
+import { HILO_GUESS_BUTTON_ID, subcommand as hilo } from '../../../features/games/hilo.js'
+import {
+  QUIZ_ANSWER_BUTTON_ID,
+  QUIZ_NEXT_BUTTON_ID,
+  subcommand as quiz
+} from '../../../features/games/quiz/command.js'
+import { BLACKJACK_BUTTON_ID, subcommand as blackjack } from '../../../features/games/blackjack.js'
+import { MEMORY_TILE_BUTTON_ID, subcommand as memory } from '../../../features/games/memory.js'
+import { isolateStoredValues } from '../../support/kv-store.js'
+import {
+  autocompleteJSON,
+  buttonJSON,
+  commandJSON,
+  dispatch,
+  getCallback,
+  getEdit,
+  makeSubcommands
+} from '../../support/e2e.js'
+
+const subs = makeSubcommands(coin, dice, slots, ttt, hilo, quiz, blackjack, memory)
+const storePath = join(process.cwd(), '.tmp', 'games.test.sqlite')
+const generatedQuestions = [
+  {
+    question: 'Which planet is known as the Red Planet?',
+    answers: ['Earth', 'Mars', 'Venus', 'Jupiter'],
+    correct: 1
+  },
+  {
+    question: 'What gas do plants absorb from the atmosphere?',
+    answers: ['Oxygen', 'Hydrogen', 'Carbon dioxide', 'Helium'],
+    correct: 2
+  },
+  {
+    question: 'What is the chemical symbol for gold?',
+    answers: ['Ag', 'Au', 'Gd', 'Go'],
+    correct: 1
+  },
+  {
+    question: 'How many bones are in the adult human body?',
+    answers: ['186', '206', '226', '246'],
+    correct: 1
+  },
+  {
+    question: 'Which force keeps planets in orbit around the Sun?',
+    answers: ['Friction', 'Magnetism', 'Gravity', 'Buoyancy'],
+    correct: 2
+  }
+] as const
+
+function quizEditComponents(calls: Awaited<ReturnType<typeof dispatch>>): unknown[] {
+  return (getEdit(calls) as { components: unknown[] }).components
+}
+
+function otherUser() {
+  return {
+    id: '555555555555555555',
+    username: 'otheruser',
+    discriminator: '0',
+    avatar: null,
+    global_name: 'Other User'
+  }
+}
+
+function collectButtonIds(components: unknown[]): string[] {
+  const queue: unknown[] = [...components]
+  const ids: string[] = []
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || typeof current !== 'object') continue
+
+    const record = current as { components?: unknown[]; custom_id?: unknown }
+    if (typeof record.custom_id === 'string') {
+      ids.push(record.custom_id)
+    }
+
+    if (Array.isArray(record.components)) {
+      queue.push(...record.components)
+    }
+  }
+
+  return ids
+}
+
+function buttonIdByIndex(components: unknown[], base: string, index: number): string {
+  const ids = collectButtonIds(components)
+  return (
+    ids.find((id) => id === `${base}`) ??
+    ids.find((id) => id.startsWith(`${base}:`) && id.endsWith(`:${index}`)) ??
+    ids.find((id) => id.startsWith(`${base}:`)) ??
+    `${base}`
+  )
+}
+
+function pngFromCalls(calls: Array<{ files: unknown[] }>): Buffer | null {
+  const file = calls.flatMap((call) => call.files)[0]
+  if (Buffer.isBuffer(file)) return file
+  if (!file || typeof file !== 'object') return null
+  const data = (file as { data?: unknown }).data
+  return Buffer.isBuffer(data) ? data : null
+}
+
+function expectCanvasGallery(components: unknown[], calls: Array<{ files: unknown[] }>) {
+  expect(JSON.stringify(components)).toContain(`"type":${ComponentType.MediaGallery}`)
+  expect(JSON.stringify(components)).toContain('attachment://')
+  expect(JSON.stringify(components)).not.toContain('accent_color')
+  const png = pngFromCalls(calls)
+  expect(png?.subarray(1, 4).toString('ascii')).toBe('PNG')
+}
+
+describe('coin — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private flip game', async () => {
+    const calls = await dispatch(commandJSON('coin'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Coin flip')
+  })
+
+  it('reveals the result after a guess', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.2)
+
+    const firstCalls = await dispatch(commandJSON('coin'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const coinCalls = await dispatch(
+      buttonJSON(firstBody.data.components, COIN_GUESS_BUTTON_ID, {}),
+      subs
+    )
+    const body = getCallback(coinCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Coin landed on Heads')
+    expect(rendered).toContain('You win.')
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('coin --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns coin in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('co'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'coin')).toBe(true)
+  })
+})
+
+describe('dice — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private roll game', async () => {
+    const calls = await dispatch(commandJSON('dice'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Dice roll')
+  })
+
+  it('reveals the roll after selecting a guess', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.2)
+
+    const firstCalls = await dispatch(commandJSON('dice'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const diceCalls = await dispatch(
+      buttonJSON(firstBody.data.components, DICE_GUESS_BUTTON_ID),
+      subs
+    )
+    const body = getCallback(diceCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('The die rolled')
+    expect(rendered).toContain('You lose.')
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('dice --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns dice in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('di'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'dice')).toBe(true)
+  })
+})
+
+describe('slots — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private slot machine', async () => {
+    const calls = await dispatch(commandJSON('slots'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Slot machine')
+  })
+
+  it('spins and renders symbols', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    const firstCalls = await dispatch(commandJSON('slots'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const spinCalls = await dispatch(
+      buttonJSON(firstBody.data.components, SLOTS_SPIN_BUTTON_ID),
+      subs
+    )
+    const body = getCallback(spinCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Reels: Cherry | Cherry | Cherry')
+    expect(rendered).not.toContain('🍒')
+    expect(rendered).toContain('Jackpot')
+    expectCanvasGallery(body.data.components, spinCalls)
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('slots --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns slots in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('sl'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'slots')).toBe(true)
+  })
+})
+
+describe('hilo — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private prediction game', async () => {
+    const calls = await dispatch(commandJSON('hilo'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('High-Low')
+  })
+
+  it('reveals if the prediction was right', async () => {
+    vi.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValueOnce(0.9)
+
+    const firstCalls = await dispatch(commandJSON('hilo'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const firstButton = buttonIdByIndex(firstBody.data.components, HILO_GUESS_BUTTON_ID, 0)
+    const hiloCalls = await dispatch(buttonJSON(firstBody.data.components, firstButton), subs)
+    const body = getCallback(hiloCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('The next number was')
+    expect(rendered.includes('You win.') || rendered.includes('You lose.')).toBe(true)
+
+    vi.restoreAllMocks()
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('hilo --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns hilo in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('hi'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'hilo')).toBe(true)
+  })
+})
+
+describe('quiz — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+    generateQuizQuestionMock.mockReset()
+    generateQuizQuestionMock.mockImplementation(
+      async (options: { category: string; previousQuestions: string[] }) => ({
+        ...generatedQuestions[options.previousQuestions.length]!,
+        answers: [...generatedQuestions[options.previousQuestions.length]!.answers],
+        category: options.category === 'mixed' ? 'science' : options.category
+      })
+    )
+  })
+
+  it('starts a private five-round quiz session', async () => {
+    const calls = await dispatch(commandJSON('quiz'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { flags: number }
+    }
+    const components = quizEditComponents(calls)
+
+    expect(body.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(JSON.stringify(components)).toContain('Quiz')
+    expect(JSON.stringify(components)).toContain('Round **1/5**')
+    expect(generateQuizQuestionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'mixed', locale: 'en-US', previousQuestions: [] })
+    )
+  })
+
+  it('reveals whether the selected answer is correct', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz'), subs)
+    const firstComponents = quizEditComponents(firstCalls)
+
+    const correctButton = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+    const quizCalls = await dispatch(buttonJSON(firstComponents, correctButton), subs)
+    const body = getCallback(quizCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Correct answer:')
+    expect(rendered).toContain('Correct!')
+    expect(rendered).toContain('Score **1**')
+    expect(rendered).toContain(QUIZ_NEXT_BUTTON_ID)
+  })
+
+  it('advances without repeating the previous question', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    const firstComponents = quizEditComponents(firstCalls)
+    const firstRendered = JSON.stringify(firstComponents)
+    const answerButton = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+    const answerCalls = await dispatch(buttonJSON(firstComponents, answerButton), subs)
+    const answerBody = getCallback(answerCalls) as { data: { components: unknown[] } }
+
+    const nextCalls = await dispatch(
+      buttonJSON(answerBody.data.components, QUIZ_NEXT_BUTTON_ID),
+      subs
+    )
+    const body = getCallback(nextCalls) as { type: number }
+    const rendered = JSON.stringify(quizEditComponents(nextCalls))
+
+    expect(body.type).toBe(InteractionResponseType.DeferredMessageUpdate)
+    expect(rendered).toContain('Round **2/5**')
+    expect(rendered).toContain('Category: Science')
+    expect(rendered).not.toBe(firstRendered)
+    expect(rendered).not.toContain('Which planet is known as the Red Planet?')
+    expect(generateQuizQuestionMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: 'science',
+        previousQuestions: ['Which planet is known as the Red Planet?']
+      })
+    )
+  })
+
+  it('does not score duplicate answer interactions twice', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz'), subs)
+    const firstComponents = quizEditComponents(firstCalls)
+    const correctButton = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+
+    await dispatch(buttonJSON(firstComponents, correctButton), subs)
+    const duplicateCalls = await dispatch(buttonJSON(firstComponents, correctButton), subs)
+    const body = getCallback(duplicateCalls) as { data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(rendered).toContain('Score **1**')
+    expect(rendered).not.toContain('Score **2**')
+  })
+
+  it('rejects an answer button from an earlier round', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    const firstComponents = quizEditComponents(firstCalls)
+    const staleAnswer = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+    const answerCalls = await dispatch(buttonJSON(firstComponents, staleAnswer), subs)
+    const answeredComponents = (getCallback(answerCalls) as { data: { components: unknown[] } })
+      .data.components
+    const nextCalls = await dispatch(buttonJSON(answeredComponents, QUIZ_NEXT_BUTTON_ID), subs)
+    const secondComponents = quizEditComponents(nextCalls)
+
+    const staleCalls = await dispatch(buttonJSON(secondComponents, staleAnswer), subs)
+    const staleBody = getCallback(staleCalls) as { type: number; data: { flags: number } }
+    expect(staleBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(staleBody.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+
+    const currentAnswer = buttonIdByIndex(secondComponents, QUIZ_ANSWER_BUTTON_ID, 2)
+    const currentCalls = await dispatch(buttonJSON(secondComponents, currentAnswer), subs)
+    const rendered = JSON.stringify(
+      (getCallback(currentCalls) as { data: { components: unknown[] } }).data.components
+    )
+    expect(rendered).toContain('Score **2**')
+  })
+
+  it('finishes after five questions and reports the best streak', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz --category science'), subs)
+    let components = quizEditComponents(firstCalls)
+    const correctAnswers = [1, 2, 1, 1, 2]
+
+    for (let round = 0; round < correctAnswers.length; round++) {
+      const answerId = buttonIdByIndex(components, QUIZ_ANSWER_BUTTON_ID, correctAnswers[round]!)
+      const answerCalls = await dispatch(buttonJSON(components, answerId), subs)
+      components = (getCallback(answerCalls) as { data: { components: unknown[] } }).data.components
+
+      if (round < correctAnswers.length - 1) {
+        const nextCalls = await dispatch(buttonJSON(components, QUIZ_NEXT_BUTTON_ID), subs)
+        components = quizEditComponents(nextCalls)
+      }
+    }
+
+    const rendered = JSON.stringify(components)
+    expect(rendered).toContain('Session complete: **5/5** correct, best streak **5**.')
+    expect(rendered).not.toContain(QUIZ_NEXT_BUTTON_ID)
+    expect(generateQuizQuestionMock).toHaveBeenCalledTimes(5)
+  })
+
+  it('keeps the answered round retryable when next-question generation fails', async () => {
+    const firstCalls = await dispatch(commandJSON('quiz'), subs)
+    const firstComponents = quizEditComponents(firstCalls)
+    const answerButton = buttonIdByIndex(firstComponents, QUIZ_ANSWER_BUTTON_ID, 1)
+    const answerCalls = await dispatch(buttonJSON(firstComponents, answerButton), subs)
+    const answeredComponents = (getCallback(answerCalls) as { data: { components: unknown[] } })
+      .data.components
+    generateQuizQuestionMock.mockRejectedValueOnce(new Error('OpenAI unavailable'))
+
+    const nextCalls = await dispatch(buttonJSON(answeredComponents, QUIZ_NEXT_BUTTON_ID), subs)
+    const rendered = JSON.stringify(quizEditComponents(nextCalls))
+
+    expect(rendered).toContain('Score **1**')
+    expect(rendered).toContain('Could not create the next question')
+    expect(rendered).toContain(QUIZ_NEXT_BUTTON_ID)
+  })
+
+  it('shows an unavailable card when initial generation fails', async () => {
+    generateQuizQuestionMock.mockRejectedValueOnce(new Error('OpenAI unavailable'))
+
+    const calls = await dispatch(commandJSON('quiz'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+    const rendered = JSON.stringify(quizEditComponents(calls))
+
+    expect(body.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(rendered).toContain('GPT could not generate a question')
+  })
+
+  it('rejects an unknown category', async () => {
+    const calls = await dispatch(commandJSON('quiz --category sports'), subs)
+    const body = getCallback(calls) as { data: { components: unknown[]; flags: number } }
+
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('category must be one of')
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('quiz --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.DeferredChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('neutralizes mentions and backticks in a public command footer', async () => {
+    const calls = await dispatch(commandJSON('quiz `@everyone` --pub'), subs)
+    const rendered = JSON.stringify(quizEditComponents(calls))
+
+    expect(rendered).not.toContain('@everyone')
+    expect(rendered).toContain("'@\u200beveryone'")
+  })
+
+  it('returns quiz in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('qu'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'quiz')).toBe(true)
+  })
+})
+
+describe('blackjack — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private blackjack hand', async () => {
+    const calls = await dispatch(commandJSON('blackjack'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Blackjack')
+  })
+
+  it('settles the hand when standing', async () => {
+    const firstCalls = await dispatch(commandJSON('blackjack'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const standButton =
+      collectButtonIds(firstBody.data.components).find((id) => id.endsWith(':stand')) ??
+      BLACKJACK_BUTTON_ID
+
+    const standCalls = await dispatch(buttonJSON(firstBody.data.components, standButton), subs)
+    const body = getCallback(standCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).not.toContain('??')
+    expect(
+      rendered.includes('You win.') ||
+        rendered.includes('Dealer wins.') ||
+        rendered.includes('Dealer busts.') ||
+        rendered.includes('Push.') ||
+        rendered.includes('Bust.')
+    ).toBe(true)
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('blackjack --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns blackjack in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('bla'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'blackjack')).toBe(true)
+  })
+})
+
+describe('memory — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts a private memory board', async () => {
+    const calls = await dispatch(commandJSON('memory'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Memory match')
+  })
+
+  it('reveals a selected tile', async () => {
+    const firstCalls = await dispatch(commandJSON('memory'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+    const firstTile = buttonIdByIndex(firstBody.data.components, MEMORY_TILE_BUTTON_ID, 0)
+
+    const tileCalls = await dispatch(buttonJSON(firstBody.data.components, firstTile), subs)
+    const body = getCallback(tileCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).toContain('Pick one more tile.')
+    expect(rendered).toMatch(/1: (apple|grape|orange|strawberry|kiwi|pineapple|coconut|peach)/)
+    expect(/🍎|🍇|🍊|🍓|🥝|🍍|🥥|🍑/.test(rendered)).toBe(false)
+    expectCanvasGallery(body.data.components, tileCalls)
+  })
+
+  it('starts as public when --pub is set', async () => {
+    const calls = await dispatch(commandJSON('memory --pub'), subs)
+    const body = getCallback(calls) as { type: number; data: { flags: number } }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeFalsy()
+  })
+
+  it('returns memory in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('mem'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'memory')).toBe(true)
+  })
+})
+
+describe('ttt — command', () => {
+  beforeEach(() => {
+    isolateStoredValues(storePath)
+  })
+
+  it('starts in private mode by default', async () => {
+    const calls = await dispatch(commandJSON('ttt'), subs)
+    const body = getCallback(calls) as {
+      type: number
+      data: { components: unknown[]; flags: number }
+    }
+
+    expect(body.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(body.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+    expect(body.data.flags & MessageFlags.IsComponentsV2).toBeTruthy()
+    expect(JSON.stringify(body.data.components)).toContain('Tic tac toe')
+    expectCanvasGallery(body.data.components, calls)
+  })
+
+  it('renders both PC marks into a refreshed board image', async () => {
+    vi.spyOn(Math, 'random').mockReturnValueOnce(0.0)
+
+    const firstCalls = await dispatch(commandJSON('ttt --pc'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const firstMove = buttonIdByIndex(firstBody.data.components, TTT_MOVE_BUTTON_ID, 0)
+    const secondCalls = await dispatch(buttonJSON(firstBody.data.components, firstMove), subs)
+    const body = getCallback(secondCalls) as { type: number; data: { components: unknown[] } }
+    const rendered = JSON.stringify(body.data.components)
+
+    expect(body.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(rendered).not.toContain('❌')
+    expect(rendered).not.toContain('⭕')
+    expect(rendered).toContain('Board: X, O, empty 3')
+    expectCanvasGallery(body.data.components, secondCalls)
+    expect(pngFromCalls(secondCalls)).not.toEqual(pngFromCalls(firstCalls))
+
+    vi.restoreAllMocks()
+  })
+
+  it('enforces turn order before allowing a third player', async () => {
+    const firstCalls = await dispatch(commandJSON('ttt'), subs)
+    const firstBody = getCallback(firstCalls) as { data: { components: unknown[] } }
+
+    const topLeft = buttonIdByIndex(firstBody.data.components, TTT_MOVE_BUTTON_ID, 0)
+    const firstMoveCalls = await dispatch(buttonJSON(firstBody.data.components, topLeft), subs)
+    const firstMoveBody = getCallback(firstMoveCalls) as {
+      type: number
+      data: { components: unknown[] }
+    }
+
+    const selfMoveCalls = await dispatch(
+      buttonJSON(
+        firstMoveBody.data.components,
+        buttonIdByIndex(firstMoveBody.data.components, TTT_MOVE_BUTTON_ID, 1)
+      ),
+      subs
+    )
+    const selfMoveBody = getCallback(selfMoveCalls) as { type: number; data: { flags: number } }
+
+    expect(selfMoveBody.type).toBe(InteractionResponseType.ChannelMessageWithSource)
+    expect(selfMoveBody.data.flags & MessageFlags.Ephemeral).toBeTruthy()
+
+    const secondMoveCalls = await dispatch(
+      buttonJSON(
+        firstMoveBody.data.components,
+        buttonIdByIndex(firstMoveBody.data.components, TTT_MOVE_BUTTON_ID, 1),
+        {
+          user: otherUser()
+        }
+      ),
+      subs
+    )
+    const secondBody = getCallback(secondMoveCalls) as {
+      type: number
+      data: { components: unknown[] }
+    }
+
+    expect(secondBody.type).toBe(InteractionResponseType.UpdateMessage)
+    expect(JSON.stringify(secondBody.data.components)).not.toContain('⭕')
+    expectCanvasGallery(secondBody.data.components, secondMoveCalls)
+  })
+
+  it('returns ttt in autocomplete', async () => {
+    const calls = await dispatch(autocompleteJSON('tt'), subs)
+    const body = getCallback(calls) as { type: number; data: { choices: { value: string }[] } }
+
+    expect(body.type).toBe(InteractionResponseType.ApplicationCommandAutocompleteResult)
+    expect(body.data.choices.some((choice) => choice.value === 'ttt')).toBe(true)
+  })
+})

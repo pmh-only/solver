@@ -102,7 +102,7 @@ Secondary role colors additionally depend on Discord's server feature availabili
 
 ## Upstream license
 
-The food menu in `src/commands/community-foods.ts` is adapted from `pmh-only/bot`:
+The food menu in `src/features/community/commands/foods.ts` is adapted from `pmh-only/bot`:
 
 MIT License
 
