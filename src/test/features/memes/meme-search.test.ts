@@ -87,7 +87,7 @@ it('returns the image URL with only two API requests and no image download', asy
   expect(await findMemeContent('gp2 engine')).toEqual(imageResult)
   expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(String(fetchMock.mock.calls[0][0])).toContain('q=gp2+engine')
-  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe('sfw')
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('safety_rating')).toBe(false)
   expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('content_type')).toBe(false)
   expect(fetchMock.mock.calls[0][1]).toMatchObject({
     redirect: 'error',
@@ -100,9 +100,9 @@ it('stops after an empty Memehub search when no GIPHY key is configured', async 
   expect(fetchMock).toHaveBeenCalledOnce()
 })
 it.each(['image', 'audio', 'text'] as const)(
-  'never delivers %s results unless explicitly rated SFW',
+  'never delivers %s results unless explicitly rated SFW or unknown',
   async (type) => {
-    for (const rating of ['nsfw', undefined, null, 'unknown', 'SFW', '']) {
+    for (const rating of ['nsfw', undefined, null, 'SFW', '']) {
       fetchMock.mockReset()
       fetchMock.mockResolvedValueOnce(
         Response.json({
@@ -117,13 +117,39 @@ it.each(['image', 'audio', 'text'] as const)(
       expect(send).not.toHaveBeenCalled()
       expect(play).not.toHaveBeenCalled()
       expect(message.delete).not.toHaveBeenCalled()
-      expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('safety_rating')).toBe(
-        'sfw'
+      expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('safety_rating')).toBe(
+        false
       )
     }
   }
 )
-it('uses the existing safe GIPHY fallback when Memehub returns a non-SFW result', async () => {
+it.each(['image', 'audio', 'text'] as const)('delivers unknown-rated %s results', async (type) => {
+  fetchMock.mockResolvedValueOnce(
+    Response.json({
+      items: [{ id: ID, content_type: type, safety_rating: 'unknown', body_text: '밈 텍스트' }]
+    })
+  )
+  if (type !== 'text') fetchMock.mockResolvedValueOnce(Response.json({ original: { url: image } }))
+  const { message, send } = fixture()
+  message.content = `<@&${ROLE}> same-canyon-judge`
+  const play = vi.fn().mockResolvedValue(true)
+  await createMemeSearchHandler(findMemeContent, play)(message as unknown as Message)
+  expect(fetchMock).toHaveBeenCalledTimes(type === 'text' ? 1 : 2)
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('q')).toBe(
+    'same-canyon-judge'
+  )
+  if (type === 'audio') {
+    expect(play).toHaveBeenCalledWith(message, image)
+    expect(send).not.toHaveBeenCalled()
+  } else {
+    expect(play).not.toHaveBeenCalled()
+    expect(send.mock.calls[0][0]).toMatchObject({
+      content: type === 'text' ? '밈 텍스트' : image
+    })
+  }
+  expect(message.delete).toHaveBeenCalledOnce()
+})
+it('uses the existing safe GIPHY fallback when Memehub returns an NSFW result', async () => {
   configureGiphy()
   fetchMock
     .mockResolvedValueOnce(

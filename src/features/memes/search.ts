@@ -88,9 +88,10 @@ async function findGiphyContent(query: string): Promise<MemeContent | null> {
 }
 
 export async function findMemeContent(query: string): Promise<MemeContent | null> {
-  const params = new URLSearchParams({ q: query, limit: '1', safety_rating: 'sfw' })
+  const params = new URLSearchParams({ q: query, limit: '1' })
   const result = resultsSchema.parse(await apiJson(new URL(`memes?${params}`, API))).items[0]
-  if (!result || result.safety_rating !== 'sfw') return findGiphyContent(query)
+  if (!result || !['sfw', 'unknown'].includes(result.safety_rating ?? ''))
+    return findGiphyContent(query)
   if (result.content_type === 'text') {
     return {
       type: 'text',
